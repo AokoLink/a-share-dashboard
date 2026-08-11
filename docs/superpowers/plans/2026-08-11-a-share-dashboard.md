@@ -702,6 +702,22 @@ def test_stock_minute_normalized(monkeypatch):
     df, _ = ds.get_stock_minute("sh600519")
     assert list(df["time"]) == ["10:00", "10:01"]
     assert list(df["avg"]) == pytest.approx([1.6e7 / 12000, 2.27e7 / 17000])
+
+
+def test_sector_index_history_uses_name_not_code(monkeypatch):
+    # 回归:THS 板块指数接口按板块名称查询,不能直接用摘要的代码 symbol
+    monkeypatch.setattr(ds, "_industry_code_map", lambda: ({"半导体": "881121"}, False))
+    captured = {}
+    def fake_index(symbol, start_date, end_date):
+        captured["symbol"] = symbol
+        return pd.DataFrame({"日期": ["2026-08-10"], "开盘价": [1.0], "最高价": [2.0],
+                             "最低价": [0.5], "收盘价": [1.5], "成交量": [100]})
+    monkeypatch.setattr(ds._ak, "stock_board_industry_index_ths", fake_index)
+    df, stale = ds.get_sector_index_history("881121", "industry")
+    assert captured["symbol"] == "半导体"        # 传的是名称,不是代码
+    assert stale is False
+    assert list(df.columns) == ["date", "open", "high", "low", "close", "volume"]
+    assert df["close"].iloc[0] == pytest.approx(1.5)
 ```
 
 注意:`test_market_spot_stale_on_failure` 依赖 `ds.cache` 暴露为模块级实例(实现中必须有 `cache = TTLCache(...)` 模块级)。该用例用 FakeClock 接管模块级时钟并 `_data.clear()`,是文件内最后一个依赖模块级 cache 的用例。
@@ -1000,7 +1016,12 @@ def get_sector_index_history(code, type):
     end_date = datetime.now().strftime("%Y%m%d")  # 接口默认 end_date 已过期(20240108),必须显式传当天
 
     def fetch():
-        raw = _ak.stock_board_industry_index_ths(symbol=symbol, start_date="20200101", end_date=end_date)
+        name_map, _ = _industry_code_map()
+        inv = {v: k for k, v in name_map.items()}          # code→name(THS 板块指数接口按名称查询)
+        name = inv.get(symbol)
+        if name is None:
+            raise DataSourceError("unknown sector code: %s" % symbol)
+        raw = _ak.stock_board_industry_index_ths(symbol=name, start_date="20200101", end_date=end_date)
         return pd.DataFrame({
             "date": raw["日期"].astype(str),
             "open": raw["开盘价"], "high": raw["最高价"],
