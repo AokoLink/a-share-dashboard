@@ -196,6 +196,9 @@ def test_sector_stale_propagates(monkeypatch, tmp_path):
     monkeypatch.setattr(ds, "get_sector_summary", lambda t: (make_summary(), False))
     monkeypatch.setattr(ds, "get_sector_index_history", lambda c, t: (make_daily(), True))
     monkeypatch.setattr(ds, "get_market_spot", lambda: (make_spot(), False))
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": True, "codes": [], "match_type": "manual", "source_name": ""})
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
     app.config["TESTING"] = True
     c = app.test_client()
     r = c.get("/api/sector?code=industry:885887")

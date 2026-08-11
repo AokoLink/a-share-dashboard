@@ -190,10 +190,10 @@ def register_routes(app):
             leaders_status = "source_fail"
         else:
             if not res["ok"]:
-                leaders_status = res["reason"]            # no_mapping | ambiguous
+                leaders_status = res.get("reason", "source_fail")    # no_mapping | ambiguous
             else:
                 spot_index = {str(x["code"]): x for x in spot.to_dict("records")}
-                rows = [spot_index[c] for c in res["codes"] if c in spot_index]
+                rows = [spot_index[c] for c in res.get("codes", []) if c in spot_index]
                 leaders = recommend.pick_leaders(rows, total=5,
                                                  exclude_codes=ds.get_new_stocks())
                 leaders_source = res.get("source_name")
