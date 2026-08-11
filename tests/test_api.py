@@ -59,6 +59,8 @@ def make_minute():
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     db = str(tmp_path / "api.db")
+    monkeypatch.setattr(ds, "validate_sector_map",
+                        lambda: {"ok": True, "total": 0, "valid": 0, "stale": [], "renamed": []})
     app = app_mod.create_app(db_path=db)
     monkeypatch.setattr(ds, "get_market_spot", lambda: (make_spot(), False))
     monkeypatch.setattr(ds, "get_index_realtime", lambda: (
@@ -69,7 +71,10 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(ds, "get_stock_minute", lambda c: (make_minute(), False))
     monkeypatch.setattr(ds, "get_stock_quote", lambda c: (make_quote(), False))
     monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
-    monkeypatch.setattr(an, "is_after_close", lambda now: True)   # 测试按收盘后口径
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": True, "codes": ["600519", "600000"],
+                                      "match_type": "manual", "source_name": "电子信息"})
+    monkeypatch.setattr(an, "is_after_close", lambda now: True)
     monkeypatch.setattr(an, "is_trading_time", lambda now: True)
     app.config["TESTING"] = True
     return app.test_client()
@@ -142,6 +147,8 @@ def test_stock_bad_param(client):
 
 def test_source_fail_returns_500(monkeypatch, tmp_path):
     db = str(tmp_path / "fail.db")
+    monkeypatch.setattr(ds, "validate_sector_map",
+                        lambda: {"ok": True, "total": 0, "valid": 0, "stale": [], "renamed": []})
     app = app_mod.create_app(db_path=db)
     monkeypatch.setattr(ds, "get_market_spot",
                         lambda: (_ for _ in ()).throw(ds.DataSourceError("boom")))
@@ -154,6 +161,8 @@ def test_source_fail_returns_500(monkeypatch, tmp_path):
 
 def test_sector_stale_propagates(monkeypatch, tmp_path):
     db = str(tmp_path / "stale_sector.db")
+    monkeypatch.setattr(ds, "validate_sector_map",
+                        lambda: {"ok": True, "total": 0, "valid": 0, "stale": [], "renamed": []})
     app = app_mod.create_app(db_path=db)
     monkeypatch.setattr(ds, "get_sector_summary", lambda t: (make_summary(), False))
     monkeypatch.setattr(ds, "get_sector_index_history", lambda c, t: (make_daily(), True))
@@ -166,6 +175,8 @@ def test_sector_stale_propagates(monkeypatch, tmp_path):
 
 def test_stock_stale_propagates(monkeypatch, tmp_path):
     db = str(tmp_path / "stale_stock.db")
+    monkeypatch.setattr(ds, "validate_sector_map",
+                        lambda: {"ok": True, "total": 0, "valid": 0, "stale": [], "renamed": []})
     app = app_mod.create_app(db_path=db)
     monkeypatch.setattr(ds, "get_stock_quote", lambda c: (make_quote(), True))
     monkeypatch.setattr(ds, "get_stock_daily", lambda c: (make_daily(), False))
@@ -174,3 +185,54 @@ def test_stock_stale_propagates(monkeypatch, tmp_path):
     c = app.test_client()
     r = c.get("/api/stock?code=600519")
     assert r.get_json()["meta"]["stale"] is True
+
+
+def test_recommend_endpoint(client, monkeypatch):
+    monkeypatch.setattr(an, "collect_sector_metrics", lambda *a, **k: {
+        "verdict": "建议关注", "composite": 78.0, "consecutive_days": 1,
+        "emotion": 80, "strength": 70, "risk": 10})
+    r = client.get("/api/recommend")
+    body = r.get_json()
+    assert body["ok"] is True
+    d = body["data"]
+    assert d["generated_at"]
+    # make_summary 两个板块都被 mock 成 建议关注 → 2 个 sector
+    assert len(d["sectors"]) == 2
+    s0 = d["sectors"][0]
+    assert s0["match_type"] == "manual"
+    assert s0["stocks"] and "price" in s0["stocks"][0] and "change_pct" in s0["stocks"][0]
+    assert d["diagnostics"] == {"stocks_not_in_spot": 0, "stocks_daily_failed": 0}
+    meta = body["meta"]
+    assert meta["coverage"]["mapped"] == 2
+    assert meta["mapping_health"]["ok"] is True
+
+
+def test_recommend_bad_param(client, monkeypatch):
+    monkeypatch.setattr(an, "collect_sector_metrics", lambda *a, **k: {
+        "verdict": "建议关注", "composite": 78.0, "consecutive_days": 1,
+        "emotion": 80, "strength": 70, "risk": 10})
+    assert client.get("/api/recommend?top_sectors=abc").status_code == 400
+    r = client.get("/api/recommend?top_sectors=9&per_sector=0")
+    d = r.get_json()["data"]
+    assert len(d["sectors"]) == 2                # make_summary 两板块都入选;top=9 钳制到 5,但实际只有 2
+    assert len(d["sectors"][0]["stocks"]) == 1   # per_sector=0 钳制到 1
+
+
+def test_recommend_stale_propagates(monkeypatch, tmp_path):
+    db = str(tmp_path / "reco_stale.db")
+    monkeypatch.setattr(ds, "validate_sector_map",
+                        lambda: {"ok": True, "total": 0, "valid": 0, "stale": [], "renamed": []})
+    app = app_mod.create_app(db_path=db)
+    monkeypatch.setattr(ds, "get_sector_summary", lambda t: (make_summary(), True))   # 摘要 stale
+    monkeypatch.setattr(ds, "get_market_spot", lambda: (make_spot(), False))
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": True, "codes": ["600519"], "match_type": "manual",
+                                      "source_name": "电子信息"})
+    monkeypatch.setattr(an, "collect_sector_metrics", lambda *a, **k: {
+        "verdict": "建议关注", "composite": 78.0, "consecutive_days": 1,
+        "emotion": 80, "strength": 70, "risk": 10})
+    monkeypatch.setattr(ds, "get_stock_daily", lambda c: (make_daily(), True))        # 候选 stale
+    app.config["TESTING"] = True
+    r = app.test_client().get("/api/recommend")
+    assert r.get_json()["meta"]["stale"] is True     # 任一候选 stale → 整包 stale

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """A股三层分析看板 —— Flask 入口 + API 路由。"""
+import logging
 import os
 from datetime import datetime
 
@@ -8,16 +9,18 @@ from flask import Flask, jsonify, render_template, request
 import analysis as an
 import data_source as ds
 import store
+import recommend
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = os.path.join(BASE_DIR, "data", "market.db")
 SECTOR_TYPES = ("industry",)
 
 
-def ok(data, stale=False):
-    return jsonify({"ok": True,
-                    "meta": {"stale": stale, "updated_at": ds.last_updated_at},
-                    "data": data})
+def ok(data, stale=False, extra_meta=None):
+    meta = {"stale": stale, "updated_at": ds.last_updated_at}
+    if extra_meta:
+        meta.update(extra_meta)
+    return jsonify({"ok": True, "meta": meta, "data": data})
 
 
 def err(code, message, http):
@@ -211,6 +214,41 @@ def register_routes(app):
                    "intraday": intraday},
                   stale=stale1 or stale2 or stale3)
 
+    @app.route("/api/recommend")
+    def api_recommend():
+        try:
+            top_sectors = int(request.args.get("top_sectors", "3"))
+            per_sector = int(request.args.get("per_sector", "5"))
+        except ValueError:
+            return err("BAD_PARAM", "top_sectors/per_sector 必须为整数", 400)
+        top_sectors = max(1, min(5, top_sectors))
+        per_sector = max(1, min(10, per_sector))
+        try:
+            summary, stale1 = ds.get_sector_summary("industry")
+            spot, stale2 = ds.get_market_spot()
+        except ds.DataSourceError as e:
+            return err("SOURCE_FAIL", str(e), 500)
+        now = datetime.now()
+        payload, stale_cands = recommend.build_recommend(
+            summary, spot, db_path, "industry", now, top_sectors, per_sector)
+        coverage = {
+            "strong_candidates": payload["strong_count"],
+            "mapped": len(payload["sectors"]),
+            "skipped": len(payload["skipped_sectors"]),
+            "skipped_by_reason": {},
+        }
+        for s in payload["skipped_sectors"]:
+            r = s["reason"]
+            coverage["skipped_by_reason"][r] = coverage["skipped_by_reason"].get(r, 0) + 1
+        return ok({
+            "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "sectors": payload["sectors"],
+            "skipped_sectors": payload["skipped_sectors"],
+            "diagnostics": payload["diagnostics"],
+        }, stale=stale1 or stale2 or stale_cands,
+           extra_meta={"coverage": coverage,
+                       "mapping_health": app.config.get("SECTOR_MAP_HEALTH", {})})
+
 
 def create_app(db_path=None):
     app = Flask(__name__)
@@ -218,6 +256,10 @@ def create_app(db_path=None):
     os.makedirs(os.path.dirname(os.path.abspath(app.config["DB"])), exist_ok=True)
     store.init_db(app.config["DB"])
     register_routes(app)
+    health = ds.validate_sector_map()
+    app.config["SECTOR_MAP_HEALTH"] = health
+    if not health.get("ok") or health.get("stale") or health.get("renamed"):
+        logging.getLogger(__name__).warning("sector map health: %s", health)
     return app
 
 
