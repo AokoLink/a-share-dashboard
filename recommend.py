@@ -112,11 +112,9 @@ def build_recommend(summary_df, spot_df, db, type_key, now, top_sectors=3, per_s
     sectors, skipped = [], []
     stale_any = False
     diagnostics = {"stocks_not_in_spot": 0, "stocks_daily_failed": 0}
-    processed = 0
     for s in strong:
-        if processed >= top_sectors:
+        if len(sectors) >= top_sectors:
             break
-        processed += 1
         try:
             res = ds.resolve_sector_constituents(s["name"])
         except Exception:                        # 网络/模式失败 → 降级跳过

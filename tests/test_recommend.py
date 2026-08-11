@@ -153,7 +153,9 @@ def test_build_recommend_not_in_spot_diagnostics(monkeypatch):
     payload, _ = recommend.build_recommend(
         make_summary(), make_spot(), ":db:", "industry",
         datetime.datetime(2026, 8, 11, 15, 0), top_sectors=1, per_sector=5)
-    assert payload["diagnostics"]["stocks_not_in_spot"] == 1
+    # 补位语义:无板块能凑够 top_sectors 时,强势列表全部试尽;sectors 空所以哨兵不提前触发
+    assert payload["diagnostics"]["stocks_not_in_spot"] == 3
+    assert len(payload["skipped_sectors"]) == 3
     # 候选全被过滤 → 板块降级进 skipped(too_few)
     assert payload["sectors"] == []
     assert payload["skipped_sectors"][0]["reason"] == "too_few"
@@ -197,3 +199,48 @@ def test_build_recommend_concurrent_failure_isolation(monkeypatch):
     codes = [x["code"] for x in s0["stocks"]]
     assert codes == ["sh600050"]                # 单股失败,同板块其余不受影响
     assert payload["diagnostics"]["stocks_daily_failed"] == 1
+
+
+def test_build_recommend_fills_slots(monkeypatch):
+    # 补位语义(spec §4.1/§5.2):失败板块(no_mapping)不占 top_sectors 槽位,继续从强势列表补位。
+    mock_sector(monkeypatch)                    # 3 板块全部 建议关注,composite 78.0 → 强势序 [半导体,白酒,化工]
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+
+    def resolve(name):
+        if name == "半导体":
+            return {"ok": True, "codes": ["600050"], "match_type": "manual", "source_name": "电子信息"}
+        if name == "白酒":
+            return {"ok": False, "reason": "no_mapping"}
+        # 化工:600050 通过硬过滤且打分非规避(风险 0 → 持有/跟踪),故可入选补位
+        return {"ok": True, "codes": ["600050"], "match_type": "manual", "source_name": "食品饮料"}
+
+    monkeypatch.setattr(ds, "resolve_sector_constituents", resolve)
+    monkeypatch.setattr(ds, "get_stock_daily",
+                        lambda c: (make_daily([10 + i for i in range(30)]), False))
+    payload, _ = recommend.build_recommend(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 11, 15, 0), top_sectors=2, per_sector=5)
+    assert len(payload["sectors"]) == 2
+    assert [s["name"] for s in payload["sectors"]] == ["半导体", "化工"]  # 白酒 失败 → 化工 补位
+    assert len(payload["skipped_sectors"]) == 1
+    assert payload["skipped_sectors"][0]["name"] == "白酒"
+    assert payload["skipped_sectors"][0]["reason"] == "no_mapping"
+    assert payload["strong_count"] == 3
+
+
+def test_filter_candidates_hard_filters():
+    # 三个硬过滤分支的独立覆盖:涨停买不进 / 大跌 / 流动性不足;每行恰好触发一个。
+    spot_df = pd.DataFrame([
+        {"code": "600000", "name": "极限股", "price": 10.0, "change_pct": 10.0,
+         "volume": 100000, "amount": 5e8},    # 10.0 >= limit_threshold(600000)=9.9 → 涨停买不进
+        {"code": "600001", "name": "大跌股", "price": 9.0, "change_pct": -8.0,
+         "volume": 100000, "amount": 5e8},    # -8.0 <= -7.0 → 大跌
+        {"code": "600002", "name": "低流股", "price": 5.0, "change_pct": 2.0,
+         "volume": 100000, "amount": 5e7},    # 5e7 < 1e8 → 流动性不足
+        {"code": "600003", "name": "正常股", "price": 8.0, "change_pct": 3.0,
+         "volume": 100000, "amount": 5e8},    # 全部通过 → 保留
+    ])
+    kept, not_in = recommend.filter_candidates(
+        ["600000", "600001", "600002", "600003"], spot_df, exclude_codes=set())
+    assert {k["code"] for k in kept} == {"600003"}
+    assert not_in == 0
