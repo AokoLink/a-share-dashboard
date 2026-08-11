@@ -1,8 +1,14 @@
 # A股三层分析看板 — 设计文档(Rev.5)
 
 - **日期**: 2026-08-11(Rev.5: 响应四轮评审——个股量比全日折算细节/开盘下限/风险项与分母口径等;历史:Rev.4 成分股落库/盘中-EOD口径统一/单位契约/高风险可达性)
-- **状态**: 已确认,待实施
+- **状态**: 已确认,待实施(实施中修订见下)
 - **目标目录**: `C:\stock`
+
+> **实施修订记录(2026-08-11,Task 1 spike 实测后,用户已确认):** 以下修订已写入实施计划 `docs/superpowers/plans/2026-08-11-a-share-dashboard.md`,本设计文档相应章节被取代。
+> 1. **板块成分股 → 降级为摘要口径(用户决策「降级:保留全部打分」)**:akshare 1.18.84 无 `stock_board_industry_cons_ths`/`stock_board_concept_cons_ths`;`*_info_ths` 实为板块简介快照(非成分股列表)。板块评分**仅用同花顺行业摘要(90 板块)**的上涨/下跌家数、领涨股-涨跌幅、涨跌幅、总成交额,无成分股聚合;`data_complete` 恒 True、涨停占比恒 None(情绪子项经 `_weighted` 归一化)。§4 `get_sector_components`、§5.1 `sector_component_map` 表、§5.2 成分股内存 map 全部废弃。
+> 2. **概念板块不纳入榜单(用户决策「板块榜只留行业板块」)**:`stock_board_concept_summary_ths` 实为概念资讯/驱动事件流(无涨跌幅/家数/成交额),概念板块广度指标整体缺失 → 板块榜仅留行业板块;`SECTOR_TYPES=("industry",)`。§6.2 概念板块评分废弃。
+> 3. **分时换源**:`stock_intraday_sina` 无 `avg_price` 列且需 `date` 参数(实为逐笔资金流数据),分时改用 `stock_zh_a_minute(period='1')`,均价=累计成交额/累计成交量。§4 分时函数替换。
+> 4. **板块指数签名**:`stock_board_industry_index_ths(symbol, start_date, end_date)` 无 `period` 参数,默认 `end_date='20240108'` 已过期 → 每次显式传当天日期。§4 板块指数调用替换。
 
 ## 1. 目标与范围
 
@@ -28,12 +34,11 @@
 已验证可行的数据接口:
 - 新浪全市场实时快照 `stock_zh_a_spot()`(约 5541 只,含涨跌幅/成交额,约 10s)
 - 新浪指数日线 `stock_zh_index_daily`;个股日线/分钟线 `stock_zh_a_daily` / `stock_zh_a_minute`
-- 同花顺板块列表 `stock_board_industry_name_ths`(90)/ `stock_board_concept_name_ths`(375)
-- 同花顺板块摘要 `stock_board_industry_summary_ths` / `stock_board_concept_summary_ths`
-- 同花顺板块指数日线 `stock_board_industry_index_ths` / `stock_board_concept_index_ths`
+- 同花顺行业板块列表 `stock_board_industry_name_ths`(90)/ 行业摘要 `stock_board_industry_summary_ths`(概念列表/摘要已废弃,见文首修订记录)
+- 同花顺行业指数日线 `stock_board_industry_index_ths`(无 `period` 参数,须显式传当天日期)
 - 腾讯实时盘口 `qt.gtimg.cn/q=sh600519`
 
-> **待实施确认(风险项)**:同花顺成分股接口函数名 `stock_board_industry_info_ths` / `stock_board_concept_info_ths` 需在实施第一步验证字段(是否含成分股、是否含成交额);若缺字段按 §6.2 降级方案处理。
+> **已确认(实施修订,替代原风险项)**:同花顺无成分股列表接口(`*_cons_ths` 在本版不存在、`*_info_ths` 为板块简介快照);`stock_intraday_sina` 无 `avg_price`。板块评分降级为摘要口径,分时换用 `stock_zh_a_minute`。详见文首修订记录。
 
 ## 3. 架构
 

@@ -4,7 +4,7 @@
 
 **Goal:** 在 `C:\stock` 实现一个本地运行的 A 股三层分析看板(大盘总览 → 板块强弱 → 个股量价),Flask 后端 + ECharts 前端,基于规则打分输出"当前适合走什么方向,什么方向有风险"。
 
-**Architecture:** 四层结构:数据层 `data_source.py`(akshare 封装 + 线程安全 TTL 缓存)、持久化层 `store.py`(SQLite 每日快照 + 成分股映射落库)、分析层 `analysis.py`(纯函数打分,输入可注入)、API 层 `app.py`(Flask 路由组合输出契约化 JSON)。数据源只用新浪/腾讯/同花顺,全部避开东方财富。
+**Architecture:** 四层结构:数据层 `data_source.py`(akshare 封装 + 线程安全 TTL 缓存)、持久化层 `store.py`(SQLite 每日快照)、分析层 `analysis.py`(纯函数打分,输入可注入)、API 层 `app.py`(Flask 路由组合输出契约化 JSON)。数据源只用新浪/腾讯/同花顺,全部避开东方财富。
 
 **Tech Stack:** Python 3.13 + akshare 1.18.84 + Flask 3.x + pandas + SQLite + pytest;前端 ECharts 5.5.1(本地文件)。
 
@@ -15,13 +15,13 @@
 - 安装脚本命名 `install.py`(不用 setup.py);应用启动 `python app.py` → `http://127.0.0.1:8000`。
 - 全链路复合键 `type:code`(如 `industry:885887`);个股接受 `600519` 与 `sh600519` 两种写法,响应统一带前缀。
 - `change_pct` 全部为**百分比数值**(3.2 = 3.2%)。
-- 代码归一化:快照代码 `sh600000` 与同花顺成分股统一为 6 位数字;join 前过滤停牌(成交量为 0 或价格为 0)。
+- 代码归一化:快照代码 `sh600000` 统一为 6 位数字;join 前过滤停牌(成交量为 0 或价格为 0)。
 - 盘中累计 vs EOD 基准:凡"当日累计 / 历史 EOD 均值"类指标(大盘量能、板块成交额放量、板块放量滞涨)**一律仅收盘后(≥15:00)计算**,盘中该子项返回缺失并按权重归一化降级;分子分母同刻的指标(资金活跃度=板块/全市场成交额占比)盘中可用。**唯一例外:个股自定义量比按全日折算,盘中即可比**。
 - 打分阈值:情绪分 高≥70/中45-69/低<45;强度分 高≥60/中35-59/低<35;风险分 高≥65/中40-64/低<40。
 - 综合分 = `0.4×强度 + 0.35×情绪 + 0.25×(100−风险)`;个股综合分 = `0.4×趋势 + 0.35×量价 + 0.25×信号`;个股风险分 = `max(各风险项得分)`。
 - 涨停/跌停近似:主板(60/00)±9.9%、创业板(30)/科创板(688)±19.9%、北交所(8/4)±29.9%;排除上市≤5 交易日新股(尽力而为);ST 不区分。
 - 已交易分钟数 = 落在 9:30–11:30 的分钟数 + 落在 13:00–15:00 的分钟数;午休不计;9:30 前=0,≥15:00=240;禁止从 9:30 数自然分钟。已交易分钟 <15 时量比子项缺失。
-- SQLite 开 WAL + busy_timeout;成分股映射落库,启动加载到独立内存 map(不在 200 条缓存里);5 个交易日(以 market_daily 记录的交易日计数)过期,后台并发上限 8 重建,失败保留旧日期下轮重试。
+- SQLite 开 WAL + busy_timeout;板块评分仅用同花顺行业摘要(90 板块,**无成分股聚合**);概念板块不纳入榜单;`data_complete` 恒 True、涨停占比恒 None(情绪子项走 `_weighted` 归一化降级)。
 - 板块结论规则优先级 1→6(见规格 §6.2 表格),先命中先出。
 - 每个 commit 使用 `git -c user.name="stock-tool" -c user.email="stock-tool@local" commit -m "..."`(仓库已配置在 C:\stock)。
 - 测试命令:`python -m pytest tests/ -v`(Windows 用 Git Bash 执行;conda python 已在 PATH)。
@@ -32,10 +32,10 @@
 
 ```
 C:\stock\
-├── app.py               # Flask 入口 + API 路由 + 后台成分股构建线程(Task 8)
+├── app.py               # Flask 入口 + API 路由(Task 8)
 ├── data_source.py       # 数据层:akshare 封装 + TTLCache + 代码归一化(Task 4)
 ├── analysis.py          # 分析层:时间口径 + 指标 + 大盘/板块/个股打分(Task 5-7)
-├── store.py             # 持久化层:SQLite 每日快照 + 成分股映射(Task 3)
+├── store.py             # 持久化层:SQLite 每日快照(Task 3)
 ├── install.py           # 首次安装:装依赖 + 下载 echarts(Task 2)
 ├── requirements.txt     # pin 版本(Task 2)
 ├── .gitignore           # 忽略 data/、__pycache__/、static/echarts.min.js(Task 2)
@@ -61,7 +61,7 @@ C:\stock\
     └── test_api.py
 ```
 
-分层职责(规格 §3):数据层取数+缓存不含业务判断;持久化层归档+成分股映射;分析层吃数据产出打分与结论;API 层组合输出契约化 JSON。
+分层职责(规格 §3):数据层取数+缓存不含业务判断;持久化层归档每日快照;分析层吃数据产出打分与结论;API 层组合输出契约化 JSON。
 
 ---
 
@@ -302,13 +302,9 @@ cd /c/stock && git add requirements.txt .gitignore conftest.py install.py app.py
   - `get_sector_prev_change(db, type, code, date) -> float | None` `< date` 最近一行的 change_pct。
   - `get_sector_change_3d(db, type, code, date) -> float | None` 近 3 个已完成交易日(不含 date)累计涨幅(复利),不足 2 行返回 None。
   - `get_consecutive_days(db, type, code, date, top_n=20) -> int` 从 date 起向前连续 rank≤20 的天数。
-  - `save_component_map(db, type, code, stock_codes, refreshed_date) -> None` 先删后插(整体替换成员)。
-  - `get_component_map(db) -> dict[(type, code) -> set[str]]` 懒加载独立内存 map(按 db 路径缓存)。
-  - `reload_component_map(db) -> None` 后台重建后刷新内存 map。
-  - `get_stale_components(db, known_boards, trading_days=5) -> list[(type, code)]` 返回"从未构建"或"距上次构建已过 trading_days 个交易日"的板块。
   - 所有函数第一个参数为 `db`(SQLite 文件路径)。
 
-**口径(规格 §5.1/§5.2):** 每日快照每交易日一行,盘中多次 upsert 覆盖为最新值;成分股映射 5 交易日过期重建。
+**口径(规格 §5.1):** 每日快照每交易日一行,盘中多次 upsert 覆盖为最新值。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -375,30 +371,6 @@ def test_consecutive_days_counts_rank_streak(db):
     for i, (d, r) in enumerate(rows):
         store.upsert_sector_daily(db, d, "industry", "885887", "半导体", 1.0, 0.5, 100.0 + i, r)
     assert store.get_consecutive_days(db, "industry", "885887", "2026-08-06") == 2  # 8-06,8-05 连续,8-04 断开
-
-
-def test_component_map_save_load_replace(db):
-    store.save_component_map(db, "industry", "885887", ["600000", "600519"], "2026-08-10")
-    store.save_component_map(db, "industry", "885887", ["600000"], "2026-08-11")  # 替换成员
-    store.save_component_map(db, "concept", "885559", ["000001"], "2026-08-10")
-    m = store.get_component_map(db)
-    assert m[("industry", "885887")] == {"600000"}
-    assert m[("concept", "885559")] == {"000001"}
-    store.reload_component_map(db)
-    assert store.get_component_map(db)[("industry", "885887")] == {"600000"}
-
-
-def test_get_stale_components(db):
-    # 从未构建的板块 → stale
-    assert ("industry", "990001") in store.get_stale_components(db, [("industry", "990001")])
-    store.save_component_map(db, "industry", "990001", ["600000"], "2026-08-05")
-    # 过 5 个交易日(market_daily 记录了 5 个新交易日)→ stale
-    for d in ["2026-08-06", "2026-08-07", "2026-08-10", "2026-08-11", "2026-08-12"]:
-        store.upsert_market_daily(db, d, 1, 0, 0, 0, 0, 100.0, 1.0, "15:00:00")
-    assert ("industry", "990001") in store.get_stale_components(db, [("industry", "990001")])
-    # 尚未满 5 个交易日 → 不 stale
-    store.save_component_map(db, "industry", "990002", ["600000"], "2026-08-11")
-    assert ("industry", "990002") not in store.get_stale_components(db, [("industry", "990002")])
 ```
 
 注意:最后一个测试在 `test_sector_prev_change_and_3d` 里用了 `tmp_path` fixture(文件级,pytest 自动注入)。
@@ -412,10 +384,9 @@ Expected: FAIL(module not found:`import store` 失败或函数未定义)。
 
 ```python
 # -*- coding: utf-8 -*-
-"""持久化层:SQLite 每日快照 + 成分股映射。db 参数为数据库文件路径。"""
+"""持久化层:SQLite 每日快照。db 参数为数据库文件路径。"""
 import os
 import sqlite3
-import threading
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS market_daily (
@@ -429,15 +400,7 @@ CREATE TABLE IF NOT EXISTS sector_daily (
   change_pct REAL, up_ratio REAL, turnover REAL, rank INTEGER,
   PRIMARY KEY(date, type, code)
 );
-CREATE TABLE IF NOT EXISTS sector_component_map (
-  type TEXT, code TEXT, stock_code TEXT, refreshed_date TEXT,
-  PRIMARY KEY(type, code, stock_code)
-);
 """
-
-# 成分股内存 map(独立于 §9 的 200 条缓存),按 db 路径缓存
-_maps = {}
-_maps_lock = threading.Lock()
 
 
 def init_db(db):
@@ -550,62 +513,6 @@ def get_consecutive_days(db, type, code, date, top_n=20):
             break
     conn.close()
     return days
-
-
-def save_component_map(db, type, code, stock_codes, refreshed_date):
-    conn = _connect(db)
-    conn.execute("DELETE FROM sector_component_map WHERE type=? AND code=?", (type, code))
-    conn.executemany(
-        "INSERT INTO sector_component_map(type, code, stock_code, refreshed_date) VALUES(?,?,?,?)",
-        [(type, code, s, refreshed_date) for s in stock_codes])
-    conn.commit()
-    conn.close()
-
-
-def _build_map(db):
-    conn = _connect(db)
-    cur = conn.execute("SELECT type, code, stock_code FROM sector_component_map")
-    d = {}
-    for t, c, s in cur.fetchall():
-        d.setdefault((t, c), set()).add(s)
-    conn.close()
-    return d
-
-
-def get_component_map(db):
-    with _maps_lock:
-        if db not in _maps:
-            _maps[db] = _build_map(db)
-        return _maps[db]
-
-
-def reload_component_map(db):
-    with _maps_lock:
-        _maps[db] = _build_map(db)
-
-
-def get_stale_components(db, known_boards, trading_days=5):
-    """known_boards: [(type, code)] 全量板块;返回需要重建的板块列表。"""
-    trade_dates = []
-    conn = _connect(db)
-    for (d,) in conn.execute("SELECT DISTINCT date FROM market_daily ORDER BY date"):
-        trade_dates.append(d)
-    refreshed = conn.execute(
-        "SELECT type, code, MAX(refreshed_date) FROM sector_component_map GROUP BY type, code").fetchall()
-    conn.close()
-    built = {}
-    for t, c, last in refreshed:
-        built[(t, c)] = last
-    stale = []
-    for t, c in known_boards:
-        last = built.get((t, c))
-        if last is None:
-            stale.append((t, c))  # 从未构建
-        else:
-            passed = sum(1 for d in trade_dates if d > last)
-            if passed >= trading_days:
-                stale.append((t, c))
-    return stale
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
@@ -616,7 +523,7 @@ Expected: PASS(全绿)。若 `test_market_daily_upsert_idempotent` 断言 key �
 - [ ] **Step 5: 提交**
 
 ```bash
-cd /c/stock && git add store.py tests/test_store.py && git -c user.name="stock-tool" -c user.email="stock-tool@local" commit -m "feat: 持久化层 store.py(每日快照/成分股映射/过期重建)"
+cd /c/stock && git add store.py tests/test_store.py && git -c user.name="stock-tool" -c user.email="stock-tool@local" commit -m "feat: 持久化层 store.py(每日快照)"
 ```
 
 ---
@@ -635,12 +542,12 @@ cd /c/stock && git add store.py tests/test_store.py && git -c user.name="stock-t
   - `normalize_code(raw) -> str` 6 位数字。
   - `with_prefix(code) -> str` `sh600519`/`sz000001`/`bj830000`。
   - `_parse_tencent_quote(text) -> dict`
-  - 以下函数**全部返回 `(data, stale)`**:`get_market_spot() -> (DataFrame[code,name,price,change_pct,volume,amount], bool)`,`get_index_realtime() -> (list[dict], bool)`,`get_index_daily(code) -> (DataFrame, bool)`,`get_sector_summary(type) -> (DataFrame[code,name,change_pct,up_count,down_count,leader,leader_change_pct,turnover], bool)`,`get_sector_index_history(code, type) -> (DataFrame, bool)`,`get_sector_components(code, type) -> (list[str], bool)`(无缓存,直取 THS),`get_stock_daily(code) -> (DataFrame, bool)`,`get_stock_minute(code) -> (DataFrame[time,price,avg,volume], bool)`,`get_stock_quote(code) -> (dict, bool)`。
+  - 以下函数**全部返回 `(data, stale)`**:`get_market_spot() -> (DataFrame[code,name,price,change_pct,volume,amount], bool)`,`get_index_realtime() -> (list[dict], bool)`,`get_index_daily(code) -> (DataFrame, bool)`,`get_sector_summary(type) -> (DataFrame[code,name,change_pct,up_count,down_count,leader,leader_change_pct,turnover], bool)`(仅 industry),`get_sector_index_history(code, type) -> (DataFrame, bool)`(仅 industry),`get_stock_daily(code) -> (DataFrame, bool)`,`get_stock_minute(code) -> (DataFrame[time,price,avg,volume], bool)`,`get_stock_quote(code) -> (dict, bool)`。
   - `get_new_stocks() -> set[str]` 上市≤5 交易日新股 6 位码集合(尽力而为,不可用返回空集)。
   - `last_updated_at: str` 模块级,最近成功拉取时间,供 meta.updated_at。
 - TTL(规格 §4):spot 60s、index_realtime 30s、index_daily 10min、sector_summary 60s、sector_index_history 30min、stock_daily 10min、stock_minute 60s、stock_quote 30s。
 
-**口径(规格 §7):** 停牌过滤 = 成交量/价格 >0;`get_market_spot` 输出 code 为 6 位;腾讯成交额单位万元→×10000 转元。
+**口径(规格 §7):** 停牌过滤 = 成交量/价格 >0;`get_market_spot` 输出 code 为 6 位;腾讯成交额单位万元→×10000 转元;同花顺`总成交额`单位亿元→×1e8 转元;板块 code 经 `stock_board_industry_name_ths` 的 name→code 表关联(摘要无板块代码列)。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -764,34 +671,37 @@ def test_market_spot_stale_on_failure(monkeypatch):
     assert stale3 is True and df3["code"].iloc[0] == "600000"
 
 
-def test_sector_summary_missing_turnover_is_none(monkeypatch):
+def test_sector_summary_mapping(monkeypatch):
     raw = pd.DataFrame({
-        "板块名称": ["半导体", "白酒"],
-        "板块代码": ["885887", "885559"],
+        "板块": ["半导体", "白酒"],
         "涨跌幅": [3.2, -1.0],
         "上涨家数": [80, 30],
         "下跌家数": [5, 60],
-        "领涨股票": ["X", "Y"],
-        "领涨股票-涨跌幅": [10.0, 0.5],
+        "领涨股": ["X", "Y"],
+        "领涨股-涨跌幅": [10.0, 0.5],
     })
+    name_map = pd.DataFrame({"name": ["半导体", "白酒"], "code": ["881121", "881273"]})
     monkeypatch.setattr(ds._ak, "stock_board_industry_summary_ths", lambda: raw)
+    monkeypatch.setattr(ds._ak, "stock_board_industry_name_ths", lambda: name_map)
     df, _ = ds.get_sector_summary("industry")
-    assert list(df["code"]) == ["885887", "885559"]
-    assert df["turnover"].isna().all()  # 缺成交额 → 全 None(分析层自动降级)
+    assert list(df["code"]) == ["881121", "881273"]   # code 来自 name→code 表关联
+    assert df["turnover"].isna().all()  # 缺总成交额 → 全 None(分析层自动降级)
     assert df["change_pct"].iloc[0] == pytest.approx(3.2)
 
 
 def test_stock_minute_normalized(monkeypatch):
+    # 分时走 stock_zh_a_minute(period='1'),均价 = 累计成交额/累计成交量
     raw = pd.DataFrame({
         "day": ["2026-08-11 10:00:00", "2026-08-11 10:01:00"],
-        "close": [1348.0, 1349.0],
-        "avg_price": [1342.0, 1343.0],
-        "volume": [12000, 5000],
+        "open": [1347.0, 1348.5], "high": [1350.0, 1351.0],
+        "low": [1346.0, 1347.0], "close": [1348.0, 1349.0],
+        "volume": [12000, 5000], "amount": [1.6e7, 6.7e6],
     })
-    monkeypatch.setattr(ds._ak, "stock_intraday_sina", lambda symbol: raw)
+    monkeypatch.setattr(ds._ak, "stock_zh_a_minute",
+                        lambda symbol, period, adjust: raw)
     df, _ = ds.get_stock_minute("sh600519")
     assert list(df["time"]) == ["10:00", "10:01"]
-    assert list(df["avg"]) == [1342.0, 1343.0]
+    assert list(df["avg"]) == pytest.approx([1.6e7 / 12000, 2.27e7 / 17000])
 ```
 
 注意:`test_market_spot_stale_on_failure` 依赖 `ds.cache` 暴露为模块级实例(实现中必须有 `cache = TTLCache(...)` 模块级)。该用例用 FakeClock 接管模块级时钟并 `_data.clear()`,是文件内最后一个依赖模块级 cache 的用例。
@@ -1016,12 +926,18 @@ def get_stock_minute(code):
     symbol = with_prefix(code)
 
     def fetch():
-        raw = _ak.stock_intraday_sina(symbol=symbol)
+        raw = _ak.stock_zh_a_minute(symbol=symbol, period="1", adjust="")
+        price = pd.to_numeric(raw["close"], errors="coerce")
+        volume = pd.to_numeric(raw["volume"], errors="coerce")
+        amount = pd.to_numeric(raw["amount"], errors="coerce")
+        cum_vol = volume.fillna(0).cumsum()
+        cum_amt = amount.fillna(0).cumsum()
+        avg = cum_amt / cum_vol.where(cum_vol > 0)
         out = pd.DataFrame({
             "time": raw["day"].astype(str).str.slice(11, 16),
-            "price": raw["close"],
-            "avg": raw["avg_price"],
-            "volume": raw["volume"],
+            "price": price,
+            "avg": avg,
+            "volume": volume,
         })
         return out
 
@@ -1047,61 +963,53 @@ def _ths_col(df, *names):
     return pd.Series([None] * len(df))
 
 
-def get_sector_summary(type):
+def _industry_code_map():
+    """name→code 对照表(摘要无板块代码列),静态映射,缓存 1h。"""
     def fetch():
-        if type == "industry":
-            raw = _ak.stock_board_industry_summary_ths()
-        elif type == "concept":
-            raw = _ak.stock_board_concept_summary_ths()
-        else:
-            raise DataSourceError("unknown type: %s" % type)
+        raw = _ak.stock_board_industry_name_ths()
+        return dict(zip(raw["name"], raw["code"].astype(str)))
+    return _cached(_key("industry_name_code"), 3600, lambda: _fetch_with_retry(fetch))
+
+
+def get_sector_summary(type):
+    if type != "industry":
+        raise DataSourceError("unknown type: %s" % type)
+
+    def fetch():
+        raw = _ak.stock_board_industry_summary_ths()
+        name_map, _ = _industry_code_map()
         out = pd.DataFrame({
-            "code": _ths_col(raw, "板块代码").map(normalize_code),
-            "name": _ths_col(raw, "板块名称"),
+            "code": raw["板块"].map(name_map).map(normalize_code),
+            "name": raw["板块"],
             "change_pct": pd.to_numeric(_ths_col(raw, "涨跌幅"), errors="coerce"),
             "up_count": pd.to_numeric(_ths_col(raw, "上涨家数"), errors="coerce"),
             "down_count": pd.to_numeric(_ths_col(raw, "下跌家数"), errors="coerce"),
-            "leader": _ths_col(raw, "领涨股票"),
-            "leader_change_pct": pd.to_numeric(_ths_col(raw, "领涨股票-涨跌幅"), errors="coerce"),
-            "turnover": pd.to_numeric(_ths_col(raw, "成交额", "板块成交额"), errors="coerce"),
+            "leader": _ths_col(raw, "领涨股"),
+            "leader_change_pct": pd.to_numeric(_ths_col(raw, "领涨股-涨跌幅"), errors="coerce"),
+            "turnover": pd.to_numeric(_ths_col(raw, "总成交额"), errors="coerce") * 1e8,  # 亿元 → 元
         })
+        out = out[out["code"].astype(str).str.isdigit()].reset_index(drop=True)  # 防御:名→码失败的行剔除
         return out.where(pd.notna(out), None)  # NaN → None,避免 NaN 污染 JSON/排序
 
     return _cached(_key("sector_summary", type), 60, lambda: _fetch_with_retry(fetch))
 
 
 def get_sector_index_history(code, type):
+    if type != "industry":
+        raise DataSourceError("unknown type: %s" % type)
     symbol = normalize_code(code)
+    end_date = datetime.now().strftime("%Y%m%d")  # 接口默认 end_date 已过期(20240108),必须显式传当天
 
     def fetch():
-        if type == "industry":
-            raw = _ak.stock_board_industry_index_ths(symbol=symbol, period="daily")
-        elif type == "concept":
-            raw = _ak.stock_board_concept_index_ths(symbol=symbol, period="daily")
-        else:
-            raise DataSourceError("unknown type: %s" % type)
-        out = raw[["date", "open", "high", "low", "close", "volume"]].copy()
-        out["date"] = out["date"].astype(str)
-        return out
+        raw = _ak.stock_board_industry_index_ths(symbol=symbol, start_date="20200101", end_date=end_date)
+        return pd.DataFrame({
+            "date": raw["日期"].astype(str),
+            "open": raw["开盘价"], "high": raw["最高价"],
+            "low": raw["最低价"], "close": raw["收盘价"],
+            "volume": raw["成交量"],
+        })
 
     return _cached(_key("sector_index", type, symbol), 1800, lambda: _fetch_with_retry(fetch))
-
-
-def get_sector_components(code, type):
-    """成分股(静态映射,落 SQLite 由 Task 8 后台构建调用;此处无缓存直取 THS)。"""
-    symbol = normalize_code(code)
-
-    def fetch():
-        if type == "industry":
-            raw = _ak.stock_board_industry_info_ths(symbol=symbol)
-        elif type == "concept":
-            raw = _ak.stock_board_concept_info_ths(symbol=symbol)
-        else:
-            raise DataSourceError("unknown type: %s" % type)
-        codes = raw["代码"].map(normalize_code).tolist()
-        return codes
-
-    return _fetch_with_retry(fetch), False
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
@@ -1136,7 +1044,7 @@ cd /c/stock && git add data_source.py tests/test_data_source.py && git -c user.n
   - `add_ma(df, periods=(5,10,20,60)) -> df`、`add_macd(df) -> df`。
   - `_weighted(items) -> float | None` 子项缺失时按剩余权重归一化(内部工具)。
 
-**口径(规格 §7):** 已交易分钟数禁止数自然分钟(午休计入会错 0.89 系数);涨停占比分母=活跃成分股数(停牌过滤)。
+**口径(规格 §7):** 已交易分钟数禁止数自然分钟(午休计入会错 0.89 系数);涨停/跌停计数分母=活跃样本(停牌过滤:成交量为 0 或价格为 0 剔除)。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1415,7 +1323,7 @@ def test_emotion_score_weights_and_renormalize():
     # 盘中:turnover_ratio=None → 25 权重归一化到剩余 75
     e2 = an.sector_emotion(0.9, 0.1, None, 5.0)
     assert e2 == pytest.approx((90 * 40 + 10 * 20 + 100 * 15) / 75)
-    # 涨停占比分母=活跃成分股:up_ratio 本身已按活跃分母计算(调用方负责),此处验证缺 leader 归一化
+    # 缺 leader → leader 15 权重归一化到剩余 85(降级口径下涨停占比恒 None,同样由调用方归一化)
     e3 = an.sector_emotion(0.9, 0.1, 1.5, None)
     assert e3 == pytest.approx((90 * 40 + 10 * 20 + 100 * 25) / 85)
     assert an.sector_emotion(None, None, None, None) is None
@@ -1848,12 +1756,11 @@ cd /c/stock && git add analysis.py tests/test_analysis_stock.py && git -c user.n
 
 **Interfaces:**
 - Consumes: `data_source as ds`、`analysis as an`、`store`;模块级导入方式(`import data_source as ds`),测试用 monkeypatch 替换模块属性。
-- Produces: `create_app(db_path=None, start_builder=True) -> Flask app`;`python app.py` 起 127.0.0.1:8000。
+- Produces: `create_app(db_path=None) -> Flask app`;`python app.py` 起 127.0.0.1:8000。
 - 路由(规格 §8):`GET /`、`GET /api/market`、`GET /api/sectors?type=&top=&search=`、`GET /api/sector?code=type:code`、`GET /api/stock?code=600519|sh600519`。
 - 错误契约:400 `BAD_PARAM`(参数非法);500 `SOURCE_FAIL`(完全失败无缓存);数据源失败但有缓存 → 200 `meta.stale=true`。
-- 后台线程:`component_builder_loop(app)` 每 300s 一轮,并发上限 8 重建 stale 板块,失败保留旧日期下轮重试,构建完成 `reload_component_map`。
 
-**口径(规格 §8/§11/§5.2):** `/api/sectors` 返回每类 top60(按综合分降序,None 排后)+ search(`total`=匹配数);`/api/sector` 校验 `type:code`;`/api/stock` 两种 code 写法;每日快照仅在 `is_trading_time` 时 upsert;`volume_vs_yesterday` 与板块放量口径仅收盘后计算。
+**口径(规格 §8/§11):** `/api/sectors` 返回 top60(按综合分降序,None 排后)+ search(`total`=匹配数);`/api/sector` 校验 `type:code`;`/api/stock` 两种 code 写法;每日快照仅在 `is_trading_time` 时 upsert;`volume_vs_yesterday` 与板块放量口径仅收盘后计算。**板块评分降级口径(无成分股聚合):** 上涨家数占比=摘要上涨/(上涨+下跌),涨停占比恒 None(情绪子项归一化),领涨强度=摘要领涨股-涨跌幅,`data_complete` 恒 True。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1920,7 +1827,7 @@ def make_minute():
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     db = str(tmp_path / "api.db")
-    app = app_mod.create_app(db_path=db, start_builder=False)
+    app = app_mod.create_app(db_path=db)
     monkeypatch.setattr(ds, "get_market_spot", lambda: (make_spot(), False))
     monkeypatch.setattr(ds, "get_index_realtime", lambda: (
         [{"code": "sh000001", "name": "上证指数", "price": 3456.78, "change_pct": 0.45}], False))
@@ -1930,10 +1837,6 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(ds, "get_stock_minute", lambda c: (make_minute(), False))
     monkeypatch.setattr(ds, "get_stock_quote", lambda c: (make_quote(), False))
     monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
-    # 成分股映射:半导体 885887 含 600000/600519
-    store.save_component_map(db, "industry", "885887", ["600000", "600519"], "2026-08-10")
-    store.save_component_map(db, "industry", "885559", ["000001"], "2026-08-10")
-    store.reload_component_map(db)
     monkeypatch.setattr(an, "is_after_close", lambda now: True)   # 测试按收盘后口径
     monkeypatch.setattr(an, "is_trading_time", lambda now: True)
     app.config["TESTING"] = True
@@ -1974,8 +1877,6 @@ def test_sector_detail(client):
     d = body["data"]
     assert d["name"] == "半导体"
     assert d["index_history"][0]["date"].startswith("2026-")
-    comps = d["components"]
-    assert {c["code"] for c in comps} == {"600000", "600519"}
     assert d["scores"]["composite"] is None or 0 <= d["scores"]["composite"] <= 100
 
 
@@ -2009,7 +1910,7 @@ def test_stock_bad_param(client):
 
 def test_source_fail_returns_500(monkeypatch, tmp_path):
     db = str(tmp_path / "fail.db")
-    app = app_mod.create_app(db_path=db, start_builder=False)
+    app = app_mod.create_app(db_path=db)
     monkeypatch.setattr(ds, "get_market_spot",
                         lambda: (_ for _ in ()).throw(ds.DataSourceError("boom")))
     app.config["TESTING"] = True
@@ -2028,14 +1929,10 @@ Expected: FAIL(`create_app` 无这些路由)。
 
 ```python
 # -*- coding: utf-8 -*-
-"""A股三层分析看板 —— Flask 入口 + API 路由 + 后台成分股构建线程。"""
+"""A股三层分析看板 —— Flask 入口 + API 路由。"""
 import os
-import threading
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-import pandas as pd
 from flask import Flask, jsonify, render_template, request
 
 import analysis as an
@@ -2044,9 +1941,7 @@ import store
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = os.path.join(BASE_DIR, "data", "market.db")
-SECTOR_TYPES = ("industry", "concept")
-BUILDER_INTERVAL = 300  # 秒
-BUILDER_WORKERS = 8
+SECTOR_TYPES = ("industry",)
 
 
 def ok(data, stale=False):
@@ -2137,7 +2032,7 @@ def register_routes(app):
     def api_sectors():
         type_key = request.args.get("type", "industry")
         if type_key not in SECTOR_TYPES:
-            return err("BAD_PARAM", "type 必须为 industry 或 concept", 400)
+            return err("BAD_PARAM", "type 必须为 industry", 400)
         try:
             top = int(request.args.get("top", "60"))
         except ValueError:
@@ -2151,7 +2046,6 @@ def register_routes(app):
             return err("SOURCE_FAIL", str(e), 500)
         now = datetime.now()
         today = _today()
-        comp_map = store.get_component_map(db_path)
         market_turnover = float(spot["amount"].sum()) if len(spot) else 0.0
 
         # 计算当日 rank 并持久化(仅交易日);change_pct 可能为 None → _sort_key 排序
@@ -2167,14 +2061,16 @@ def register_routes(app):
             code = str(r["code"])
             chg = _num(r["change_pct"])
             turn = _num(r["turnover"])
-            comps = comp_map.get((type_key, code), set())
-            active = an.filter_active(spot[spot["code"].isin(comps)]) if comps else pd_empty()
-            data_complete = bool(comps)
-            up_ratio = float((active["change_pct"] > 0).mean()) if len(active) else None
-            limit_count = sum(1 for x in active.itertuples(index=False)
-                              if x.change_pct >= an.limit_threshold(x.code)) if len(active) else 0
-            limit_ratio = limit_count / len(active) if len(active) else None
-            leader_change = float(active["change_pct"].max()) if len(active) else None
+            # 降级口径(无成分股聚合):上涨家数占比取摘要上涨/(上涨+下跌);涨停占比无成分股数据恒 None
+            # (情绪子项走 _weighted 归一化);领涨强度取摘要领涨股-涨跌幅
+            up_count = _num(r["up_count"])
+            down_count = _num(r["down_count"])
+            up_ratio = None
+            if up_count is not None and down_count is not None and (up_count + down_count) > 0:
+                up_ratio = up_count / (up_count + down_count)
+            limit_ratio = None
+            leader_change = _num(r["leader_change_pct"])
+            data_complete = True
             turnover_ratio = None
             if an.is_after_close(now) and turn is not None:
                 avg5 = store.get_sector_turnover_avg(db_path, type_key, code, today, 5)
@@ -2220,20 +2116,19 @@ def register_routes(app):
             spot, _ = ds.get_market_spot()
         except ds.DataSourceError as e:
             return err("SOURCE_FAIL", str(e), 500)
-        comp_map = store.get_component_map(app.config["DB"])
-        comps = comp_map.get((type_key, code), set())
-        active = an.filter_active(spot[spot["code"].isin(comps)]) if comps else pd_empty()
         row = summary[summary["code"] == code]
         if row.empty:
             return err("BAD_PARAM", "未找到该板块", 400)
         r = row.iloc[0]
         chg = _num(r["change_pct"])
         turn = _num(r["turnover"])
-        up_ratio = float((active["change_pct"] > 0).mean()) if len(active) else None
-        limit_count = sum(1 for x in active.itertuples(index=False)
-                          if x.change_pct >= an.limit_threshold(x.code)) if len(active) else 0
-        limit_ratio = limit_count / len(active) if len(active) else None
-        leader_change = float(active["change_pct"].max()) if len(active) else None
+        up_count = _num(r["up_count"])
+        down_count = _num(r["down_count"])
+        up_ratio = None
+        if up_count is not None and down_count is not None and (up_count + down_count) > 0:
+            up_ratio = up_count / (up_count + down_count)
+        limit_ratio = None
+        leader_change = _num(r["leader_change_pct"])
         now = datetime.now()
         today = _today()
         turnover_ratio = None
@@ -2250,16 +2145,14 @@ def register_routes(app):
         strength = an.sector_strength(chg, consecutive, activity)
         risk = an.sector_risk(chg, change_3d, turnover_ratio, prev_change, up_ratio)
         composite = an.composite_score(strength, emotion, risk)
-        verdict = an.sector_verdict(emotion, strength, risk, consecutive, bool(comps))
+        verdict = an.sector_verdict(emotion, strength, risk, consecutive, True)
         hist_rows = [{"date": str(x["date"]), "open": float(x["open"]), "high": float(x["high"]),
                       "low": float(x["low"]), "close": float(x["close"]), "volume": float(x["volume"])}
                      for x in hist.itertuples(index=False)]
-        components = [{"code": str(x["code"]), "name": str(x["name"]), "price": float(x["price"]),
-                       "change_pct": float(x["change_pct"])} for x in active.itertuples(index=False)]
         return ok({"code": "%s:%s" % (type_key, code), "name": str(r["name"]),
                    "scores": {"emotion": emotion, "strength": strength, "risk": risk,
                               "composite": composite},
-                   "verdict": verdict, "index_history": hist_rows, "components": components})
+                   "verdict": verdict, "index_history": hist_rows})
 
     @app.route("/api/stock")
     def api_stock():
@@ -2286,51 +2179,12 @@ def register_routes(app):
                    "intraday": intraday})
 
 
-def pd_empty():
-    return pd.DataFrame({"code": [], "name": [], "price": [], "change_pct": [],
-                         "volume": [], "amount": []})
-
-
-# ---------- 后台成分股构建(规格 §5.2) ----------
-
-def build_one(db_path, type_key, code):
-    codes, _ = ds.get_sector_components(code, type_key)
-    store.save_component_map(db_path, type_key, code, codes, _today())
-
-
-def component_builder_loop(app):
-    db_path = app.config["DB"]
-    while True:
-        try:
-            known = []
-            for t in SECTOR_TYPES:
-                summary, _ = ds.get_sector_summary(t)
-                known.extend((t, str(c)) for c in summary["code"])
-            stale = store.get_stale_components(db_path, known, 5)
-            if stale:
-                with ThreadPoolExecutor(max_workers=BUILDER_WORKERS) as ex:
-                    futs = {ex.submit(build_one, db_path, t, c): (t, c) for t, c in stale}
-                    for fut in as_completed(futs):
-                        try:
-                            fut.result()
-                        except Exception as e:
-                            # 失败:保留旧 refreshed_date → 下轮自动重试;本轮该板块降级
-                            print("[builder] failed %s: %s" % (futs[fut], e))
-                store.reload_component_map(db_path)
-        except Exception as e:
-            print("[builder] round error: %s" % e)
-        time.sleep(BUILDER_INTERVAL)
-
-
-def create_app(db_path=None, start_builder=True):
+def create_app(db_path=None):
     app = Flask(__name__)
     app.config["DB"] = db_path or DEFAULT_DB
     os.makedirs(os.path.dirname(os.path.abspath(app.config["DB"])), exist_ok=True)
     store.init_db(app.config["DB"])
     register_routes(app)
-    if start_builder:
-        t = threading.Thread(target=component_builder_loop, args=(app,), daemon=True)
-        t.start()
     return app
 
 
@@ -2338,12 +2192,12 @@ if __name__ == "__main__":
     create_app().run(host="127.0.0.1", port=8000)
 ```
 
-注意:`app.py` 顶部已 `import pandas as pd`,`pd_empty()` 直接使用;summary 经 `.where(pd.notna(out), None)` 后 `change_pct/turnover` 可能为 None,循环内一律用 `_num()` 转换,排序用 `_sort_key`。
+注意:summary 经 `.where(pd.notna(out), None)` 后 `change_pct/turnover/up_count/down_count/leader_change_pct` 可能为 None,循环内一律用 `_num()` 转换,排序用 `_sort_key`。
 
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `cd /c/stock && python -m pytest tests/test_api.py -v`
-Expected: PASS。若 `test_sectors_search_and_composite` 中 `semi["data_complete"]` 依赖内存 map 已含映射(测试 fixture 已 `save_component_map`+`reload_component_map`,成立)。
+Expected: PASS。`semi["data_complete"]` 恒为 True(降级口径:无成分股聚合,不再依赖内存映射)。
 
 - [ ] **Step 5: 提交**
 
@@ -2386,7 +2240,6 @@ cd /c/stock && git add app.py tests/test_api.py && git -c user.name="stock-tool"
     <button id="btn-refresh" title="手动刷新">🔄 刷新</button>
     <label class="switch"><input type="checkbox" id="auto-refresh"><span>自动刷新(60s)</span></label>
     <span id="stale-flag" class="hidden">⚠️ 数据可能过期</span>
-    <span id="loading-flag" class="hidden">成分股数据加载中…</span>
   </div>
 </header>
 
@@ -2399,7 +2252,6 @@ cd /c/stock && git add app.py tests/test_api.py && git -c user.name="stock-tool"
   <section id="left" class="panel">
     <div class="tabs">
       <button class="tab active" data-type="industry">行业板块</button>
-      <button class="tab" data-type="concept">概念板块</button>
     </div>
     <div class="sector-tools">
       <input id="sector-search" placeholder="板块搜索,如 半导">
@@ -2420,7 +2272,6 @@ cd /c/stock && git add app.py tests/test_api.py && git -c user.name="stock-tool"
       <div id="detail-title" class="muted">点击左侧板块行,或输入股票代码查看个股</div>
       <div id="chart-sector" class="chart hidden"></div>
       <div id="sector-scores" class="score-cards hidden"></div>
-      <div id="comp-list" class="hidden"></div>
       <div id="chart-stock" class="chart hidden"></div>
       <div id="chart-intraday" class="chart hidden"></div>
       <div id="stock-scores" class="score-cards hidden"></div>
@@ -2544,21 +2395,15 @@ function scoreCell(v) { return v === null ? "…" : v.toFixed(0); }
 
 async function openSector(code) {
   state.current = { kind: "sector", code };
-  $("#loading-flag").classList.remove("hidden");
-  try {
-    const b = await api("/api/sector?code=" + encodeURIComponent(code));
-    $("#detail-title").classList.add("hidden");
-    $("#chart-sector").classList.remove("hidden");
-    $("#sector-scores").classList.remove("hidden");
-    $("#chart-stock").classList.add("hidden");
-    $("#chart-intraday").classList.add("hidden");
-    $("#stock-scores").classList.add("hidden");
-    renderSectorCharts(b.data);
-    renderSectorScores(b.data);
-    renderComponents(b.data.components, b.data.code);
-  } finally {
-    $("#loading-flag").classList.add("hidden");
-  }
+  const b = await api("/api/sector?code=" + encodeURIComponent(code));
+  $("#detail-title").classList.add("hidden");
+  $("#chart-sector").classList.remove("hidden");
+  $("#sector-scores").classList.remove("hidden");
+  $("#chart-stock").classList.add("hidden");
+  $("#chart-intraday").classList.add("hidden");
+  $("#stock-scores").classList.add("hidden");
+  renderSectorCharts(b.data);
+  renderSectorScores(b.data);
 }
 
 function renderSectorScores(d) {
@@ -2572,37 +2417,18 @@ function renderSectorScores(d) {
     `<div class="card"><div class="verdict">${d.verdict}</div></div>`;
 }
 
-function renderComponents(comps, code) {
-  const box = $("#comp-list");
-  box.classList.remove("hidden");
-  box.innerHTML = "<b>成分股(点击查看个股)</b><table><tbody>" +
-    comps.map((c) =>
-      `<tr class="sector-row" data-code="${c.code}">` +
-      `<td>${c.name}</td><td>${c.code}</td><td>${c.price}</td>` +
-      `<td class="${c.change_pct >= 0 ? "up" : "down"}">${fmtPct(c.change_pct)}</td></tr>`).join("") +
-    "</tbody></table>";
-  box.querySelectorAll("tr[data-code]").forEach((tr) =>
-    tr.addEventListener("click", () => openStock(tr.dataset.code)));
-}
-
 async function openStock(code) {
   state.current = { kind: "stock", code };
-  $("#loading-flag").classList.remove("hidden");
-  try {
-    const b = await api("/api/stock?code=" + encodeURIComponent(code));
-    $("#detail-title").classList.add("hidden");
-    $("#chart-sector").classList.add("hidden");
-    $("#sector-scores").classList.add("hidden");
-    $("#comp-list").classList.add("hidden");
-    $("#chart-stock").classList.remove("hidden");
-    $("#chart-intraday").classList.remove("hidden");
-    $("#stock-scores").classList.remove("hidden");
-    renderStockCharts(b.data);
-    renderStockScores(b.data);
-    $("#btn-wl-add").classList.remove("hidden");
-  } finally {
-    $("#loading-flag").classList.add("hidden");
-  }
+  const b = await api("/api/stock?code=" + encodeURIComponent(code));
+  $("#detail-title").classList.add("hidden");
+  $("#chart-sector").classList.add("hidden");
+  $("#sector-scores").classList.add("hidden");
+  $("#chart-stock").classList.remove("hidden");
+  $("#chart-intraday").classList.remove("hidden");
+  $("#stock-scores").classList.remove("hidden");
+  renderStockCharts(b.data);
+  renderStockScores(b.data);
+  $("#btn-wl-add").classList.remove("hidden");
 }
 
 function renderStockScores(d) {
@@ -2763,13 +2589,12 @@ refreshAll();
 Run: `cd /c/stock && python app.py`(后台起服务)→ 浏览器打开 `http://127.0.0.1:8000`
 Expected:
 1. 顶栏 + 大盘总览条(三大指数/涨跌平/涨停跌停/总成交额)显示。
-2. 板块榜单:行业/概念切换、按综合分排序、行内情绪/强度/风险/结论。
-3. 点板块行 → 右侧板块 K 线 + 三围分 + 综合分 + 结论 + 成分股表。
-4. 点成分股或搜代码 → 右侧个股日K+MA+成交量、分时图、量价评分卡。
+2. 板块榜单:行业板块、按综合分排序、行内情绪/强度/风险/结论。
+3. 点板块行 → 右侧板块 K 线 + 三围分 + 综合分 + 结论。
+4. 搜股票代码 → 右侧个股日K+MA+成交量、分时图、量价评分卡。
 5. 自选:加入自选 → localStorage 持久化,点击快速打开。
 6. 手动刷新、自动刷新开关。
-7. 后台构建期间顶栏显示"成分股数据加载中…",完成后自动刷新(手动点一次刷新验证)。
-8. 数据源故障时右上角"⚠️ 数据可能过期"(可临时停网验证或信任单测覆盖)。
+7. 数据源故障时右上角"⚠️ 数据可能过期"(可临时停网验证或信任单测覆盖)。
 > 验收时若 THS 板块成交额缺失导致情绪/强度显示 "…"(归一化降级),属预期行为。
 
 - [ ] **Step 5: 提交**
@@ -2815,7 +2640,7 @@ Expected: `/api/market` 返回 `ok:true` 且 breadth 有数;`/api/sectors` 返�
 - [ ] **Step 3: 性能抽检(规格 §13)**
 
 Run: 连续两次 `curl -s -o /dev/null -w "%{time_total}s\n" "http://127.0.0.1:8000/api/sectors?type=industry&top=60"`(第二次为缓存命中)
-Expected: 冷启动(首次)<30s(受快照主导);缓存命中后 <3s。全量板块打分(465 板块内存 join)<5s。
+Expected: 冷启动(首次)<30s(受快照主导);缓存命中后 <3s。全量板块打分(90 个行业板块)<2s。
 
 - [ ] **Step 4: 写 README.md**
 
@@ -2840,7 +2665,7 @@ python app.py         # 打开 http://127.0.0.1:8000
 ## 功能
 
 - **大盘总览**:三大指数、涨/跌/平家数、涨停/跌停、总成交额、量能较昨日(收盘后有效)。
-- **板块强弱**:行业/概念切换,情绪/强度/风险/综合分与结论(建议关注/跟踪/观望/谨慎追高/回避/一日游)。
+- **板块强弱**:行业板块榜(情绪/强度/风险/综合分与结论:建议关注/跟踪/观望/谨慎追高/回避/一日游)。
 - **个股量价**:日K+MA+成交量、分时(价格+均价+量)、趋势/量价/信号/风险分与结论。
 - **盘中可用**:个股量比按全日折算,盘中即可比;板块"成交额放量/放量滞涨"仅收盘后计算,盘中自动降级。
 - **刷新**:手动刷新 + 可选 60s 自动刷新;数据源故障时有过期提示并沿用旧数据。
@@ -2852,7 +2677,7 @@ python app.py         # 打开 http://127.0.0.1:8000
 ## 技术说明
 
 - 数据层 `data_source.py`:TTL 缓存(200 条上限,失败退避 30s×2^n 封顶 10min)。
-- 持久化 `store.py`:每日快照(盘中覆盖)、板块成交额近5日均值、成分股映射落库(5 交易日后台重建,并发 8)。
+- 持久化 `store.py`:每日快照(盘中覆盖)、板块成交额近5日均值。
 - 打分 `analysis.py`:口径见 `docs/superpowers/specs/2026-08-11-a-share-dashboard-design.md`(Rev.5)。
 - 测试:`python -m pytest tests/ -v`(mock 数据源,离线可跑)。
 ```
@@ -2870,13 +2695,11 @@ cd /c/stock && git add README.md && git -c user.name="stock-tool" -c user.email=
 | 规格要求 | 落地任务 |
 |---|---|
 | §2 数据源约束(避开东财/网易) | Task 1 验证、Task 4 实现只用新浪/腾讯/THS |
-| §2 风险项:同花顺成分股字段验证 | Task 1 Step 2 核对 |
+| §2 风险项:同花顺成分股字段验证 | Task 1(结论:无成分股接口 → 板块评分降级为摘要口径) |
 | §4 数据层 9 个函数 + TTL | Task 4(含返回 `(data, stale)` 契约) |
 | §4 代码表示 `type:code` / 个股双写法 | Task 4 `normalize_code/with_prefix`、Task 8 `_parse_sector_code/_parse_stock_code`、Task 9 搜索框 |
 | §5.1 每日快照 upsert/幂等/盘中覆盖 | Task 3、Task 8(仅 `is_trading_time` 写库) |
 | §5.1 盘中累计 vs EOD 原则(收盘后对比) | Task 8 `volume_vs_yesterday` 与 `turnover_ratio` 仅 `is_after_close`;测试 Task 6 `test_risk_voluptake_only_after_close` |
-| §5.2 成分股落库 + 5交易日重建 + 后台构建/限流8/失败重试 | Task 3 `get_stale_components`、Task 8 `component_builder_loop`(ThreadPoolExecutor 8) |
-| §5.2 独立内存 map(不占 200 缓存) | Task 3 `_maps` 独立 dict |
 | §6.1 大盘总览无情绪结论 | Task 8 `/api/market` 只给 breadth |
 | §6.2 板块三围分 + 阈值 + 结论优先级 1-6 + 综合分 | Task 6(含 C5' 谨慎追高、M2 单/双风险信号) |
 | §6.3 个股四维分 + 合成 + 风险≥70 重大 | Task 7 |
@@ -2886,7 +2709,7 @@ cd /c/stock && git add README.md && git -c user.name="stock-tool" -c user.email=
 | §8 400/500 三态 + search total 语义 | Task 8 `test_sector_bad_param/test_source_fail_returns_500/test_sectors_search_and_composite` |
 | §9 缓存(200 上限/锁/失败退避) | Task 4 `TTLCache` |
 | §10 错误处理(15s 超时/重试 1 次/stale 回退) | Task 4 `_fetch_with_retry/_cached`、Task 8 错误契约 |
-| §11 前端布局与交互 1-7 | Task 9(含自选 localStorage、自动刷新、加载中提示) |
+| §11 前端布局与交互 1-7 | Task 9(含自选 localStorage、自动刷新) |
 | §12 测试矩阵(量比折算/持久化/API/性能) | Task 3-8 测试 + Task 10 验收 |
 | §13 验收性能(冷启动<30s/缓存<3s/板块打分<5s) | Task 10 Step 3 |
 | §14 L1/L2(install.py 命名、版本 pin) | Task 2 |
