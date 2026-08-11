@@ -130,38 +130,17 @@ def register_routes(app):
         for _, r in summary.iterrows():
             code = str(r["code"])
             chg = _num(r["change_pct"])
-            turn = _num(r["turnover"])
-            # 降级口径(无成分股聚合):上涨家数占比取摘要上涨/(上涨+下跌);涨停占比无成分股数据恒 None
-            # (情绪子项走 _weighted 归一化);领涨强度取摘要领涨股-涨跌幅
-            up_count = _num(r["up_count"])
-            down_count = _num(r["down_count"])
-            up_ratio = None
-            if up_count is not None and down_count is not None and (up_count + down_count) > 0:
-                up_ratio = up_count / (up_count + down_count)
-            limit_ratio = None
-            leader_change = _num(r["leader_change_pct"])
-            data_complete = True
-            turnover_ratio = None
-            if an.is_after_close(now) and turn is not None:
-                avg5 = store.get_sector_turnover_avg(db_path, type_key, code, today, 5)
-                if avg5 and avg5 > 0:
-                    turnover_ratio = turn / float(avg5)
-            prev_change = store.get_sector_prev_change(db_path, type_key, code, today)
-            change_3d = store.get_sector_change_3d(db_path, type_key, code, today)
-            activity = (turn / market_turnover) if (turn is not None and market_turnover) else None
-            consecutive = store.get_consecutive_days(db_path, type_key, code, today, 20)
-
-            emotion = an.sector_emotion(up_ratio, limit_ratio, turnover_ratio, leader_change)
-            strength = an.sector_strength(chg, consecutive, activity)
-            risk = an.sector_risk(chg, change_3d, turnover_ratio, prev_change, up_ratio)
-            composite = an.composite_score(strength, emotion, risk)
-            verdict = an.sector_verdict(emotion, strength, risk, consecutive, data_complete)
+            scores = an.collect_sector_metrics(
+                db_path, type_key, code, chg, _num(r["turnover"]),
+                _num(r["up_count"]), _num(r["down_count"]), _num(r["leader_change_pct"]),
+                store, market_turnover, now, True)
             rows.append({
                 "code": "%s:%s" % (type_key, code), "name": str(r["name"]),
                 "index_change_pct": chg,
-                "emotion_score": emotion, "strength_score": strength, "risk_score": risk,
-                "composite_score": composite, "verdict": verdict,
-                "consecutive_days": consecutive, "data_complete": data_complete,
+                "emotion_score": scores["emotion"], "strength_score": scores["strength"],
+                "risk_score": scores["risk"], "composite_score": scores["composite"],
+                "verdict": scores["verdict"], "consecutive_days": scores["consecutive_days"],
+                "data_complete": True,
             })
 
         if search:
@@ -191,37 +170,19 @@ def register_routes(app):
             return err("BAD_PARAM", "未找到该板块", 400)
         r = row.iloc[0]
         chg = _num(r["change_pct"])
-        turn = _num(r["turnover"])
-        up_count = _num(r["up_count"])
-        down_count = _num(r["down_count"])
-        up_ratio = None
-        if up_count is not None and down_count is not None and (up_count + down_count) > 0:
-            up_ratio = up_count / (up_count + down_count)
-        limit_ratio = None
-        leader_change = _num(r["leader_change_pct"])
         now = datetime.now()
-        today = _today()
-        turnover_ratio = None
-        if an.is_after_close(now) and turn is not None:
-            avg5 = store.get_sector_turnover_avg(app.config["DB"], type_key, code, today, 5)
-            if avg5 and avg5 > 0:
-                turnover_ratio = turn / float(avg5)
-        prev_change = store.get_sector_prev_change(app.config["DB"], type_key, code, today)
-        change_3d = store.get_sector_change_3d(app.config["DB"], type_key, code, today)
-        consecutive = store.get_consecutive_days(app.config["DB"], type_key, code, today, 20)
         market_turnover = float(spot["amount"].sum()) if len(spot) else 0.0
-        activity = (turn / market_turnover) if (turn is not None and market_turnover) else None
-        emotion = an.sector_emotion(up_ratio, limit_ratio, turnover_ratio, leader_change)
-        strength = an.sector_strength(chg, consecutive, activity)
-        risk = an.sector_risk(chg, change_3d, turnover_ratio, prev_change, up_ratio)
-        composite = an.composite_score(strength, emotion, risk)
-        verdict = an.sector_verdict(emotion, strength, risk, consecutive, True)
+        scores = an.collect_sector_metrics(
+            app.config["DB"], type_key, code, chg, _num(r["turnover"]),
+            _num(r["up_count"]), _num(r["down_count"]), _num(r["leader_change_pct"]),
+            store, market_turnover, now, True)
+        verdict = scores["verdict"]
         hist_rows = [{"date": str(x["date"]), "open": float(x["open"]), "high": float(x["high"]),
                       "low": float(x["low"]), "close": float(x["close"]), "volume": float(x["volume"])}
                      for x in hist.to_dict("records")]
         return ok({"code": "%s:%s" % (type_key, code), "name": str(r["name"]),
-                   "scores": {"emotion": emotion, "strength": strength, "risk": risk,
-                              "composite": composite},
+                   "scores": {"emotion": scores["emotion"], "strength": scores["strength"],
+                              "risk": scores["risk"], "composite": scores["composite"]},
                    "verdict": verdict, "index_history": hist_rows},
                   stale=stale1 or stale2 or stale3)
 

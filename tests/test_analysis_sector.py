@@ -77,3 +77,57 @@ def test_composite_arithmetic():
     assert an.composite_score(82, 78, 55) == pytest.approx(71.35)
     # 任一维度缺失 → None
     assert an.composite_score(None, 78, 55) is None
+
+
+class FakeStore:
+    """最小 store_ctx:无历史 → 各 getter 返回 None;consecutive 固定 2(模拟已连续上榜 ≥2 天)。"""
+    def get_sector_turnover_avg(self, db, t, c, d, days=5): return None
+    def get_sector_prev_change(self, db, t, c, d): return None
+    def get_sector_change_3d(self, db, t, c, d): return None
+    def get_consecutive_days(self, db, t, c, d, top_n=20): return 2
+
+
+def test_score_sector_composes_five():
+    # 与单函数口径一致:emotion/strength 全高、risk 0 → 建议关注
+    r = an.score_sector({
+        "change_pct": 5.0, "up_ratio": 0.9, "limit_ratio": None,
+        "leader_change_pct": 5.0, "turnover_ratio": None,
+        "consecutive_days": 2, "activity": 0.03,
+        "change_3d": None, "prev_change": None, "data_complete": True,
+    })
+    # emotion: up 90(40) + leader 100(15),limit/turnover 缺失 → 权重归一化到 55
+    assert r["emotion"] == pytest.approx((90 * 40 + 100 * 15) / 55)
+    # strength: 指数5%→100(40) + 连续2天→50(30) + 活跃3%→100(30)
+    assert r["strength"] == pytest.approx((100 * 40 + 50 * 30 + 100 * 30) / 100)
+    assert r["risk"] == pytest.approx(0)                    # 5.0 非 >5,无前日/3d/turnover_ratio
+    assert r["composite"] == pytest.approx(91.45)           # round(0.4*85 + 0.35*92.73 + 0.25*100, 2)
+    assert r["verdict"] == "建议关注"
+
+
+def test_collect_sector_metrics_full_pipeline():
+    import datetime
+    now = datetime.datetime(2026, 8, 11, 15, 0)
+    # 无历史:turnover_ratio=None, prev=None, 3d=None;consecutive=2(FakeStore)
+    r = an.collect_sector_metrics(
+        ":db:", "industry", "885887", 5.0, 1e10, 90.0, 5.0, 5.0,
+        FakeStore(), 1e12, now)
+    assert set(r) == {"emotion", "strength", "risk", "composite", "verdict", "consecutive_days"}
+    assert r["consecutive_days"] == 2
+    # up 94.7% → 情绪 96.17;强度=(100*40+50*30+33.3*30)/100=65 ≥ 60 → P3 建议关注;risk 0
+    assert r["verdict"] == "建议关注"
+
+
+def test_collect_sector_metrics_after_close_uses_turnover_ratio():
+    import datetime
+    now = datetime.datetime(2026, 8, 11, 15, 0)
+
+    class StoreWithHistory(FakeStore):
+        def get_sector_turnover_avg(self, db, t, c, d, days=5): return 5e9
+
+    r = an.collect_sector_metrics(
+        ":db:", "industry", "885887", 0.5, 1e10, 50.0, 50.0, 1.0,
+        StoreWithHistory(), 1e12, now)
+    # 收盘后 turnover=1e10 / avg5=5e9 → turnover_ratio=2.0,计入情绪
+    assert r["emotion"] == pytest.approx((50 * 40 + 100 * 25 + 20 * 15) / 80)  # 60.0
+    # prev=None → 放量滞涨分支需 prev_change,不触发;指数涨0.5<5 → risk 0
+    assert r["risk"] == pytest.approx(0)

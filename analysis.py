@@ -182,6 +182,49 @@ def composite_score(strength, emotion, risk):
     return round(0.4 * strength + 0.35 * emotion + 0.25 * (100 - risk), 2)
 
 
+def score_sector(metrics):
+    """板块打分唯一入口:组合 emotion/strength/risk/composite/verdict。
+    metrics 键见接口说明;与旧 app 路由内联口径完全一致。"""
+    emotion = sector_emotion(metrics["up_ratio"], metrics["limit_ratio"],
+                             metrics["turnover_ratio"], metrics["leader_change_pct"])
+    strength = sector_strength(metrics["change_pct"], metrics["consecutive_days"],
+                               metrics["activity"])
+    risk = sector_risk(metrics["change_pct"], metrics["change_3d"],
+                       metrics["turnover_ratio"], metrics["prev_change"], metrics["up_ratio"])
+    composite = composite_score(strength, emotion, risk)
+    verdict = sector_verdict(emotion, strength, risk, metrics["consecutive_days"],
+                             metrics["data_complete"])
+    return {"emotion": emotion, "strength": strength, "risk": risk,
+            "composite": composite, "verdict": verdict}
+
+
+def collect_sector_metrics(db, type_key, code, change_pct, turnover, up_count, down_count,
+                           leader_change_pct, store_ctx, market_turnover, now, data_complete=True):
+    """summary 行 + store 历史 + 市场成交额 → 打分输入 → 五维结果 + consecutive。
+    与旧 api_sectors/api_sector 内联逻辑逐字段一致:limit_ratio 恒 None(无成分股聚合)。"""
+    up_ratio = None
+    if up_count is not None and down_count is not None and (up_count + down_count) > 0:
+        up_ratio = up_count / (up_count + down_count)
+    today = now.strftime("%Y-%m-%d")
+    turnover_ratio = None
+    if is_after_close(now) and turnover is not None:
+        avg5 = store_ctx.get_sector_turnover_avg(db, type_key, code, today, 5)
+        if avg5 and avg5 > 0:
+            turnover_ratio = turnover / float(avg5)
+    prev_change = store_ctx.get_sector_prev_change(db, type_key, code, today)
+    change_3d = store_ctx.get_sector_change_3d(db, type_key, code, today)
+    consecutive = store_ctx.get_consecutive_days(db, type_key, code, today, 20)
+    activity = (turnover / market_turnover) if (turnover is not None and market_turnover) else None
+    scores = score_sector({
+        "change_pct": change_pct, "up_ratio": up_ratio, "limit_ratio": None,
+        "leader_change_pct": leader_change_pct, "turnover_ratio": turnover_ratio,
+        "consecutive_days": consecutive, "activity": activity,
+        "change_3d": change_3d, "prev_change": prev_change, "data_complete": data_complete,
+    })
+    scores["consecutive_days"] = consecutive
+    return scores
+
+
 # ---- 个股量价打分(规格 §6.3/§7) ----
 
 def compute_trend_score(daily_df):
