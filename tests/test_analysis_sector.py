@@ -64,6 +64,8 @@ def test_verdict_rule4_5_6():
     assert an.sector_verdict(75, 55, 20, 2, True) == "跟踪(热点延续)"
     # P5:情绪高 + 强度中/低 + 连续=1 + data_complete → 警惕一日游
     assert an.sector_verdict(75, 55, 20, 1, True) == "警惕一日游"
+    # 强度=低(30<35)同样触发 P5(规格"中/低",最终评审修复项)
+    assert an.sector_verdict(75, 30, 20, 1, True) == "警惕一日游"
     # 冷启动 day1:data_complete=False → 不触发一日游 → 观望
     assert an.sector_verdict(75, 55, 20, 1, False) == "观望"
     # P6 其余 → 观望

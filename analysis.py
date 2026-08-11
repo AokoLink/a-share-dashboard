@@ -171,8 +171,8 @@ def sector_verdict(emotion, strength, risk, consecutive_days, data_complete):
         return "建议关注"                                        # P3
     if e_hi and s_mid and not s_hi and consecutive_days >= 2 and not r_hi:
         return "跟踪(热点延续)"                                  # P4
-    if e_hi and s_mid and consecutive_days == 1 and data_complete and not r_hi:
-        return "警惕一日游"                                      # P5
+    if e_hi and strength is not None and consecutive_days == 1 and data_complete and not r_hi:
+        return "警惕一日游"                                      # P5 强度=中/低(非高即 P3 分流,高风险低强度已被 P1/P2 分流)
     return "观望"                                                # P6
 
 
