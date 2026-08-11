@@ -207,3 +207,57 @@ def test_new_stocks_not_cached_on_failure(monkeypatch):
     assert ds.get_new_stocks() == set()          # 失败 → 空集
     assert ds.get_new_stocks() == set()          # 且不缓存:再次调用仍重试
     assert calls["n"] == 4                       # 2 次调用 × _fetch_with_retry 内部重试 1 次
+
+
+def _mock_sina_spot(monkeypatch):
+    rows = [{"label": label, "name": name} for label, name in ds.SECTOR_CONS_EXPECTED.items()]
+    df = pd.DataFrame(rows)
+    df["公司家数"] = 1; df["涨跌额"] = 0.0; df["涨跌幅"] = 1.0
+    df["总成交量"] = 1; df["总成交额"] = 1.0; df["股票代码"] = "a"
+    df["领涨股-涨跌幅"] = 1.0; df["领涨股-当前价"] = 1.0; df["领涨股"] = "a"
+    monkeypatch.setattr(ds._ak, "stock_sector_spot", lambda indicator: df)
+
+
+def test_constituents_manual_mapping(monkeypatch):
+    _mock_sina_spot(monkeypatch)
+    ds.cache._data.clear()
+    monkeypatch.setattr(ds._ak, "stock_sector_detail",
+                        lambda sector: pd.DataFrame({"symbol": ["sh600050", "sh600100"],
+                                                     "code": ["600050", "600100"],
+                                                     "name": ["中国联通", "同方股份"]}))
+    res = ds.resolve_sector_constituents("半导体")      # SECTOR_CONS_MAP 应含 半导体→new_dzxx
+    assert res["ok"] is True
+    assert res["match_type"] == "manual"
+    assert res["codes"] == ["600050", "600100"]
+    assert res["source_name"] == "电子信息"
+
+
+def test_constituents_no_mapping_and_ambiguous(monkeypatch):
+    _mock_sina_spot(monkeypatch)
+    ds.cache._data.clear()
+    assert ds.resolve_sector_constituents("绝对不存在的板块")["reason"] == "no_mapping"
+    # 关键词兜底:双向包含命中但多命中 → ambiguous(不静默取第一个)
+    label_to_name = {"new_dzxx": "电子信息", "new_dzqj": "电子器件"}
+    assert ds._keyword_lookup("电子", label_to_name) == ("new_dzxx", True)
+
+
+def test_validate_sector_map_detects_stale_and_renamed(monkeypatch):
+    _mock_sina_spot(monkeypatch)
+    ds.cache._data.clear()
+    # 临时替换常量,验证检测逻辑(不改动正式常量)
+    monkeypatch.setattr(ds, "SECTOR_CONS_MAP", {"半导体": "new_dzxx", "坏映射": "new_xxxx"})
+    monkeypatch.setattr(ds, "SECTOR_CONS_EXPECTED", {"new_dzxx": "电子信息", "new_xxxx": "旧名"})
+    h = ds.validate_sector_map()
+    assert h["ok"] is True and h["total"] == 2 and h["valid"] == 1
+    assert h["stale"] == [{"ths": "坏映射", "label": "new_xxxx"}]
+    assert h["renamed"] == []                            # new_dzxx 名未变
+    monkeypatch.setattr(ds, "SECTOR_CONS_EXPECTED", {"new_dzxx": "旧名"})
+    h2 = ds.validate_sector_map()
+    assert h2["renamed"][0]["ths"] == "半导体" and h2["renamed"][0]["actual"] == "电子信息"
+
+
+def test_constituents_map_keys_values_valid(monkeypatch):
+    _mock_sina_spot(monkeypatch)
+    assert all(isinstance(k, str) and k for k in ds.SECTOR_CONS_MAP)
+    # 每个映射 value 都必须是有效新浪 label(与 SECTOR_CONS_EXPECTED 全集一致)
+    assert set(ds.SECTOR_CONS_MAP.values()) <= set(ds.SECTOR_CONS_EXPECTED)

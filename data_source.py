@@ -61,6 +61,40 @@ def _key(func_name, *params):
     return "%s:%s" % (func_name, sorted(str(p) for p in params))
 
 
+# ---- 推荐:THS 板块 → 新浪行业成分股 映射(规格 §5) ----
+# 新浪为旧分类(49 板块),仅收录有清晰对应的 THS 板块;未覆盖板块由上层标记 no_mapping。
+SECTOR_CONS_MAP = {
+    "白酒": "new_ljhy", "白色家电": "new_jdhy", "黑色家电": "new_jdhy", "小家电": "new_jdhy",
+    "电力": "new_dlhy", "房地产": "new_fdc", "钢铁": "new_gthy",
+    "服装家纺": "new_fzxl", "纺织制造": "new_fzhy",
+    "环保设备": "new_hbhy", "环境治理": "new_hbhy",
+    "建筑材料": "new_jzjc", "建筑装饰": "new_jzjc",
+    "旅游及酒店": "new_jdly", "煤炭开采加工": "new_mthy",
+    "农化制品": "new_nyhf", "汽车整车": "new_qczz", "汽车零部件": "new_qczz",
+    "燃气": "new_gsgq", "塑料制品": "new_slzp", "食品加工制造": "new_sphy",
+    "石油加工贸易": "new_syhy", "有色金属": "new_ysjs", "贵金属": "new_ysjs",
+    "造纸": "new_zzhy", "医疗器械": "new_ylqx", "生物制品": "new_swzz",
+    "半导体": "new_dzxx", "消费电子": "new_dzxx", "通信设备": "new_dzxx",
+    "计算机设备": "new_dzxx", "软件开发": "new_dzxx",
+    "光学光电子": "new_dzqj", "元件": "new_dzqj",
+    "工程机械": "new_jxhy", "通用设备": "new_jxhy", "专用设备": "new_jxhy",
+}
+SECTOR_CONS_EXPECTED = {   # label → 预期新浪名,启动校验检测改名漂移
+    "new_ljhy": "酿酒行业", "new_jdhy": "家电行业", "new_dlhy": "电力行业",
+    "new_fdc": "房地产", "new_gthy": "钢铁行业", "new_fzxl": "服装鞋类",
+    "new_fzhy": "纺织行业", "new_hbhy": "环保行业", "new_jzjc": "建筑建材",
+    "new_jdly": "酒店旅游", "new_mthy": "煤炭行业", "new_nyhf": "农药化肥",
+    "new_qczz": "汽车制造", "new_gsgq": "供水供气", "new_slzp": "塑料制品",
+    "new_sphy": "食品行业", "new_syhy": "石油行业", "new_ysjs": "有色金属",
+    "new_zzhy": "造纸行业", "new_ylqx": "医疗器械", "new_swzz": "生物制药",
+    "new_dzxx": "电子信息", "new_dzqj": "电子器件", "new_jxhy": "机械行业",
+}
+SECTOR_KEYWORDS = {          # THS 名 → 可接受的新浪行业名(同义词兜底,仅高置信)
+    "半导体": ["电子信息", "电子器件"],
+    "白酒": ["酿酒行业"],
+}
+
+
 def _set_updated():
     global last_updated_at
     last_updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -253,6 +287,78 @@ def get_new_stocks():
         return data
     except Exception:
         return val if val is not None else set()
+
+
+def _sina_industry_names():
+    """新浪行业 spot:label→name 对照,缓存 1800s。"""
+    def fetch():
+        raw = _ak.stock_sector_spot(indicator="新浪行业")
+        return {str(r["label"]): str(r["name"]) for _, r in raw.iterrows()}
+    return _cached(_key("sina_industry_names"), 1800, lambda: _fetch_with_retry(fetch))
+
+
+def _fetch_sina_constituents(label):
+    """新浪板块成分股 → 6 位代码列表,缓存 1800s。"""
+    def fetch():
+        raw = _ak.stock_sector_detail(sector=label)
+        codes = _pick(raw, "code", "symbol").astype(str).map(normalize_code).tolist()
+        return [c for c in codes if c.isdigit()]
+    return _cached(_key("sector_cons", label), 1800, lambda: _fetch_with_retry(fetch))
+
+
+def _keyword_lookup(ths_name, label_to_name):
+    """关键词兜底:双向包含 + SECTOR_KEYWORDS 同义词语料。→ (label, ambiguous) | None。"""
+    cands = []
+    for label, name in label_to_name.items():
+        if ths_name in name or name in ths_name:
+            cands.append(label)
+        elif ths_name in SECTOR_KEYWORDS and name in SECTOR_KEYWORDS[ths_name]:
+            cands.append(label)
+    if not cands:
+        return None
+    uniq = list(dict.fromkeys(cands))
+    return uniq[0], len(uniq) > 1
+
+
+def resolve_sector_constituents(ths_name):
+    """板块名 → 成分股(手动表 → 关键词兜底)。失败原因 no_mapping/ambiguous;网络失败抛异常。"""
+    label = SECTOR_CONS_MAP.get(ths_name)
+    if label is not None:
+        codes, _ = _fetch_sina_constituents(label)
+        names, _ = _sina_industry_names()
+        return {"ok": True, "codes": codes, "match_type": "manual",
+                "source_name": names.get(label, label)}
+    names, _ = _sina_industry_names()
+    hit = _keyword_lookup(ths_name, names)
+    if hit is None:
+        return {"ok": False, "reason": "no_mapping"}
+    label, ambiguous = hit
+    if ambiguous:
+        return {"ok": False, "reason": "ambiguous"}
+    codes, _ = _fetch_sina_constituents(label)
+    return {"ok": True, "codes": codes, "match_type": "keyword",
+            "source_name": names.get(label, label)}
+
+
+def validate_sector_map():
+    """启动校验:手动映射的每个新浪 label 是否仍存在、名称是否漂移。失败不阻塞,仅返回报告。"""
+    try:
+        names, _ = _sina_industry_names()
+    except Exception as e:
+        return {"ok": False, "error": str(e), "total": 0, "valid": 0,
+                "stale": [], "renamed": []}
+    stale, renamed = [], []
+    for ths, label in SECTOR_CONS_MAP.items():
+        if label not in names:
+            stale.append({"ths": ths, "label": label})
+        else:
+            expected = SECTOR_CONS_EXPECTED.get(label)
+            if expected and names[label] != expected:
+                renamed.append({"ths": ths, "label": label,
+                                "expected": expected, "actual": names[label]})
+    return {"ok": True, "total": len(SECTOR_CONS_MAP),
+            "valid": len(SECTOR_CONS_MAP) - len(stale),
+            "stale": stale, "renamed": renamed}
 
 
 # ---------- 同花顺 ----------
