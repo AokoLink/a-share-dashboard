@@ -115,6 +115,35 @@ def test_sector_detail(client):
     assert d["name"] == "半导体"
     assert d["index_history"][0]["date"].startswith("2026-")
     assert d["scores"]["composite"] is None or 0 <= d["scores"]["composite"] <= 100
+    assert d["leaders_status"] == "ok"
+    # fixture resolve → 600519/600000,均在 spot;600519 金额最大(9.2e8)→ 龙头池首位
+    assert d["leaders"][0]["code"] == "600519"
+    assert d["leaders"][0]["tag"] == "龙头+强势"
+    assert "price" in d["leaders"][0] and "change_pct" in d["leaders"][0]
+    assert d["leaders_source"] == "电子信息"
+
+
+def test_api_sector_leaders_no_mapping(client, monkeypatch):
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": False, "reason": "no_mapping"})
+    r = client.get("/api/sector?code=industry:885887")
+    d = r.get_json()["data"]
+    assert d["leaders"] == []
+    assert d["leaders_status"] == "no_mapping"
+    assert d["leaders_source"] is None
+    assert d["index_history"]                     # 板块图表不阻塞
+
+
+def test_api_sector_leaders_source_fail(client, monkeypatch):
+    def boom(name):
+        raise ds.DataSourceError("network down")
+    monkeypatch.setattr(ds, "resolve_sector_constituents", boom)
+    r = client.get("/api/sector?code=industry:885887")
+    d = r.get_json()["data"]
+    assert r.status_code == 200
+    assert d["leaders"] == []
+    assert d["leaders_status"] == "source_fail"
+    assert d["index_history"]                     # 核心视图仍正常
 
 
 def test_sector_bad_param(client):

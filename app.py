@@ -183,10 +183,26 @@ def register_routes(app):
         hist_rows = [{"date": str(x["date"]), "open": float(x["open"]), "high": float(x["high"]),
                       "low": float(x["low"]), "close": float(x["close"]), "volume": float(x["volume"])}
                      for x in hist.to_dict("records")]
+        leaders, leaders_status, leaders_source = [], "ok", None
+        try:
+            res = ds.resolve_sector_constituents(str(r["name"]))
+        except Exception:
+            leaders_status = "source_fail"
+        else:
+            if not res["ok"]:
+                leaders_status = res["reason"]            # no_mapping | ambiguous
+            else:
+                spot_index = {str(x["code"]): x for x in spot.to_dict("records")}
+                rows = [spot_index[c] for c in res["codes"] if c in spot_index]
+                leaders = recommend.pick_leaders(rows, total=5,
+                                                 exclude_codes=ds.get_new_stocks())
+                leaders_source = res.get("source_name")
         return ok({"code": "%s:%s" % (type_key, code), "name": str(r["name"]),
                    "scores": {"emotion": scores["emotion"], "strength": scores["strength"],
                               "risk": scores["risk"], "composite": scores["composite"]},
-                   "verdict": verdict, "index_history": hist_rows},
+                   "verdict": verdict, "index_history": hist_rows,
+                   "leaders": leaders, "leaders_status": leaders_status,
+                   "leaders_source": leaders_source},
                   stale=stale1 or stale2 or stale3)
 
     @app.route("/api/stock")
