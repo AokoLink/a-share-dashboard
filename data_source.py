@@ -239,7 +239,7 @@ def get_new_stocks():
     """上市≤5交易日的股票(尽力而为):取最近新股列表;接口不可用 → 空集。"""
     try:
         raw = _ak.stock_zh_a_new()
-        codes = raw["代码"].map(normalize_code).tolist() if "代码" in raw.columns else []
+        codes = _pick(raw, "代码", "code").map(normalize_code).tolist()
         return set(codes)
     except Exception:
         return set()

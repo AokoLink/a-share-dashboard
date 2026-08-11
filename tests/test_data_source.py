@@ -147,3 +147,16 @@ def test_stock_minute_normalized(monkeypatch):
     df, _ = ds.get_stock_minute("sh600519")
     assert list(df["time"]) == ["10:00", "10:01"]
     assert list(df["avg"]) == pytest.approx([1.6e7 / 12000, 2.27e7 / 17000])
+
+
+def test_new_stocks_english_column(monkeypatch):
+    # akshare 1.18.84 的 stock_zh_a_new() 返回英文列(无“代码”列),须能经 code 列归一化
+    raw = pd.DataFrame({
+        "symbol": ["bj920000", "sh688001"],
+        "code": ["920000", "688001"],
+        "name": ["A", "B"], "open": [1.0, 2.0], "high": [1.1, 2.1],
+        "low": [0.9, 1.9], "volume": [100, 200], "amount": [1e5, 2e5],
+        "mktcap": [1e8, 2e8], "turnoverratio": [1.0, 2.0],
+    })
+    monkeypatch.setattr(ds._ak, "stock_zh_a_new", lambda: raw)
+    assert ds.get_new_stocks() == {"920000", "688001"}
