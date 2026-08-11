@@ -1382,10 +1382,10 @@ def test_verdict_rule4_5_6():
 
 
 def test_composite_arithmetic():
-    # 规格 §8 校验:0.4*82 + 0.35*78 + 0.25*45 = 71.35
-    assert an.composite_score(82, 78, 45) == pytest.approx(71.35)
+    # 规格 §8 校验:0.4*82 + 0.35*78 + 0.25*(100-55) = 71.35(综合分=0.4强度+0.35情绪+0.25×(100−风险);规格示例 risk=55)
+    assert an.composite_score(82, 78, 55) == pytest.approx(71.35)
     # 任一维度缺失 → None
-    assert an.composite_score(None, 78, 45) is None
+    assert an.composite_score(None, 78, 55) is None
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -1747,7 +1747,7 @@ cd /c/stock && git add analysis.py tests/test_analysis_stock.py && git -c user.n
 
 ---
 
-### Task 8: API 层 app.py(路由 + 后台构建线程)
+### Task 8: API 层 app.py(契约路由 + 错误处理)
 
 **Files:**
 - Create: `app.py`(覆盖 Task 2 骨架)
@@ -2201,7 +2201,7 @@ Expected: PASS。`semi["data_complete"]` 恒为 True(降级口径:无成分股�
 - [ ] **Step 5: 提交**
 
 ```bash
-cd /c/stock && git add app.py tests/test_api.py && git -c user.name="stock-tool" -c user.email="stock-tool@local" commit -m "feat: API 层 app.py(契约路由/错误处理/后台构建线程)"
+cd /c/stock && git add app.py tests/test_api.py && git -c user.name="stock-tool" -c user.email="stock-tool@local" commit -m "feat: API 层 app.py(契约路由/错误处理)"
 ```
 
 ---
