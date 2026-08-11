@@ -2353,7 +2353,6 @@ tr.sector-row:hover { background: var(--bg); }
 .verdict { font-weight: 700; font-size: 15px; }
 #watchlist { display: flex; gap: 10px; align-items: center; }
 .wl-item { cursor: pointer; padding: 2px 8px; border: 1px solid var(--line); border-radius: 20px; }
-#comp-list table td { font-size: 13px; }
 ```
 
 - [ ] **Step 3: 写 app.js(核心逻辑,交互 1-7)**
