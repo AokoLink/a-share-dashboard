@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A股三层分析看板</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/echarts.min.js"></script>
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">📈 A股三层分析看板</div>
+  <div class="top-actions">
+    <span id="updated" class="muted">—</span>
+    <button id="btn-refresh" title="手动刷新">🔄 刷新</button>
+    <label class="switch"><input type="checkbox" id="auto-refresh"><span>自动刷新(60s)</span></label>
+    <span id="stale-flag" class="hidden">⚠️ 数据可能过期</span>
+  </div>
+</header>
+
+<section id="market-bar" class="panel">
+  <div id="indices" class="indices"></div>
+  <div id="breadth" class="breadth"></div>
+</section>
+
+<main id="layout">
+  <section id="left" class="panel">
+    <div class="tabs">
+      <button class="tab active" data-type="industry">行业板块</button>
+    </div>
+    <div class="sector-tools">
+      <input id="sector-search" placeholder="板块搜索,如 半导">
+      <button id="btn-sector-search">搜索</button>
+    </div>
+    <table id="sector-table">
+      <thead><tr><th>板块</th><th>涨幅%</th><th>情绪</th><th>强度</th><th>风险</th><th>综合</th><th>结论</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section id="right" class="panel">
+    <div class="stock-tools">
+      <input id="stock-search" placeholder="股票代码,如 600519 或 sh600519">
+      <button id="btn-stock">查询</button>
+    </div>
+    <div id="detail">
+      <div id="detail-title" class="muted">点击左侧板块行,或输入股票代码查看个股</div>
+      <div id="chart-sector" class="chart hidden"></div>
+      <div id="sector-scores" class="score-cards hidden"></div>
+      <div id="chart-stock" class="chart hidden"></div>
+      <div id="chart-intraday" class="chart hidden"></div>
+      <div id="stock-scores" class="score-cards hidden"></div>
+    </div>
+  </section>
+</main>
+
+<footer id="watchlist">
+  <span class="wl-label">⭐ 自选:</span>
+  <span id="wl-items"></span>
+  <button id="btn-wl-add" class="hidden">加入自选</button>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

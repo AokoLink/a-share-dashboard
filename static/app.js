@@ -1,0 +1,248 @@
+const state = {
+  type: "industry",
+  market: null,
+  sectors: [],
+  current: null, // {kind:'sector'|'stock', code}
+  autoTimer: null,
+};
+
+const $ = (s) => document.querySelector(s);
+
+function api(path) {
+  return fetch(path).then((r) => r.json()).then((b) => {
+    if (!b.ok) throw new Error((b.error && b.error.message) || "请求失败");
+    return b;
+  });
+}
+
+function fmtPct(v) { return v === null || v === undefined ? "—" : (v > 0 ? "+" : "") + v.toFixed(2) + "%"; }
+
+function renderIndices(indices) {
+  $("#indices").innerHTML = indices.map((i) =>
+    `<span>${i.name} <b class="${i.change_pct >= 0 ? "up" : "down"}">${fmtPct(i.change_pct)}</b>` +
+    ` <span class="muted">${i.price.toFixed(2)}</span></span>`).join("");
+}
+
+function renderBreadth(b, vol) {
+  const s = (v) => v ?? "—";
+  $("#breadth").innerHTML =
+    `<span>上涨 <b class="up">${b.up}</b> / 下跌 <b class="down">${b.down}</b> / 平 ${b.flat}</span>` +
+    `<span>涨停 ${b.limit_up} / 跌停 ${b.limit_down}</span>` +
+    `<span>总成交额 ${(b.total_turnover / 1e8).toFixed(0)}亿</span>` +
+    `<span>量能较昨日 ${vol && vol.pct !== null && vol.pct !== undefined ? fmtPct(vol.pct) : "收盘后对比"}</span>`;
+}
+
+async function loadMarket() {
+  const b = await api("/api/market");
+  state.market = b.data;
+  renderIndices(b.data.indices);
+  renderBreadth(b.data.breadth, b.data.volume_vs_yesterday);
+  $("#updated").textContent = "更新于 " + (b.meta.updated_at || "—");
+  $("#stale-flag").classList.toggle("hidden", !b.meta.stale);
+}
+
+async function loadSectors() {
+  const b = await api(`/api/sectors?type=${state.type}&top=60`);
+  state.sectors = b.data.sectors;
+  const tbody = $("#sector-table tbody");
+  tbody.innerHTML = b.data.sectors.map((s) =>
+    `<tr class="sector-row" data-code="${s.code}">` +
+    `<td>${s.name}</td><td class="${s.index_change_pct >= 0 ? "up" : "down"}">${fmtPct(s.index_change_pct)}</td>` +
+    `<td>${scoreCell(s.emotion_score)}</td><td>${scoreCell(s.strength_score)}</td>` +
+    `<td>${scoreCell(s.risk_score)}</td><td>${s.composite_score === null ? "…" : s.composite_score.toFixed(2)}</td>` +
+    `<td class="verdict">${s.verdict}</td></tr>`).join("");
+  tbody.querySelectorAll("tr.sector-row").forEach((tr) =>
+    tr.addEventListener("click", () => openSector(tr.dataset.code)));
+}
+
+function scoreCell(v) { return v === null ? "…" : v.toFixed(0); }
+
+async function openSector(code) {
+  state.current = { kind: "sector", code };
+  const b = await api("/api/sector?code=" + encodeURIComponent(code));
+  $("#detail-title").classList.add("hidden");
+  $("#chart-sector").classList.remove("hidden");
+  $("#sector-scores").classList.remove("hidden");
+  $("#chart-stock").classList.add("hidden");
+  $("#chart-intraday").classList.add("hidden");
+  $("#stock-scores").classList.add("hidden");
+  renderSectorCharts(b.data);
+  renderSectorScores(b.data);
+}
+
+function renderSectorScores(d) {
+  const sc = d.scores;
+  $("#sector-scores").innerHTML =
+    `<div class="card"><div class="label">板块</div><div class="value">${d.name}</div></div>` +
+    `<div class="card"><div class="label">综合分</div><div class="value">${sc.composite === null ? "…" : sc.composite.toFixed(2)}</div></div>` +
+    `<div class="card"><div class="label">情绪</div><div class="value">${sc.emotion === null ? "…" : sc.emotion.toFixed(0)}</div></div>` +
+    `<div class="card"><div class="label">强度</div><div class="value">${sc.strength.toFixed(0)}</div></div>` +
+    `<div class="card"><div class="label">风险</div><div class="value">${sc.risk.toFixed(0)}</div></div>` +
+    `<div class="card"><div class="verdict">${d.verdict}</div></div>`;
+}
+
+async function openStock(code) {
+  state.current = { kind: "stock", code };
+  const b = await api("/api/stock?code=" + encodeURIComponent(code));
+  $("#detail-title").classList.add("hidden");
+  $("#chart-sector").classList.add("hidden");
+  $("#sector-scores").classList.add("hidden");
+  $("#chart-stock").classList.remove("hidden");
+  $("#chart-intraday").classList.remove("hidden");
+  $("#stock-scores").classList.remove("hidden");
+  renderStockCharts(b.data);
+  renderStockScores(b.data);
+  $("#btn-wl-add").classList.remove("hidden");
+}
+
+function renderStockScores(d) {
+  const sc = d.scores;
+  $("#stock-scores").innerHTML =
+    `<div class="card"><div class="label">${d.name}</div><div class="value">${d.quote.price}</div><div class="muted">${fmtPct(d.quote.change_pct)}</div></div>` +
+    `<div class="card"><div class="label">综合分</div><div class="value">${sc.composite.toFixed(2)}</div></div>` +
+    `<div class="card"><div class="label">趋势</div><div class="value">${sc.trend.toFixed(0)}</div></div>` +
+    `<div class="card"><div class="label">量价</div><div class="value">${sc.volume_price.toFixed(0)}</div></div>` +
+    `<div class="card"><div class="label">信号</div><div class="value">${sc.signal.toFixed(0)}</div></div>` +
+    `<div class="card"><div class="label">风险</div><div class="value">${sc.risk.toFixed(0)}</div></div>` +
+    `<div class="card"><div class="verdict">${d.verdict}</div></div>`;
+}
+
+// ---- ECharts 图表 ----
+function klineOption(d) {
+  return {
+    tooltip: { trigger: "axis" },
+    legend: { data: ["K线", "MA5", "MA10", "MA20"] },
+    grid: [{ left: 50, right: 20, top: 30, height: "55%" }, { left: 50, right: 20, top: "72%", height: "20%" }],
+    xAxis: [{ type: "category", data: d.kline.map((k) => k.date), boundaryGap: true },
+            { type: "category", gridIndex: 1, data: d.kline.map((k) => k.date) }],
+    yAxis: [{ scale: true }, { gridIndex: 1, scale: true }],
+    dataZoom: [{ type: "inside", xAxisIndex: [0, 1] }],
+    series: [
+      { name: "K线", type: "candlestick", data: d.kline.map((k) => [k.open, k.close, k.low, k.high]) },
+      { name: "MA5", type: "line", data: ma(d.kline, 5), smooth: true, showSymbol: false },
+      { name: "MA10", type: "line", data: ma(d.kline, 10), smooth: true, showSymbol: false },
+      { name: "MA20", type: "line", data: ma(d.kline, 20), smooth: true, showSymbol: false },
+      { name: "成交量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: d.kline.map((k) => k.volume) },
+    ],
+  };
+}
+function ma(kline, n) {
+  return kline.map((_, i) => {
+    if (i < n - 1) return null;
+    let s = 0; for (let j = i - n + 1; j <= i; j++) s += kline[j].close;
+    return +(s / n).toFixed(2);
+  });
+}
+function intradayOption(d) {
+  return {
+    tooltip: { trigger: "axis" },
+    legend: { data: ["价格", "均价"] },
+    grid: [{ left: 50, right: 20, top: 30, height: "55%" }, { left: 50, right: 20, top: "72%", height: "20%" }],
+    xAxis: [{ type: "category", data: d.intraday.map((x) => x.time) },
+            { type: "category", gridIndex: 1, data: d.intraday.map((x) => x.time) }],
+    yAxis: [{ scale: true }, { gridIndex: 1, scale: true }],
+    series: [
+      { name: "价格", type: "line", data: d.intraday.map((x) => x.price), showSymbol: false },
+      { name: "均价", type: "line", data: d.intraday.map((x) => x.avg), showSymbol: false, lineStyle: { type: "dashed" } },
+      { name: "分时量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: d.intraday.map((x) => x.volume) },
+    ],
+  };
+}
+function makeChart(el, option) {
+  const old = echarts.getInstanceByDom(el);
+  if (old) old.dispose();   // 重渲染前销毁旧实例,避免“已有实例”报错
+  const chart = echarts.init(el);
+  chart.setOption(option);
+  return chart;
+}
+function renderSectorCharts(d) {
+  const el = $("#chart-sector");
+  el.innerHTML = "";   // 板块名由 score-cards 的“板块”卡展示
+  if (d.index_history.length < 2) { el.innerHTML = "<p class='muted'>历史数据不足</p>"; return; }
+  makeChart(el, klineOption({ kline: d.index_history }));
+}
+function renderStockCharts(d) {
+  const el1 = $("#chart-stock");
+  el1.innerHTML = "<b>" + d.name + "</b> 日K线";   // 先写 DOM 再初始化图表
+  const el2 = $("#chart-intraday");
+  el2.innerHTML = "<b>分时图</b> 价格/均价/成交量";
+  if (d.kline.length >= 2) makeChart(el1, klineOption(d));
+  if (d.intraday.length >= 2) makeChart(el2, intradayOption(d));
+}
+
+// ---- 自选股 ----
+function getWatchlist() {
+  try { return JSON.parse(localStorage.getItem("stock_wl") || "[]"); } catch (e) { return []; }
+}
+function saveWatchlist(w) { localStorage.setItem("stock_wl", JSON.stringify(w)); }
+function renderWatchlist() {
+  const w = getWatchlist();
+  $("#wl-items").innerHTML = w.map((x) =>
+    `<span class="wl-item" data-code="${x.code}">⭐ ${x.name}(${x.code})</span>`).join("");
+  document.querySelectorAll(".wl-item").forEach((el) =>
+    el.addEventListener("click", () => openStock(el.dataset.code)));
+}
+function addWatchlist(name, code) {
+  const w = getWatchlist();
+  if (!w.some((x) => x.code === code)) w.push({ name, code });
+  saveWatchlist(w);
+  renderWatchlist();
+}
+$("#btn-wl-add").addEventListener("click", async () => {
+  if (state.current && state.current.kind === "stock") {
+    const b = await api("/api/stock?code=" + state.current.code);
+    addWatchlist(b.data.name, b.data.code);
+  }
+});
+
+// ---- 刷新 ----
+async function refreshAll() {
+  try { await loadMarket(); } catch (e) { $("#stale-flag").classList.remove("hidden"); }
+  try { await loadSectors(); } catch (e) { /* 沿用旧列表 */ }
+  if (state.current) {
+    try {
+      if (state.current.kind === "sector") await openSector(state.current.code);
+      else await openStock(state.current.code);
+    } catch (e) { /* 保留当前 */ }
+  }
+}
+$("#btn-refresh").addEventListener("click", refreshAll);
+$("#auto-refresh").addEventListener("change", (e) => {
+  if (e.target.checked) {
+    state.autoTimer = setInterval(refreshAll, 60000);
+  } else if (state.autoTimer) {
+    clearInterval(state.autoTimer);
+    state.autoTimer = null;
+  }
+});
+
+// ---- 交互绑定 ----
+document.querySelectorAll(".tab").forEach((t) =>
+  t.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
+    t.classList.add("active");
+    state.type = t.dataset.type;
+    loadSectors();
+  }));
+$("#btn-sector-search").addEventListener("click", async () => {
+  const kw = $("#sector-search").value.trim();
+  const b = await api(`/api/sectors?type=${state.type}&top=60&search=${encodeURIComponent(kw)}`);
+  $("#sector-table tbody").innerHTML = b.data.sectors.map((s) =>
+    `<tr class="sector-row" data-code="${s.code}"><td>${s.name}</td><td>${fmtPct(s.index_change_pct)}</td>` +
+    `<td>${scoreCell(s.emotion_score)}</td><td>${scoreCell(s.strength_score)}</td>` +
+    `<td>${scoreCell(s.risk_score)}</td><td>${s.composite_score === null ? "…" : s.composite_score.toFixed(2)}</td>` +
+    `<td class="verdict">${s.verdict}</td></tr>`).join("");
+  document.querySelectorAll("#sector-table tr.sector-row").forEach((tr) =>
+    tr.addEventListener("click", () => openSector(tr.dataset.code)));
+});
+$("#btn-stock").addEventListener("click", () => {
+  const code = $("#stock-search").value.trim();
+  if (code) openStock(code);
+});
+$("#stock-search").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { const c = $("#stock-search").value.trim(); if (c) openStock(c); }
+});
+
+// ---- 启动 ----
+renderWatchlist();
+refreshAll();
