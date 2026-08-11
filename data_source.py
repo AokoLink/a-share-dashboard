@@ -236,13 +236,23 @@ def get_stock_minute(code):
 
 
 def get_new_stocks():
-    """上市≤5交易日的股票(尽力而为):取最近新股列表;接口不可用 → 空集。"""
-    try:
+    """上市≤5交易日的股票(尽力而为):取最近新股列表;接口不可用 → 空集。
+    仅缓存成功结果;失败不缓存(下次仍重试),并回退旧值。"""
+    def fetch():
         raw = _ak.stock_zh_a_new()
         codes = _pick(raw, "代码", "code").map(normalize_code).tolist()
         return set(codes)
+
+    val, fresh = cache.get(_key("new_stocks"))
+    if fresh:
+        return val
+    try:
+        data = _fetch_with_retry(fetch)
+        cache.set(_key("new_stocks"), data, 1800)
+        _set_updated()
+        return data
     except Exception:
-        return set()
+        return val if val is not None else set()
 
 
 # ---------- 同花顺 ----------

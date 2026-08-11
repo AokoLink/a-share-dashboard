@@ -150,6 +150,7 @@ def test_stock_minute_normalized(monkeypatch):
 
 
 def test_new_stocks_english_column(monkeypatch):
+    ds.cache._data.clear()  # 避免被其他用例缓存污染
     # akshare 1.18.84 的 stock_zh_a_new() 返回英文列(无“代码”列),须能经 code 列归一化
     raw = pd.DataFrame({
         "symbol": ["bj920000", "sh688001"],
@@ -176,3 +177,33 @@ def test_sector_index_history_uses_name_not_code(monkeypatch):
     assert stale is False
     assert list(df.columns) == ["date", "open", "high", "low", "close", "volume"]
     assert df["close"].iloc[0] == pytest.approx(1.5)
+
+
+def test_new_stocks_cached_on_success(monkeypatch):
+    calls = {"n": 0}
+    def fake():
+        calls["n"] += 1
+        return pd.DataFrame({"code": ["920000"], "name": ["A"]})
+    monkeypatch.setattr(ds._ak, "stock_zh_a_new", fake)
+    clock = FakeClock()
+    monkeypatch.setattr(ds.cache, "_clock", clock)   # monkeypatch 自动还原,避免污染后续用例
+    ds.cache._data.clear()
+    assert ds.get_new_stocks() == {"920000"}
+    assert ds.get_new_stocks() == {"920000"}
+    assert calls["n"] == 1                       # 缓存命中,不再拉取
+    clock.t = 1801
+    monkeypatch.setattr(ds._ak, "stock_zh_a_new",
+                        lambda: pd.DataFrame({"code": ["920001"], "name": ["B"]}))
+    assert ds.get_new_stocks() == {"920001"}     # 过期后重新拉取
+
+
+def test_new_stocks_not_cached_on_failure(monkeypatch):
+    calls = {"n": 0}
+    def fail():
+        calls["n"] += 1
+        raise RuntimeError("network down")
+    monkeypatch.setattr(ds._ak, "stock_zh_a_new", fail)
+    ds.cache._data.clear()
+    assert ds.get_new_stocks() == set()          # 失败 → 空集
+    assert ds.get_new_stocks() == set()          # 且不缓存:再次调用仍重试
+    assert calls["n"] == 4                       # 2 次调用 × _fetch_with_retry 内部重试 1 次
