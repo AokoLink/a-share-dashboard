@@ -105,6 +105,42 @@ def _score_sector_stocks(spot_rows, get_daily, now, per_sector):
     return rank_candidates(ranked, per_sector), daily_failed, any_stale
 
 
+def pick_leaders(spot_rows, total=5, exclude_codes=frozenset()):
+    """板块龙头/强势股:龙头池(成交额 top3)+ 强势池(涨幅 top3)合并去重取前 total。
+
+    纯函数,无网络。轻过滤:排除新股(exclude_codes)、ST、停牌(price/volume 空);保留涨停股。
+    """
+    rows = []
+    for r in spot_rows:
+        code = str(r["code"])
+        if code in exclude_codes or "ST" in str(r.get("name") or "").upper():
+            continue
+        price, vol = _num(r.get("price")), _num(r.get("volume"))
+        if not price or not vol:              # 停牌(价格/成交量缺失)
+            continue
+        rows.append(r)
+    leader_pool = sorted((x for x in rows if _num(x.get("amount")) is not None),
+                         key=lambda x: -(_num(x["amount"]) or 0))[:min(3, total)]
+    strong_pool = sorted((x for x in rows if _num(x.get("change_pct")) is not None),
+                         key=lambda x: -(_num(x["change_pct"]) or 0))[:min(3, total)]
+    leader_codes = {str(x["code"]) for x in leader_pool}
+    strong_codes = {str(x["code"]) for x in strong_pool}
+    out, seen = [], set()
+    for x in leader_pool + strong_pool:
+        code = str(x["code"])
+        if code in seen:
+            continue
+        seen.add(code)
+        tag = ("龙头+强势" if (code in leader_codes and code in strong_codes)
+               else ("龙头" if code in leader_codes else "强势"))
+        out.append({"code": code, "name": str(x.get("name") or ""),
+                    "price": _num(x.get("price")), "change_pct": _num(x.get("change_pct")),
+                    "amount": _num(x.get("amount")), "tag": tag})
+        if len(out) >= total:
+            break
+    return out
+
+
 def build_recommend(summary_df, spot_df, db, type_key, now, top_sectors=3, per_sector=5):
     """编排:选板块 → 解析成分股 → 并发打分 → 组装。返回 (payload, stale_any)。"""
     strong = select_sectors(summary_df, db, type_key, store, _market_turnover(spot_df), now)

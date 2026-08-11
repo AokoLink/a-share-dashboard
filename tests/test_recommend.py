@@ -244,3 +244,50 @@ def test_filter_candidates_hard_filters():
         ["600000", "600001", "600002", "600003"], spot_df, exclude_codes=set())
     assert {k["code"] for k in kept} == {"600003"}
     assert not_in == 0
+
+
+def test_pick_leaders_mixed():
+    rows = [
+        {"code": "600001", "name": "甲股", "price": 10.0, "change_pct": 2.0, "amount": 5e8, "volume": 10000},
+        {"code": "600002", "name": "乙股", "price": 11.0, "change_pct": 9.0, "amount": 3e8, "volume": 10000},
+        {"code": "600003", "name": "丙股", "price": 12.0, "change_pct": 1.0, "amount": 8e8, "volume": 10000},
+        {"code": "600004", "name": "丁股", "price": 13.0, "change_pct": 5.0, "amount": 1e8, "volume": 10000},
+        {"code": "600005", "name": "戊股", "price": 14.0, "change_pct": 3.0, "amount": 4e8, "volume": 10000},
+    ]
+    leaders = recommend.pick_leaders(rows, total=5)
+    # 龙头池(金额 top3):600003(8e8) 600001(5e8) 600005(4e8)
+    # 强势池(涨幅 top3):600002(9) 600004(5) 600005(3)
+    # 合并去重(龙头在前):600003 600001 600005 600002 600004
+    assert [x["code"] for x in leaders] == ["600003", "600001", "600005", "600002", "600004"]
+    assert [x["tag"] for x in leaders] == ["龙头", "龙头", "龙头+强势", "强势", "强势"]
+    assert leaders[0]["price"] == 12.0
+    assert leaders[2]["change_pct"] == 3.0
+
+
+def test_pick_leaders_excludes():
+    rows = [
+        {"code": "600001", "name": "正常股", "price": 10.0, "change_pct": 2.0, "amount": 5e8, "volume": 10000},
+        {"code": "600002", "name": "ST坏股", "price": 11.0, "change_pct": 9.0, "amount": 3e8, "volume": 10000},
+        {"code": "600003", "name": "停牌股", "price": 0.0, "change_pct": 1.0, "amount": 8e8, "volume": 0},
+        {"code": "600004", "name": "新股", "price": 13.0, "change_pct": 5.0, "amount": 1e8, "volume": 10000},
+    ]
+    leaders = recommend.pick_leaders(rows, total=5, exclude_codes={"600004"})
+    # ST(名含 ST)、停牌(price/volume 空)、新股(exclude_codes)均被排除 → 仅剩 600001
+    assert [x["code"] for x in leaders] == ["600001"]
+    assert leaders[0]["tag"] == "龙头+强势"
+
+
+def test_pick_leaders_empty_and_degenerate():
+    assert recommend.pick_leaders([], total=5) == []
+    all_dead = [{"code": "600001", "name": "全停牌", "price": 0.0, "change_pct": None,
+                 "amount": None, "volume": 0}]
+    assert recommend.pick_leaders(all_dead, total=5) == []
+    # 金额全 None → 龙头池空,仅强势池
+    no_amount = [
+        {"code": "600001", "name": "无额A", "price": 10.0, "change_pct": 3.0, "amount": None, "volume": 10000},
+        {"code": "600002", "name": "无额B", "price": 11.0, "change_pct": 2.0, "amount": None, "volume": 10000},
+    ]
+    l1 = recommend.pick_leaders(no_amount, total=5)
+    assert [x["code"] for x in l1] == ["600001", "600002"]
+    assert all(x["tag"] == "强势" for x in l1)
+    assert l1[0]["amount"] is None
