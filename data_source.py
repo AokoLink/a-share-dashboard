@@ -292,7 +292,12 @@ def get_sector_index_history(code, type):
     end_date = datetime.now().strftime("%Y%m%d")  # 接口默认 end_date 已过期(20240108),必须显式传当天
 
     def fetch():
-        raw = _ak.stock_board_industry_index_ths(symbol=symbol, start_date="20200101", end_date=end_date)
+        name_map, _ = _industry_code_map()
+        inv = {v: k for k, v in name_map.items()}          # code→name(THS 板块指数接口按名称查询)
+        name = inv.get(symbol)
+        if name is None:
+            raise DataSourceError("unknown sector code: %s" % symbol)
+        raw = _ak.stock_board_industry_index_ths(symbol=name, start_date="20200101", end_date=end_date)
         return pd.DataFrame({
             "date": raw["日期"].astype(str),
             "open": raw["开盘价"], "high": raw["最高价"],

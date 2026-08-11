@@ -160,3 +160,19 @@ def test_new_stocks_english_column(monkeypatch):
     })
     monkeypatch.setattr(ds._ak, "stock_zh_a_new", lambda: raw)
     assert ds.get_new_stocks() == {"920000", "688001"}
+
+
+def test_sector_index_history_uses_name_not_code(monkeypatch):
+    # 回归:THS 板块指数接口按板块名称查询,不能直接用摘要的代码 symbol
+    monkeypatch.setattr(ds, "_industry_code_map", lambda: ({"半导体": "881121"}, False))
+    captured = {}
+    def fake_index(symbol, start_date, end_date):
+        captured["symbol"] = symbol
+        return pd.DataFrame({"日期": ["2026-08-10"], "开盘价": [1.0], "最高价": [2.0],
+                             "最低价": [0.5], "收盘价": [1.5], "成交量": [100]})
+    monkeypatch.setattr(ds._ak, "stock_board_industry_index_ths", fake_index)
+    df, stale = ds.get_sector_index_history("881121", "industry")
+    assert captured["symbol"] == "半导体"        # 传的是名称,不是代码
+    assert stale is False
+    assert list(df.columns) == ["date", "open", "high", "low", "close", "volume"]
+    assert df["close"].iloc[0] == pytest.approx(1.5)
