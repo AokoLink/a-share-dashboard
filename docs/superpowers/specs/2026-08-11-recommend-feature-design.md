@@ -1,7 +1,7 @@
-# 股票推荐功能设计(Rev.2)
+# 股票推荐功能设计(Rev.3)
 
 日期:2026-08-11
-状态:Rev.1 获用户确认后,按三条修改意见修订:① 真复用先重构打分 ② 映射表单点风险缓解 ③ 性能并发与测试兜底
+状态:Rev.2 后按第二轮修订:① 个股响应补 price/change_pct ② meta.stale 聚合显式化 ③ 不在 spot 快照的候选行为定义 ④ 大跌命名 ⑤ 测试 fixture 注入假校验 ⑥ §9 措辞修正
 
 ## 1. 目标与范围
 
@@ -74,8 +74,9 @@ GET /api/recommend
 - ST 股:名称含 `ST`。
 - 新股:复用 `get_new_stocks()`(该函数本次加缓存,见 §8)。
 - 涨停买不进:`change_pct >= limit_threshold(code)`。
-- 跌停/大跌:`change_pct <= -7`。
+- 大跌(排除当日大跌):`change_pct <= -7`。涨停用动态阈值,跌停**不做对称阈值**——创业板/科创板 -7 并非跌停,命名只表"大跌"(对称跌停为可选改法,本次不采用)。
 - 流动性差:成交额 `< 1 亿`。
+- **不在全市场 spot 快照**(如北交所、新上市、退市整理):无 quote,无法硬过滤也无法打分 → 跳过,计入 `diagnostics.stocks_not_in_spot`(§6/§8)。
 
 ### 4.3 个股打分与排序
 
@@ -152,6 +153,7 @@ GET /api/recommend?top_sectors=3&per_sector=5
         "constituent_source": "新浪行业·电子设备",
         "stocks": [
           {"code": "sh600584", "name": "长电科技",
+           "price": 38.52, "change_pct": 3.21,
            "scores": {"trend":85,"volume_price":70,"signal":90,"risk":20,"composite":82},
            "verdict": "关注"}
         ]
@@ -159,7 +161,8 @@ GET /api/recommend?top_sectors=3&per_sector=5
     ],
     "skipped_sectors": [
       {"name": "白酒", "verdict": "建议关注", "composite_score": 76, "reason": "no_mapping"}
-    ]
+    ],
+    "diagnostics": {"stocks_not_in_spot": 3, "stocks_daily_failed": 0}
   }
 }
 ```
@@ -170,7 +173,7 @@ GET /api/recommend?top_sectors=3&per_sector=5
 
 - `index.html` 导航新增第 4 个 Tab「推荐」,复用现有 Tab 切换。
 - `app.js` 新增 `loadRecommend()`:
-  - 板块卡片:板块名 + verdict 徽章 + composite 分 + 成分股表格(代码/名称/综合分/风险分/verdict,点击跳转个股详情)。
+  - 板块卡片:板块名 + verdict 徽章 + composite 分 + 成分股表格(代码/名称/**现价**/**涨跌幅**/综合分/风险分/verdict,点击跳转个股详情)。现价/涨跌幅取 spot,与打分同源、零额外请求。
   - 板块标题旁标成分股源口径与 match_type(如"成分股:新浪行业·电子设备[关键词]"——非手动映射时显式标注,提醒可靠性差异)。
   - 底部列出 `skipped_sectors`(灰字 + composite 分 + 原因),并用 meta.coverage 展示"今日强势板块 N 个,已覆盖 M 个"。
   - 顶部免责声明:"仅供研究参考,不构成投资建议。"。
@@ -186,9 +189,12 @@ GET /api/recommend?top_sectors=3&per_sector=5
 | 关键词多命中 | `skipped(reason=ambiguous)`,不静默选一个 |
 | 映射 label 已失效(启动校验发现) | `skipped(reason=stale_map)`,启动时告警 |
 | 新浪成分股拉取失败 | `skipped(reason=source_fail)`,其余板块继续 |
-| 单只候选日线失败 | 单只跳过,同板块其余继续;整板块候选全失败 → 板块降级 |
+| 单只候选日线失败 | 单只跳过,同板块其余继续,计入 `diagnostics.stocks_daily_failed`;整板块候选全失败 → 板块降级 |
+| 成分股不在 spot 快照(北交所/新上市/退市整理) | 跳过,计入 `diagnostics.stocks_not_in_spot` |
 | 强势板块不足 | 返回实际数量,前端提示 |
 | stale 缓存 | 沿用 `meta.stale` + 前端过期提示 |
+
+**stale 聚合口径**:一次 recommend 涉及约 20 个 `(data, stale)` 源(spot、板块摘要、3 成分股、~15 日线)。`meta.stale = any(各源 stale)`;**任一候选股的数据 stale → 整包标 stale**(前端按现有逻辑提示过期)。测试见 §10.7。
 
 ### 性能(Rev.2 优化)
 
@@ -203,7 +209,7 @@ GET /api/recommend?top_sectors=3&per_sector=5
 |---|---|
 | `analysis.py` | + `score_sector(metrics)`、+ `collect_sector_metrics(row, store_ctx, ...)`(板块打分唯一入口) |
 | `data_source.py` | + `SECTOR_CONS_MAP`、`SECTOR_CONS_EXPECTED`、`SECTOR_KEYWORDS`、+ `get_sector_constituents(name)`、+ `validate_sector_map()`;`get_new_stocks()` 加成功缓存 |
-| `recommend.py`(新) | 纯函数:`select_sectors()`、`filter_candidates()`、`rank_candidates()`、`build_recommend()`(并发编排) |
+| `recommend.py`(新) | 纯函数:`select_sectors()`、`filter_candidates()`、`rank_candidates()`;`build_recommend()` 编排(调公共打分 `collect_sector_metrics`/`score_sector` + 并发拉取) |
 | `app.py` | `api_sectors`/`api_sector` 改用公共打分函数;+ `GET /api/recommend` 路由;`create_app` 调用 `validate_sector_map` |
 | `templates/index.html` | + 推荐 Tab |
 | `static/app.js` | + `loadRecommend()` + Tab 绑定 |
@@ -219,9 +225,10 @@ GET /api/recommend?top_sectors=3&per_sector=5
    - 完整性:Tier1 key ∈ THS 板块名、value ∈ 新浪 label(mock 集合);
    - `validate_sector_map` 的 stale / renamed 检测;
    - 关键词兜底:包含规则命中、`match_type="keyword"` 标记、歧义多命中 → `ambiguous`、误配样例(如 THS"白酒"不应命中"电子设备")。
-3. **`filter_candidates`**:停牌/ST/新股/涨停/大跌/流动性逐条过滤。
+3. **`filter_candidates`**:停牌/ST/新股/涨停/大跌/流动性逐条过滤;**不在 spot 快照的候选 → 跳过并计入 `diagnostics.stocks_not_in_spot`**。
 4. **`rank_candidates`**:剔除规避、composite 排序、Top N。
 5. **请求数兜底**:注入计数 mock fetch,断言 `get_sector_constituents` 每板块恰好 1 次、`get_stock_daily` 每候选恰好 1 次、`get_new_stocks` 缓存后仅 1 次、失败时不缓存。
 6. **并发兜底**:mock 慢速 fetch,并发执行候选打分,断言结果按板块正确聚合、单股失败不影响同板块其余、无死锁/重复崩溃。
-7. **API 路由**:响应结构、skipped 带分、coverage / mapping_health meta、参数校验(top/per_sector 范围)、stale 透传。
-8. **回归**:`pytest tests/ -v` 全绿。
+7. **API 路由**:响应结构、skipped 带分、coverage / mapping_health meta、参数校验(top/per_sector 范围)、**stale 聚合(任一候选股数据 stale → 整包 `meta.stale=true`)**、stocks 对象含 price/change_pct。
+8. **测试 fixture 注入假校验**:`create_app()` 启动会调 `validate_sector_map()`;`test_api.py` 的 client fixture 直接 `create_app(...)`,不 mock 会真发新浪请求(即使 try/except 不挂也会拖慢/抖动)。**测试须 mock 该校验**,保持离线确定。
+9. **回归**:`pytest tests/ -v` 全绿。
