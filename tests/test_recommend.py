@@ -1,0 +1,199 @@
+# -*- coding: utf-8 -*-
+import datetime
+import pandas as pd
+import pytest
+import analysis as an
+import data_source as ds
+import recommend
+
+
+def make_summary():
+    return pd.DataFrame({
+        "code": ["885887", "885559", "885123"],
+        "name": ["半导体", "白酒", "化工"],
+        "change_pct": [5.0, -1.0, 0.5],
+        "up_count": [90.0, 30.0, 50.0],
+        "down_count": [5.0, 60.0, 50.0],
+        "leader": ["X", "Y", "Z"],
+        "leader_change_pct": [5.0, 0.5, 1.0],
+        "turnover": [1e10, 1e9, 5e9],
+    })
+
+
+def make_spot():
+    return pd.DataFrame({
+        "code": ["600050", "600100", "600519", "688981", "300750"],
+        "name": ["中国联通", "同方股份", "ST茅台", "中芯国际", "宁德时代"],
+        "price": [5.0, 10.0, 1348.9, 45.0, 200.0],
+        "change_pct": [3.0, 2.0, 1.0, 5.0, 0.0],
+        "volume": [100000, 0, 682720, 90000, 90000],
+        "amount": [2e8, 1e8, 9e8, 5e8, 5e8],
+    })
+
+
+def fake_store():
+    class S:
+        def get_sector_turnover_avg(self, *a, **k): return None
+        def get_sector_prev_change(self, *a, **k): return None
+        def get_sector_change_3d(self, *a, **k): return None
+        def get_consecutive_days(self, *a, **k): return 2   # 模拟连续上榜 ≥2 天,使真实打分可入选
+    return S()
+
+
+def make_daily(closes):
+    n = len(closes)
+    return pd.DataFrame({
+        "date": [f"2026-07-{i % 28 + 1:02d}" for i in range(n)],
+        "open": closes, "high": [c * 1.01 for c in closes], "low": [c * 0.99 for c in closes],
+        "close": closes, "volume": [100000] * n})
+
+
+def mock_sector(monkeypatch, composite=78.0, verdict="建议关注"):
+    monkeypatch.setattr(an, "collect_sector_metrics", lambda *a, **k: {
+        "verdict": verdict, "composite": composite, "consecutive_days": 0,
+        "emotion": 80, "strength": 70, "risk": 10})
+
+
+def test_select_sectors_filters_and_sorts(monkeypatch):
+    real = an.collect_sector_metrics
+    def fake(db, t, c, *a, **k):
+        if c == "885559":                      # 白酒 → 观望,剔除
+            return {**real(db, t, c, *a, **k), "verdict": "观望", "composite": 30.0}
+        if c == "885123":                      # 化工 → 真实打分是观望(情绪/强度双低),强制 建议关注+综合90(最高)
+            return {**real(db, t, c, *a, **k), "verdict": "建议关注", "composite": 90.0}
+        return real(db, t, c, *a, **k)         # 半导体 → 真实打分(consecutive=2 → P3 建议关注)
+    monkeypatch.setattr(an, "collect_sector_metrics", fake)
+    strong = recommend.select_sectors(make_summary(), ":db:", "industry", fake_store(), 1e12,
+                                      datetime.datetime(2026, 8, 11, 15, 0))
+    codes = [x["code"] for x in strong]
+    assert codes == ["885123", "885887"]     # 观望被剔除;按 composite 降序(90 > 84.66)
+    assert all(x["verdict"] in ("建议关注", "跟踪(热点延续)") for x in strong)
+
+
+def test_filter_candidates_rules():
+    codes = ["600050", "600100", "600519", "688981", "300750", "999999"]
+    kept, not_in = recommend.filter_candidates(codes, make_spot(), exclude_codes={"688981"})
+    kept_codes = {k["code"] for k in kept}
+    assert "600100" not in kept_codes        # 停牌 volume=0
+    assert "600519" not in kept_codes        # ST
+    assert "688981" not in kept_codes        # 新股(排除集)
+    assert "999999" not in kept_codes        # 不在 spot
+    assert not_in == 1
+    assert kept_codes == {"600050", "300750"}   # 300750 涨幅0/量正常 → 保留;无涨停/大跌
+
+
+def test_rank_candidates():
+    scored = [
+        {"code": "a", "scores": {"composite": 80, "risk": 10}, "verdict": "关注"},
+        {"code": "b", "scores": {"composite": 90, "risk": 80}, "verdict": "规避"},
+        {"code": "c", "scores": {"composite": 70, "risk": 20}, "verdict": "持有/跟踪"},
+        {"code": "d", "scores": {"composite": 60, "risk": 30}, "verdict": "观望"},
+    ]
+    ranked = recommend.rank_candidates(scored, 2)
+    assert [x["code"] for x in ranked] == ["a", "c"]   # b 规避/高险剔除;按 composite 降序取 2
+
+
+def test_build_recommend_happy_path(monkeypatch):
+    mock_sector(monkeypatch)
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": True, "codes": ["600050", "600100", "600519"],
+                                      "match_type": "manual", "source_name": "电子信息"})
+    monkeypatch.setattr(ds, "get_stock_daily",
+                        lambda c: (make_daily([10 + i for i in range(30)]), False))
+    payload, stale = recommend.build_recommend(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 11, 15, 0), top_sectors=2, per_sector=5)
+    assert stale is False
+    assert payload["strong_count"] == 3        # 三个板块都被 mock 成 建议关注
+    assert len(payload["sectors"]) == 2        # top_sectors=2 截断
+    s0 = payload["sectors"][0]
+    assert s0["match_type"] == "manual" and s0["constituent_source"] == "电子信息"
+    # 成分股:600050 保留、600100 停牌剔除、600519 ST 剔除
+    assert [x["code"] for x in s0["stocks"]] == ["sh600050"]
+    assert "price" in s0["stocks"][0] and "change_pct" in s0["stocks"][0]
+    assert payload["diagnostics"]["stocks_not_in_spot"] == 0
+    assert payload["diagnostics"]["stocks_daily_failed"] == 0
+
+
+def test_build_recommend_stale_aggregation(monkeypatch):
+    mock_sector(monkeypatch)
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": True, "codes": ["600050"],
+                                      "match_type": "manual", "source_name": "电子信息"})
+    monkeypatch.setattr(ds, "get_stock_daily",
+                        lambda c: (make_daily([10 + i for i in range(30)]), True))  # 候选 stale
+    payload, stale = recommend.build_recommend(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 11, 15, 0), top_sectors=1, per_sector=5)
+    assert stale is True                        # 任一候选股 stale → 整包 stale
+
+
+def test_build_recommend_mapping_failure_skipped_with_score(monkeypatch):
+    mock_sector(monkeypatch)
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": False, "reason": "no_mapping"})
+    payload, _ = recommend.build_recommend(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 11, 15, 0), top_sectors=3, per_sector=5)
+    assert payload["sectors"] == []
+    assert payload["skipped_sectors"][0]["reason"] == "no_mapping"
+    assert payload["skipped_sectors"][0]["composite_score"] == 78.0   # skipped 带分
+
+
+def test_build_recommend_not_in_spot_diagnostics(monkeypatch):
+    mock_sector(monkeypatch)
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": True, "codes": ["999999"],   # 不在 spot
+                                      "match_type": "manual", "source_name": "电子信息"})
+    monkeypatch.setattr(ds, "get_stock_daily", lambda c: (make_daily([1.0]), False))
+    payload, _ = recommend.build_recommend(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 11, 15, 0), top_sectors=1, per_sector=5)
+    assert payload["diagnostics"]["stocks_not_in_spot"] == 1
+    # 候选全被过滤 → 板块降级进 skipped(too_few)
+    assert payload["sectors"] == []
+    assert payload["skipped_sectors"][0]["reason"] == "too_few"
+
+
+def test_build_recommend_request_counts(monkeypatch):
+    mock_sector(monkeypatch)
+    counts = {"daily": 0, "cons": 0, "new": 0}
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: (counts.__setitem__("new", counts["new"] + 1), set())[1])
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: (counts.__setitem__("cons", counts["cons"] + 1),
+                                      {"ok": True, "codes": ["600050"], "match_type": "manual",
+                                       "source_name": "电子信息"})[1])
+    monkeypatch.setattr(ds, "get_stock_daily",
+                        lambda c: (counts.__setitem__("daily", counts["daily"] + 1),
+                                   (make_daily([10 + i for i in range(30)]), False))[1])
+    recommend.build_recommend(make_summary(), make_spot(), ":db:", "industry",
+                              datetime.datetime(2026, 8, 11, 15, 0), top_sectors=1, per_sector=5)
+    assert counts["daily"] == 1                 # 每候选恰好 1 次
+    assert counts["cons"] == 1                  # top_sectors=1 → 首个强势板块解析 1 次后截断
+    assert counts["new"] == 1
+
+
+def test_build_recommend_concurrent_failure_isolation(monkeypatch):
+    mock_sector(monkeypatch)
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": True, "codes": ["600050", "600100", "300750"],
+                                      "match_type": "manual", "source_name": "电子信息"})
+    import time
+    def flaky(c):
+        time.sleep(0.02)
+        if c == "300750":                      # 300750 通过硬过滤,日线拉取失败
+            raise ds.DataSourceError("boom")
+        return make_daily([10 + i for i in range(30)]), False
+    monkeypatch.setattr(ds, "get_stock_daily", flaky)
+    payload, _ = recommend.build_recommend(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 11, 15, 0), top_sectors=1, per_sector=5)
+    s0 = payload["sectors"][0]
+    codes = [x["code"] for x in s0["stocks"]]
+    assert codes == ["sh600050"]                # 单股失败,同板块其余不受影响
+    assert payload["diagnostics"]["stocks_daily_failed"] == 1
