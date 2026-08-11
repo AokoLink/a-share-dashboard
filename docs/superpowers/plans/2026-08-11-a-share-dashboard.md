@@ -1396,6 +1396,8 @@ def test_verdict_rule4_5_6():
     assert an.sector_verdict(75, 55, 20, 2, True) == "跟踪(热点延续)"
     # P5:情绪高 + 强度中/低 + 连续=1 + data_complete → 警惕一日游
     assert an.sector_verdict(75, 55, 20, 1, True) == "警惕一日游"
+    # 强度=低(30<35)同样触发(规格 P5 为"中/低",最终整支评审修复项)
+    assert an.sector_verdict(75, 30, 20, 1, True) == "警惕一日游"
     # 冷启动 day1:data_complete=False → 不触发一日游 → 观望
     assert an.sector_verdict(75, 55, 20, 1, False) == "观望"
     # P6 其余 → 观望
@@ -1465,8 +1467,8 @@ def sector_verdict(emotion, strength, risk, consecutive_days, data_complete):
         return "建议关注"                                        # P3
     if e_hi and s_mid and not s_hi and consecutive_days >= 2 and not r_hi:
         return "跟踪(热点延续)"                                  # P4
-    if e_hi and s_mid and consecutive_days == 1 and data_complete and not r_hi:
-        return "警惕一日游"                                      # P5
+    if e_hi and strength is not None and consecutive_days == 1 and data_complete and not r_hi:
+        return "警惕一日游"                                      # P5 强度=中/低(非高即 P3 分流,高风险低强度已被 P1/P2 分流)
     return "观望"                                                # P6
 
 
