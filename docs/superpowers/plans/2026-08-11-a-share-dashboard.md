@@ -264,7 +264,7 @@ Expected: 依赖已满足(akshare 等已装),echarts.min.js 下载到 `static/` 
 """A股三层分析看板 —— Flask 入口。完整实现在 Task 8。"""
 from flask import Flask
 
-def create_app(db_path=None, start_builder=True):
+def create_app(db_path=None):
     app = Flask(__name__)
     @app.route("/")
     def index():
@@ -275,7 +275,7 @@ if __name__ == "__main__":
     create_app().run(host="127.0.0.1", port=8000)
 ```
 
-Run: `cd /c/stock && python -c "import app; a=app.create_app(start_builder=False); print(a)"`
+Run: `cd /c/stock && PYTHONIOENCODING=utf-8 python -c "import app; a=app.create_app(); print(a)"`
 Expected: 打印 Flask app 对象,无报错。
 
 - [ ] **Step 5: 提交**
