@@ -888,10 +888,9 @@ def get_index_realtime():
         raw = _ak.stock_zh_index_spot_sina()
         rows = []
         for _, r in raw.iterrows():
-            code = normalize_code(r["代码"])
-            full = with_prefix(code)
-            if full in INDEX_NAMES:
-                rows.append({"code": full, "name": INDEX_NAMES[full],
+            code = str(r["代码"]).strip().lower()
+            if code in INDEX_NAMES:  # 指数代码自带 sh/sz 前缀;勿用 with_prefix 重拼(000001 会错拼成 sz000001)
+                rows.append({"code": code, "name": INDEX_NAMES[code],
                              "price": float(r["最新价"]), "change_pct": float(r["涨跌幅"])})
         return rows
 
