@@ -210,7 +210,7 @@ def test_new_stocks_not_cached_on_failure(monkeypatch):
 
 
 def _mock_sina_spot(monkeypatch):
-    rows = [{"label": label, "name": name} for label, name in ds.SECTOR_CONS_EXPECTED.items()]
+    rows = [{"label": label, "板块": name} for label, name in ds.SECTOR_CONS_EXPECTED.items()]
     df = pd.DataFrame(rows)
     df["公司家数"] = 1; df["涨跌额"] = 0.0; df["涨跌幅"] = 1.0
     df["总成交量"] = 1; df["总成交额"] = 1.0; df["股票代码"] = "a"

@@ -293,7 +293,7 @@ def _sina_industry_names():
     """新浪行业 spot:label→name 对照,缓存 1800s。"""
     def fetch():
         raw = _ak.stock_sector_spot(indicator="新浪行业")
-        return {str(r["label"]): str(r["name"]) for _, r in raw.iterrows()}
+        return {str(r["label"]): str(r["板块"]) for _, r in raw.iterrows()}
     return _cached(_key("sina_industry_names"), 1800, lambda: _fetch_with_retry(fetch))
 
 
