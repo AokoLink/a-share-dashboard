@@ -2147,7 +2147,7 @@ def register_routes(app):
         verdict = an.sector_verdict(emotion, strength, risk, consecutive, True)
         hist_rows = [{"date": str(x["date"]), "open": float(x["open"]), "high": float(x["high"]),
                       "low": float(x["low"]), "close": float(x["close"]), "volume": float(x["volume"])}
-                     for x in hist.itertuples(index=False)]
+                     for x in hist.to_dict("records")]
         return ok({"code": "%s:%s" % (type_key, code), "name": str(r["name"]),
                    "scores": {"emotion": emotion, "strength": strength, "risk": risk,
                               "composite": composite},
@@ -2169,10 +2169,10 @@ def register_routes(app):
         scores = an.score_stock(daily, quote, now)
         kline = [{"date": str(x["date"]), "open": float(x["open"]), "high": float(x["high"]),
                   "low": float(x["low"]), "close": float(x["close"]), "volume": float(x["volume"])}
-                 for x in daily.tail(250).itertuples(index=False)]
+                 for x in daily.tail(250).to_dict("records")]
         intraday = [{"time": str(x["time"]), "price": float(x["price"]),
                      "avg": float(x["avg"]), "volume": float(x["volume"])}
-                    for x in minute.itertuples(index=False)]
+                    for x in minute.to_dict("records")]
         return ok({"code": ds.with_prefix(code6), "name": quote["name"], "quote": quote,
                    "scores": scores, "verdict": scores["verdict"], "kline": kline,
                    "intraday": intraday})
