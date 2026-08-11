@@ -180,3 +180,121 @@ def composite_score(strength, emotion, risk):
     if strength is None or emotion is None or risk is None:
         return None
     return round(0.4 * strength + 0.35 * emotion + 0.25 * (100 - risk), 2)
+
+
+# ---- 个股量价打分(规格 §6.3/§7) ----
+
+def compute_trend_score(daily_df):
+    if len(daily_df) < 5:
+        return 50.0
+    df = add_ma(daily_df)
+    last = df.iloc[-1]
+    score = 40.0
+    m5, m10, m20, m60 = last["ma5"], last["ma10"], last["ma20"], last["ma60"]
+    if not pd.isna(m5) and not pd.isna(m10) and not pd.isna(m20) and m5 > m10 > m20:
+        score += 30
+    if not pd.isna(m20) and last["close"] > m20:
+        score += 20
+    if not pd.isna(m60) and last["close"] > m60:
+        score += 10
+    return score
+
+
+def _avg5_volume(daily_df):
+    if len(daily_df) < 6:
+        return None
+    v = daily_df["volume"].iloc[-6:-1].mean()
+    return None if pd.isna(v) or v <= 0 else v
+
+
+def compute_volume_price_score(daily_df, quote, now):
+    if len(daily_df) < 5:
+        return 50.0
+    elapsed = trading_minutes_elapsed(now)
+    vr = custom_volume_ratio(quote.get("volume", 0), elapsed, _avg5_volume(daily_df))
+    price = quote.get("price", daily_df["close"].iloc[-1])
+    change = quote.get("change_pct", 0.0)
+    score = 40.0
+    if vr is not None:
+        if vr > 1.5 and change > 0:
+            score += 30  # 放量上攻
+        df = add_ma(daily_df, (20,))
+        ma20 = df["ma20"].iloc[-1]
+        if vr > 1.5 and len(daily_df) > 21 and price > daily_df["high"].iloc[-22:-1].max():
+            score += 30  # 放量突破平台
+        elif (vr < 0.7 and change >= -3 and not pd.isna(ma20) and price > ma20):
+            score += 30  # 缩量健康回踩
+    return min(100.0, score)
+
+
+def compute_signal_score(daily_df, quote):
+    if len(daily_df) < 26:
+        return 50.0
+    df = add_macd(daily_df)
+    last, prev = df.iloc[-1], df.iloc[-2]
+    score = 50.0
+    if not pd.isna(last["dif"]) and not pd.isna(last["dea"]):
+        if prev["dif"] <= prev["dea"] and last["dif"] > last["dea"]:
+            score += 40   # MACD 金叉
+        elif prev["dif"] >= prev["dea"] and last["dif"] < last["dea"]:
+            score -= 40   # MACD 死叉
+    if len(df) > 21:
+        prev_high = df["high"].iloc[-21:-1].max()  # 前20日(不含当日)
+        price = quote.get("price", last["close"])
+        if price > prev_high:
+            score += 30   # 突破近期平台高点
+    return min(100.0, max(0.0, score))
+
+
+def compute_stock_risk(daily_df, quote, now):
+    items = []
+    df = add_ma(daily_df, (20,))
+    ma20 = df["ma20"].iloc[-1]
+    price = quote.get("price", df["close"].iloc[-1])
+    change = quote.get("change_pct", 0.0)
+    # 乖离率偏离 MA20>15%
+    if not pd.isna(ma20) and ma20 > 0:
+        bias = (price - ma20) / ma20 * 100
+        if bias > 15:
+            items.append(70)
+    # 放量跌破 MA20
+    vr = custom_volume_ratio(quote.get("volume", 0), trading_minutes_elapsed(now), _avg5_volume(daily_df))
+    if vr is not None and vr > 1.5 and not pd.isna(ma20) and price < ma20 and change < 0:
+        items.append(70)
+    # 放量滞涨:量比>1.5 且 当日涨幅<前日涨幅 且 当日涨幅<2%
+    if vr is not None and vr > 1.5 and len(daily_df) >= 3:
+        prev_change = (daily_df["close"].iloc[-2] / daily_df["close"].iloc[-3] - 1) * 100
+        if change < prev_change and change < 2:
+            items.append(50)
+    # 高位长上影:上影线>实体2倍 且 振幅>5%
+    high = quote.get("high"); low = quote.get("low"); op = quote.get("open")
+    if high is not None and low is not None and op is not None and price > 0:
+        body = max(op, price) - min(op, price)
+        upper = high - max(op, price)
+        amplitude = (high - low) / max(op, price) * 100 if max(op, price) > 0 else 0
+        if body > 0 and upper > 2 * body and amplitude > 5:
+            items.append(30)
+    return max(items) if items else 0
+
+
+def stock_composite(trend, vp, signal):
+    return round(0.4 * trend + 0.35 * vp + 0.25 * signal, 2)
+
+
+def stock_verdict(composite, risk):
+    major = risk >= 70
+    if composite >= 70:
+        return "规避" if major else "关注"
+    if composite >= 55:
+        return "回调风险" if major else "持有/跟踪"
+    return "规避" if major else "观望"
+
+
+def score_stock(daily_df, quote, now):
+    trend = compute_trend_score(daily_df)
+    vp = compute_volume_price_score(daily_df, quote, now)
+    signal = compute_signal_score(daily_df, quote)
+    risk = compute_stock_risk(daily_df, quote, now)
+    composite = stock_composite(trend, vp, signal)
+    return {"trend": trend, "volume_price": vp, "signal": signal,
+            "risk": risk, "composite": composite, "verdict": stock_verdict(composite, risk)}
