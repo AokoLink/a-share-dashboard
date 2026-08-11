@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+data/
+static/echarts.min.js
+.pytest_cache/
