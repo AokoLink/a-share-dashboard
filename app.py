@@ -181,9 +181,9 @@ def register_routes(app):
             return err("BAD_PARAM", "code 必须形如 industry:885887", 400)
         type_key, code = parsed
         try:
-            summary, _ = ds.get_sector_summary(type_key)
-            hist, _ = ds.get_sector_index_history(code, type_key)
-            spot, _ = ds.get_market_spot()
+            summary, stale1 = ds.get_sector_summary(type_key)
+            hist, stale2 = ds.get_sector_index_history(code, type_key)
+            spot, stale3 = ds.get_market_spot()
         except ds.DataSourceError as e:
             return err("SOURCE_FAIL", str(e), 500)
         row = summary[summary["code"] == code]
@@ -222,7 +222,8 @@ def register_routes(app):
         return ok({"code": "%s:%s" % (type_key, code), "name": str(r["name"]),
                    "scores": {"emotion": emotion, "strength": strength, "risk": risk,
                               "composite": composite},
-                   "verdict": verdict, "index_history": hist_rows})
+                   "verdict": verdict, "index_history": hist_rows},
+                  stale=stale1 or stale2 or stale3)
 
     @app.route("/api/stock")
     def api_stock():
@@ -231,9 +232,9 @@ def register_routes(app):
         if code6 is None:
             return err("BAD_PARAM", "code 必须为 6 位股票代码", 400)
         try:
-            quote, _ = ds.get_stock_quote(code6)
-            daily, _ = ds.get_stock_daily(code6)
-            minute, _ = ds.get_stock_minute(code6)
+            quote, stale1 = ds.get_stock_quote(code6)
+            daily, stale2 = ds.get_stock_daily(code6)
+            minute, stale3 = ds.get_stock_minute(code6)
         except ds.DataSourceError as e:
             return err("SOURCE_FAIL", str(e), 500)
         now = datetime.now()
@@ -246,7 +247,8 @@ def register_routes(app):
                     for x in minute.to_dict("records")]
         return ok({"code": ds.with_prefix(code6), "name": quote["name"], "quote": quote,
                    "scores": scores, "verdict": scores["verdict"], "kline": kline,
-                   "intraday": intraday})
+                   "intraday": intraday},
+                  stale=stale1 or stale2 or stale3)
 
 
 def create_app(db_path=None):

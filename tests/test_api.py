@@ -150,3 +150,27 @@ def test_source_fail_returns_500(monkeypatch, tmp_path):
     r = c.get("/api/market")
     assert r.status_code == 500
     assert r.get_json()["error"]["code"] == "SOURCE_FAIL"
+
+
+def test_sector_stale_propagates(monkeypatch, tmp_path):
+    db = str(tmp_path / "stale_sector.db")
+    app = app_mod.create_app(db_path=db)
+    monkeypatch.setattr(ds, "get_sector_summary", lambda t: (make_summary(), False))
+    monkeypatch.setattr(ds, "get_sector_index_history", lambda c, t: (make_daily(), True))
+    monkeypatch.setattr(ds, "get_market_spot", lambda: (make_spot(), False))
+    app.config["TESTING"] = True
+    c = app.test_client()
+    r = c.get("/api/sector?code=industry:885887")
+    assert r.get_json()["meta"]["stale"] is True
+
+
+def test_stock_stale_propagates(monkeypatch, tmp_path):
+    db = str(tmp_path / "stale_stock.db")
+    app = app_mod.create_app(db_path=db)
+    monkeypatch.setattr(ds, "get_stock_quote", lambda c: (make_quote(), True))
+    monkeypatch.setattr(ds, "get_stock_daily", lambda c: (make_daily(), False))
+    monkeypatch.setattr(ds, "get_stock_minute", lambda c: (make_minute(), False))
+    app.config["TESTING"] = True
+    c = app.test_client()
+    r = c.get("/api/stock?code=600519")
+    assert r.get_json()["meta"]["stale"] is True
