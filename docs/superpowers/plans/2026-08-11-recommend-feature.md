@@ -38,11 +38,11 @@
 
 ```python
 class FakeStore:
-    """最小 store_ctx:无历史 → 各 getter 返回 None/0。"""
+    """最小 store_ctx:无历史 → 各 getter 返回 None;consecutive 固定 2(模拟已连续上榜 ≥2 天)。"""
     def get_sector_turnover_avg(self, db, t, c, d, days=5): return None
     def get_sector_prev_change(self, db, t, c, d): return None
     def get_sector_change_3d(self, db, t, c, d): return None
-    def get_consecutive_days(self, db, t, c, d, top_n=20): return 0
+    def get_consecutive_days(self, db, t, c, d, top_n=20): return 2
 
 
 def test_score_sector_composes_five():
@@ -65,13 +65,14 @@ def test_score_sector_composes_five():
 def test_collect_sector_metrics_full_pipeline():
     import datetime
     now = datetime.datetime(2026, 8, 11, 15, 0)
-    # 无历史:turnover_ratio=None, prev=None, 3d=None, consecutive=0
+    # 无历史:turnover_ratio=None, prev=None, 3d=None;consecutive=2(FakeStore)
     r = an.collect_sector_metrics(
         ":db:", "industry", "885887", 5.0, 1e10, 90.0, 5.0, 5.0,
         FakeStore(), 1e12, now)
     assert set(r) == {"emotion", "strength", "risk", "composite", "verdict", "consecutive_days"}
-    assert r["consecutive_days"] == 0
-    assert r["verdict"] == "建议关注"     # up 94.7% + 强度71.4 + risk0 → 情绪/强度双高
+    assert r["consecutive_days"] == 2
+    # up 94.7% → 情绪 96.17;强度=(100*40+50*30+33.3*30)/100=65 ≥ 60 → P3 建议关注;risk 0
+    assert r["verdict"] == "建议关注"
 
 
 def test_collect_sector_metrics_after_close_uses_turnover_ratio():
@@ -176,6 +177,8 @@ Expected: PASS(含既有用例)
 ```python
         r = row.iloc[0]
         chg = _num(r["change_pct"])
+        now = datetime.now()
+        market_turnover = float(spot["amount"].sum()) if len(spot) else 0.0
         scores = an.collect_sector_metrics(
             app.config["DB"], type_key, code, chg, _num(r["turnover"]),
             _num(r["up_count"]), _num(r["down_count"]), _num(r["leader_change_pct"]),
@@ -191,7 +194,7 @@ Expected: PASS(含既有用例)
                   stale=stale1 or stale2 or stale3)
 ```
 
-注意:`api_sector` 里 `now`(现 `app.py:202`)与 `market_turnover`(现 `app.py:212`)的计算保留,`consecutive` 改由 `collect_sector_metrics` 内部取。
+注意:`now` 与 `market_turnover` 必须在调用 `collect_sector_metrics` 之前计算(见上);`consecutive`/`activity`/`turnover_ratio` 等改由 `collect_sector_metrics` 内部取。
 
 - [ ] **Step 6: 全量回归**
 
@@ -233,7 +236,7 @@ def test_new_stocks_cached_on_success(monkeypatch):
         return pd.DataFrame({"code": ["920000"], "name": ["A"]})
     monkeypatch.setattr(ds._ak, "stock_zh_a_new", fake)
     clock = FakeClock()
-    ds.cache._clock = clock
+    monkeypatch.setattr(ds.cache, "_clock", clock)   # monkeypatch 自动还原,避免污染后续用例
     ds.cache._data.clear()
     assert ds.get_new_stocks() == {"920000"}
     assert ds.get_new_stocks() == {"920000"}
@@ -572,7 +575,7 @@ def fake_store():
         def get_sector_turnover_avg(self, *a, **k): return None
         def get_sector_prev_change(self, *a, **k): return None
         def get_sector_change_3d(self, *a, **k): return None
-        def get_consecutive_days(self, *a, **k): return 0
+        def get_consecutive_days(self, *a, **k): return 2   # 模拟连续上榜 ≥2 天,使真实打分可入选
     return S()
 
 
@@ -595,14 +598,14 @@ def test_select_sectors_filters_and_sorts(monkeypatch):
     def fake(db, t, c, *a, **k):
         if c == "885559":                      # 白酒 → 观望,剔除
             return {**real(db, t, c, *a, **k), "verdict": "观望", "composite": 30.0}
-        if c == "885123":                      # 化工 → 综合 90(最高)
-            return {**real(db, t, c, *a, **k), "composite": 90.0}
-        return real(db, t, c, *a, **k)         # 半导体 → 真实打分
+        if c == "885123":                      # 化工 → 真实打分是观望(情绪/强度双低),强制 建议关注+综合90(最高)
+            return {**real(db, t, c, *a, **k), "verdict": "建议关注", "composite": 90.0}
+        return real(db, t, c, *a, **k)         # 半导体 → 真实打分(consecutive=2 → P3 建议关注)
     monkeypatch.setattr(an, "collect_sector_metrics", fake)
     strong = recommend.select_sectors(make_summary(), ":db:", "industry", fake_store(), 1e12,
                                       datetime.datetime(2026, 8, 11, 15, 0))
     codes = [x["code"] for x in strong]
-    assert codes == ["885123", "885887"]     # 观望被剔除;按 composite 降序
+    assert codes == ["885123", "885887"]     # 观望被剔除;按 composite 降序(90 > 84.66)
     assert all(x["verdict"] in ("建议关注", "跟踪(热点延续)") for x in strong)
 
 
@@ -974,11 +977,15 @@ def test_recommend_endpoint(client, monkeypatch):
     assert meta["mapping_health"]["ok"] is True
 
 
-def test_recommend_bad_param(client):
+def test_recommend_bad_param(client, monkeypatch):
+    monkeypatch.setattr(an, "collect_sector_metrics", lambda *a, **k: {
+        "verdict": "建议关注", "composite": 78.0, "consecutive_days": 1,
+        "emotion": 80, "strength": 70, "risk": 10})
     assert client.get("/api/recommend?top_sectors=abc").status_code == 400
     r = client.get("/api/recommend?top_sectors=9&per_sector=0")
     d = r.get_json()["data"]
-    assert len(d["sectors"]) <= 5    # top_sectors 被钳制到 [1,5],per_sector 钳制到 [1,10]
+    assert len(d["sectors"]) == 2                # make_summary 两板块都入选;top=9 钳制到 5,但实际只有 2
+    assert len(d["sectors"][0]["stocks"]) == 1   # per_sector=0 钳制到 1
 
 
 def test_recommend_stale_propagates(monkeypatch, tmp_path):
