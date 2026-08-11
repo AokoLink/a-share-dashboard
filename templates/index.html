@@ -26,16 +26,25 @@
 <main id="layout">
   <section id="left" class="panel">
     <div class="tabs">
-      <button class="tab active" data-type="industry">行业板块</button>
+      <button class="tab active" data-type="industry" data-view="sectors">行业板块</button>
+      <button class="tab" data-view="recommend">推荐</button>
     </div>
-    <div class="sector-tools">
-      <input id="sector-search" placeholder="板块搜索,如 半导">
-      <button id="btn-sector-search">搜索</button>
+    <div id="sector-view">
+      <div class="sector-tools">
+        <input id="sector-search" placeholder="板块搜索,如 半导">
+        <button id="btn-sector-search">搜索</button>
+      </div>
+      <table id="sector-table">
+        <thead><tr><th>板块</th><th>涨幅%</th><th>情绪</th><th>强度</th><th>风险</th><th>综合</th><th>结论</th></tr></thead>
+        <tbody></tbody>
+      </table>
     </div>
-    <table id="sector-table">
-      <thead><tr><th>板块</th><th>涨幅%</th><th>情绪</th><th>强度</th><th>风险</th><th>综合</th><th>结论</th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div id="reco-panel" class="hidden">
+      <div id="reco-disclaimer" class="muted">仅供研究参考,不构成投资建议。</div>
+      <div id="reco-coverage" class="muted"></div>
+      <div id="reco-sectors"></div>
+      <div id="reco-skipped" class="muted"></div>
+    </div>
   </section>
 
   <section id="right" class="panel">

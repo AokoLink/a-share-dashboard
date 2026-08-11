@@ -33,3 +33,11 @@ tr.sector-row:hover { background: var(--bg); }
 .verdict { font-weight: 700; font-size: 15px; }
 #watchlist { display: flex; gap: 10px; align-items: center; }
 .wl-item { cursor: pointer; padding: 2px 8px; border: 1px solid var(--line); border-radius: 20px; }
+#reco-disclaimer { margin-bottom: 8px; }
+#reco-coverage { margin-bottom: 8px; }
+#reco-skipped { margin-top: 8px; }
+.reco-sector { margin-bottom: 12px; }
+.reco-sector-head { display: flex; gap: 12px; align-items: baseline; margin-bottom: 6px; }
+.reco-table { font-size: 13px; }
+tr.reco-row { cursor: pointer; }
+tr.reco-row:hover { background: var(--bg); }

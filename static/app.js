@@ -1,5 +1,6 @@
 const state = {
   type: "industry",
+  view: "sectors",
   market: null,
   sectors: [],
   current: null, // {kind:'sector'|'stock', code}
@@ -195,10 +196,59 @@ $("#btn-wl-add").addEventListener("click", async () => {
   }
 });
 
+function renderRecommend(b) {
+  const d = b.data, m = b.meta;
+  const cov = m.coverage || {};
+  $("#reco-coverage").innerHTML = cov.strong_candidates != null
+    ? `今日强势板块 ${cov.strong_candidates} 个,已覆盖 ${cov.mapped} 个,跳过 ${cov.skipped} 个`
+    : "";
+  $("#reco-sectors").innerHTML = d.sectors.length ? d.sectors.map((s) => `
+    <div class="reco-sector panel">
+      <div class="reco-sector-head">
+        <b>${s.name}</b>
+        <span class="verdict">${s.verdict}</span>
+        <span class="muted">综合 ${s.composite_score == null ? "…" : s.composite_score.toFixed(2)}</span>
+        <span class="muted">成分股:${s.constituent_source}${s.match_type === "keyword" ? "[关键词]" : ""}</span>
+      </div>
+      <table class="reco-table">
+        <thead><tr><th>代码</th><th>名称</th><th>现价</th><th>涨跌幅</th><th>综合</th><th>风险</th><th>结论</th></tr></thead>
+        <tbody>${s.stocks.map((x) => {
+          const chg = x.change_pct;
+          return `<tr class="reco-row" data-code="${x.code}">
+            <td>${x.code}</td><td>${x.name}</td>
+            <td>${x.price == null ? "—" : x.price.toFixed(2)}</td>
+            <td class="${chg != null && chg >= 0 ? "up" : "down"}">${fmtPct(chg)}</td>
+            <td>${x.scores.composite == null ? "…" : x.scores.composite.toFixed(2)}</td>
+            <td>${x.scores.risk}</td>
+            <td class="verdict">${x.verdict}</td>
+          </tr>`;
+        }).join("")}</tbody>
+      </table>
+    </div>`).join("") : "<div class='muted'>今日无强势板块</div>";
+  $("#reco-skipped").innerHTML = d.skipped_sectors.length
+    ? "被跳过(可补映射): " + d.skipped_sectors.map((s) =>
+        `${s.name}(${s.composite_score == null ? "…" : s.composite_score.toFixed(2)},${s.reason})`).join(" | ")
+    : "";
+  document.querySelectorAll("#reco-sectors tr.reco-row").forEach((tr) =>
+    tr.addEventListener("click", () => openStock(tr.dataset.code)));
+}
+
+async function loadRecommend() {
+  const b = await api("/api/recommend?top_sectors=3&per_sector=5");
+  renderRecommend(b);
+}
+
+function switchView(view) {
+  state.view = view;
+  $("#sector-view").classList.toggle("hidden", view !== "sectors");
+  $("#reco-panel").classList.toggle("hidden", view !== "recommend");
+}
+
 // ---- 刷新 ----
 async function refreshAll() {
   try { await loadMarket(); } catch (e) { $("#stale-flag").classList.remove("hidden"); }
   try { await loadSectors(); } catch (e) { /* 沿用旧列表 */ }
+  if (state.view === "recommend") { try { await loadRecommend(); } catch (e) { /* 沿用旧 */ } }
   if (state.current) {
     try {
       if (state.current.kind === "sector") await openSector(state.current.code);
@@ -221,8 +271,10 @@ document.querySelectorAll(".tab").forEach((t) =>
   t.addEventListener("click", () => {
     document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
     t.classList.add("active");
-    state.type = t.dataset.type;
-    loadSectors();
+    const view = t.dataset.view || "sectors";
+    switchView(view);
+    if (view === "recommend") loadRecommend().catch(() => { /* 沿用旧 */ });
+    else { state.type = t.dataset.type || "industry"; loadSectors(); }
   }));
 $("#btn-sector-search").addEventListener("click", async () => {
   const kw = $("#sector-search").value.trim();
