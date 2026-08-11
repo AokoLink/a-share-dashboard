@@ -69,6 +69,7 @@ async function openSector(code) {
   $("#stock-scores").classList.add("hidden");
   renderSectorCharts(b.data);
   renderSectorScores(b.data);
+  renderSectorLeaders(b.data);
 }
 
 function renderSectorScores(d) {
@@ -82,12 +83,34 @@ function renderSectorScores(d) {
     `<div class="card"><div class="verdict">${d.verdict}</div></div>`;
 }
 
+function renderSectorLeaders(d) {
+  const el = $("#sector-leaders");
+  const list = d.leaders || [];
+  if (!list.length) {
+    const hint = d.leaders_status === "source_fail" ? "板块成分股拉取失败"
+      : ((d.leaders_status === "no_mapping" || d.leaders_status === "ambiguous") ? "暂无成分股映射" : "");
+    el.classList.toggle("hidden", !hint);
+    el.innerHTML = hint ? `<div class="muted">${hint}</div>` : "";
+    return;
+  }
+  el.classList.remove("hidden");
+  el.innerHTML = `<b class="muted">龙头/强势股</b>` + list.map((x) =>
+    `<span class="leader-chip" data-code="${x.code}" title="${x.tag}">` +
+    `<i class="leader-tag">${x.tag}</i> ${x.name} ` +
+    `<b>${x.price == null ? "—" : x.price.toFixed(2)}</b> ` +
+    `<span class="${x.change_pct != null && x.change_pct >= 0 ? "up" : "down"}">${fmtPct(x.change_pct)}</span>` +
+    `</span>`).join("");
+  el.querySelectorAll(".leader-chip").forEach((sp) =>
+    sp.addEventListener("click", () => openStock(sp.dataset.code)));
+}
+
 async function openStock(code) {
   state.current = { kind: "stock", code };
   const b = await api("/api/stock?code=" + encodeURIComponent(code));
   $("#detail-title").classList.add("hidden");
   $("#chart-sector").classList.add("hidden");
   $("#sector-scores").classList.add("hidden");
+  $("#sector-leaders").classList.add("hidden");
   $("#chart-stock").classList.remove("hidden");
   $("#chart-intraday").classList.remove("hidden");
   $("#stock-scores").classList.remove("hidden");
