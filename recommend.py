@@ -84,19 +84,21 @@ def rank_candidates(scored, per_sector):
     return kept[:per_sector]
 
 
-def _score_candidate(row, daily_df, now):
+def _score_candidate(row, daily_df, now, sector_composite=None):
     quote = {"price": _num(row["price"]), "change_pct": _num(row["change_pct"]),
              "volume": _num(row["volume"]), "amount": _num(row["amount"])}
     scores = an.score_stock(daily_df, quote, now)
-    if scores["composite"] is None:            # 数据不足(历史<61根)→ 跳过,不进可介入
+    if scores["composite"] is None:            # 数据不足(历史<61根)→ 跳过
         return None
-    final = scores["composite"]                # Task 5 起含 sector_bonus
+    bonus = sector_bonus(sector_composite)
+    final = an.stock_composite_v3(scores["position"], scores["volume_price"],
+                                  scores["trend"], scores["signal"], scores["risk"], bonus)
     return {"code": ds.with_prefix(str(row["code"])), "name": str(row["name"]),
             "price": quote["price"], "change_pct": quote["change_pct"],
             "scores": scores, "composite": final, "verdict": an.stock_verdict(final)}
 
 
-def _score_sector_stocks(spot_rows, get_daily, now, per_sector):
+def _score_sector_stocks(spot_rows, get_daily, now, per_sector, sector_composite=None):
     """并发拉日线并打分。返回 (ranked, daily_failed, any_stale)。"""
     ranked, daily_failed, any_stale = [], 0, False
     if not spot_rows:
@@ -108,9 +110,7 @@ def _score_sector_stocks(spot_rows, get_daily, now, per_sector):
             try:
                 daily, stale = fut.result()
                 any_stale = any_stale or bool(stale)
-                scored = _score_candidate(row, daily, now)
-                if scored is not None:
-                    ranked.append(scored)
+                ranked.append(_score_candidate(row, daily, now, sector_composite))
             except Exception:
                 daily_failed += 1                # 单只失败 → 跳过,同板块其余继续
     return rank_candidates(ranked, per_sector), daily_failed, any_stale
@@ -161,6 +161,19 @@ def tier_for_verdict(verdict):
     return None
 
 
+def sector_bonus(sector_composite):
+    """板块共振加成(规格 §5):≥70→+8;55≤x<70→+4;x<40→−5;其余→+0;缺失→0。"""
+    if sector_composite is None:
+        return 0
+    if sector_composite >= 70:
+        return 8
+    if sector_composite >= 55:
+        return 4
+    if sector_composite < 40:
+        return -5
+    return 0
+
+
 def bias_pct(daily_df, price):
     """现价偏离 MA20 百分比;(price - ma20)/ma20*100。MA20 缺失 → None。"""
     price = _num(price)
@@ -197,7 +210,8 @@ def build_recommend(summary_df, spot_df, db, type_key, now, top_sectors=3, per_s
             continue
         kept, not_in_spot = filter_candidates(res["codes"], spot_df, new_codes)
         diagnostics["stocks_not_in_spot"] += not_in_spot
-        ranked, daily_failed, any_stale = _score_sector_stocks(kept, ds.get_stock_daily, now, per_sector)
+        ranked, daily_failed, any_stale = _score_sector_stocks(
+            kept, ds.get_stock_daily, now, per_sector, s["composite"])
         diagnostics["stocks_daily_failed"] += daily_failed
         stale_any = stale_any or any_stale
         if not ranked:
@@ -244,7 +258,7 @@ def collect_actionable_leaders(summary_df, spot_df, db, type_key, now, resolve_f
 
     def work(i, s, L, row):
         daily, stale = get_daily_fn(str(L["code"]))
-        scored = _score_candidate(row, daily, now)
+        scored = _score_candidate(row, daily, now, s["composite"])
         if scored is None:
             return None, stale
         tier = tier_for_verdict(scored["verdict"])

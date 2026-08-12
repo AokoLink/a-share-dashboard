@@ -343,10 +343,11 @@ def test_collect_actionable_leaders_two_tiers_and_dedupe(monkeypatch):
         "600050": {"position": 90, "vp": 60, "trend": 50, "signal": 60, "risk": 0},   # quality=0.55*90+0.15*60+0.10*50+0.20*60=75.5 → 强烈关注/可介入
         "688981": {"position": 48, "vp": 48, "trend": 48, "signal": 48, "risk": 0},   # quality=48 → 持有/跟踪/观察;Task 5 加板块+8=56 仍在 [48,58) → 观察(两档保持)
     }
-    def fake_score_candidate(row, daily_df, now):
+    def fake_score_candidate(row, daily_df, now, sector_composite=None):
         c = str(row["code"])
         s = by_code[c]
-        final = an.stock_composite_v3(s["position"], s["vp"], s["trend"], s["signal"], s["risk"])
+        final = an.stock_composite_v3(s["position"], s["vp"], s["trend"], s["signal"],
+                                      s["risk"], recommend.sector_bonus(sector_composite))
         return {"code": ds.with_prefix(c), "name": str(row["name"]),
                 "price": row["price"], "change_pct": row["change_pct"],
                 "scores": {"position": s["position"], "trend": s["trend"],
@@ -370,7 +371,7 @@ def test_collect_actionable_leaders_two_tiers_and_dedupe(monkeypatch):
     assert [x["tier"] for x in payload["items"]] == ["可介入", "观察"]
     assert payload["items"][0]["sector_name"] == "半导体"
     assert payload["items"][0]["tag"] == "龙头+强势"
-    assert payload["items"][0]["composite"] == pytest.approx(75.5)
+    assert payload["items"][0]["composite"] == pytest.approx(round(83.5, 2))   # 75.5 + bonus 8(板块 78)
     assert payload["items"][0]["bias_pct"] is not None     # bias 用真实 daily(现价 5.0 vs MA20 64.5)
     assert payload["diagnostics"]["stocks_daily_failed"] == 0
 
@@ -428,3 +429,42 @@ def test_collect_actionable_leaders_stale_aggregation(monkeypatch):
         lambda c: (make_consolidated(), True))   # 候选 stale
     assert stale is True
     assert payload["items"][0]["code"] == "sh600050"
+
+
+def test_sector_bonus_thresholds():
+    assert recommend.sector_bonus(None) == 0
+    assert recommend.sector_bonus(70) == 8
+    assert recommend.sector_bonus(69.9) == 4
+    assert recommend.sector_bonus(55) == 4
+    assert recommend.sector_bonus(54.9) == 0
+    assert recommend.sector_bonus(40) == 0
+    assert recommend.sector_bonus(39.9) == -5
+
+
+def test_score_candidate_applies_sector_bonus(monkeypatch):
+    # 纯因子全 50,risk=0:quality=50;板块 composite=78 → bonus=8 → final=58 → 关注/可介入
+    monkeypatch.setattr(an, "score_stock",
+                        lambda df, q, now: {"position": 50, "trend": 50, "volume_price": 50,
+                                            "signal": 50, "risk": 0, "composite": 50.0})
+    row = {"code": "600050", "name": "X", "price": 5.0, "change_pct": 1.0,
+           "volume": 100000, "amount": 2e8}
+    scored = recommend._score_candidate(row, make_daily([10 + i for i in range(65)]),
+                                        datetime.datetime(2026, 8, 11, 15, 0), 78.0)
+    assert scored["composite"] == pytest.approx(58.0)
+    assert scored["verdict"] == "关注"
+    assert recommend.tier_for_verdict(scored["verdict"]) == "可介入"
+    # 弱板块 39.9 → bonus=-5 → final=45 → 观望 → 不可介入
+    scored2 = recommend._score_candidate(row, make_daily([10 + i for i in range(65)]),
+                                         datetime.datetime(2026, 8, 11, 15, 0), 39.9)
+    assert scored2["composite"] == pytest.approx(45.0)
+    assert recommend.tier_for_verdict(scored2["verdict"]) is None
+
+
+def test_score_candidate_short_history_skipped(monkeypatch):
+    monkeypatch.setattr(an, "score_stock",
+                        lambda df, q, now: {"position": None, "trend": None, "volume_price": None,
+                                            "signal": None, "risk": None, "composite": None})
+    row = {"code": "600050", "name": "X", "price": 5.0, "change_pct": 1.0,
+           "volume": 100000, "amount": 2e8}
+    assert recommend._score_candidate(row, make_daily([10 + i for i in range(30)]),
+                                      datetime.datetime(2026, 8, 11, 15, 0)) is None
