@@ -45,7 +45,7 @@ def make_quote():
 
 def make_daily():
     n = 65
-    closes = [float(1000 + i) for i in range(n)]
+    closes = [1348.9] * n   # 与 make_quote 现价一致:平盘 → 600519/600000 均 观望(≥38)可入选,避免 v3 下 回避 被剔
     return pd.DataFrame({
         "date": [f"2026-05-{i%28+1:02d}" for i in range(n)],
         "open": closes, "high": [c * 1.01 for c in closes], "low": [c * 0.99 for c in closes],
@@ -166,8 +166,12 @@ def test_stock_two_code_forms(client):
     assert d1["quote"]["change_pct"] == pytest.approx(0.3)
     assert d1["kline"][0]["date"].startswith("2026-")
     assert d1["intraday"][0]["time"] == "10:00"
-    # 综合分算术:0.4*趋势+0.35*量价+0.25*信号(这里 daily 是持续上涨 → 高分)
-    assert 0 <= d1["scores"]["composite"] <= 100
+    assert "position" in d1["scores"]
+    assert "position" in d1 and d1["scores"]["position"] is not None
+    assert "verdict" in d1 and d1["verdict"] in ("强烈关注", "关注", "持有/跟踪", "观望", "回避")
+    assert "tier" in d1
+    assert "sector_resolved" in d1 and d1["sector_resolved"] is False
+    assert "verdict" not in d1["scores"]
 
 
 def test_stock_bad_param(client):

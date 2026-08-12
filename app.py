@@ -219,6 +219,13 @@ def register_routes(app):
             return err("SOURCE_FAIL", str(e), 500)
         now = datetime.now()
         scores = an.score_stock(daily, quote, now)
+        composite = verdict = tier = None
+        sector_resolved = False
+        if scores["composite"] is not None:
+            composite = round(scores["composite"], 2)
+            verdict = an.stock_verdict(scores["composite"])
+            tier = recommend.tier_for_verdict(verdict)
+            # Task 6 起:resolve_code_sectors → sector_bonus → final
         kline = [{"date": str(x["date"]), "open": float(x["open"]), "high": float(x["high"]),
                   "low": float(x["low"]), "close": float(x["close"]), "volume": float(x["volume"])}
                  for x in daily.tail(250).to_dict("records")]
@@ -226,7 +233,9 @@ def register_routes(app):
                      "avg": float(x["avg"]), "volume": float(x["volume"])}
                     for x in minute.to_dict("records")]
         return ok({"code": ds.with_prefix(code6), "name": quote["name"], "quote": quote,
-                   "scores": scores, "verdict": scores["verdict"], "kline": kline,
+                   "scores": scores, "position": scores["position"],
+                   "composite": composite, "verdict": verdict, "tier": tier,
+                   "sector_resolved": sector_resolved, "kline": kline,
                    "intraday": intraday},
                   stale=stale1 or stale2 or stale3)
 

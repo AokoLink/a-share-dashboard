@@ -48,6 +48,15 @@ def make_daily(closes):
         "close": closes, "volume": [100000] * n})
 
 
+def make_consolidated():
+    """65 根低位横盘(先下跌 40 根再横盘 25 根)→ 位置低(≈65)/风险0 → 综合≈57 → 持有/跟踪。
+
+    v3 乘法折扣下,[10+i] 递增 65 根会让 600050(现价 5.0)落在 60 日区间顶部 → 位置≈5 → 综合≈27 → 回避 被剔除,
+    无法验证"可介入候选被排名"的集成行为;此 fixture 使候选落在 持有/跟踪(可介入/观察),供排名与过滤路径使用。
+    """
+    return make_daily([7.0 - 0.04 * i for i in range(40)] + [5.4] * 25)
+
+
 def mock_sector(monkeypatch, composite=78.0, verdict="建议关注"):
     monkeypatch.setattr(an, "collect_sector_metrics", lambda *a, **k: {
         "verdict": verdict, "composite": composite, "consecutive_days": 0,
@@ -84,13 +93,13 @@ def test_filter_candidates_rules():
 
 def test_rank_candidates():
     scored = [
-        {"code": "a", "scores": {"composite": 80, "risk": 10}, "verdict": "关注"},
-        {"code": "b", "scores": {"composite": 90, "risk": 80}, "verdict": "规避"},
-        {"code": "c", "scores": {"composite": 70, "risk": 20}, "verdict": "持有/跟踪"},
-        {"code": "d", "scores": {"composite": 60, "risk": 30}, "verdict": "观望"},
+        {"code": "a", "composite": 80, "scores": {"composite": 80, "risk": 10}, "verdict": "关注"},
+        {"code": "b", "composite": 90, "scores": {"composite": 90, "risk": 80}, "verdict": "回避"},
+        {"code": "c", "composite": 70, "scores": {"composite": 70, "risk": 20}, "verdict": "持有/跟踪"},
+        {"code": "d", "composite": 60, "scores": {"composite": 60, "risk": 30}, "verdict": "观望"},
     ]
     ranked = recommend.rank_candidates(scored, 2)
-    assert [x["code"] for x in ranked] == ["a", "c"]   # b 规避/高险剔除;按 composite 降序取 2
+    assert [x["code"] for x in ranked] == ["a", "c"]   # b 回避/高险剔除;按 composite 降序取 2
 
 
 def test_build_recommend_happy_path(monkeypatch):
@@ -100,7 +109,7 @@ def test_build_recommend_happy_path(monkeypatch):
                         lambda name: {"ok": True, "codes": ["600050", "600100", "600519"],
                                       "match_type": "manual", "source_name": "电子信息"})
     monkeypatch.setattr(ds, "get_stock_daily",
-                        lambda c: (make_daily([10 + i for i in range(30)]), False))
+                        lambda c: (make_consolidated(), False))
     payload, stale = recommend.build_recommend(
         make_summary(), make_spot(), ":db:", "industry",
         datetime.datetime(2026, 8, 11, 15, 0), top_sectors=2, per_sector=5)
@@ -123,7 +132,7 @@ def test_build_recommend_stale_aggregation(monkeypatch):
                         lambda name: {"ok": True, "codes": ["600050"],
                                       "match_type": "manual", "source_name": "电子信息"})
     monkeypatch.setattr(ds, "get_stock_daily",
-                        lambda c: (make_daily([10 + i for i in range(30)]), True))  # 候选 stale
+                        lambda c: (make_consolidated(), True))  # 候选 stale
     payload, stale = recommend.build_recommend(
         make_summary(), make_spot(), ":db:", "industry",
         datetime.datetime(2026, 8, 11, 15, 0), top_sectors=1, per_sector=5)
@@ -171,7 +180,7 @@ def test_build_recommend_request_counts(monkeypatch):
                                        "source_name": "电子信息"})[1])
     monkeypatch.setattr(ds, "get_stock_daily",
                         lambda c: (counts.__setitem__("daily", counts["daily"] + 1),
-                                   (make_daily([10 + i for i in range(30)]), False))[1])
+                                   (make_consolidated(), False))[1])
     recommend.build_recommend(make_summary(), make_spot(), ":db:", "industry",
                               datetime.datetime(2026, 8, 11, 15, 0), top_sectors=1, per_sector=5)
     assert counts["daily"] == 1                 # 每候选恰好 1 次
@@ -190,7 +199,7 @@ def test_build_recommend_concurrent_failure_isolation(monkeypatch):
         time.sleep(0.02)
         if c == "300750":                      # 300750 通过硬过滤,日线拉取失败
             raise ds.DataSourceError("boom")
-        return make_daily([10 + i for i in range(30)]), False
+        return make_consolidated(), False
     monkeypatch.setattr(ds, "get_stock_daily", flaky)
     payload, _ = recommend.build_recommend(
         make_summary(), make_spot(), ":db:", "industry",
@@ -216,7 +225,7 @@ def test_build_recommend_fills_slots(monkeypatch):
 
     monkeypatch.setattr(ds, "resolve_sector_constituents", resolve)
     monkeypatch.setattr(ds, "get_stock_daily",
-                        lambda c: (make_daily([10 + i for i in range(30)]), False))
+                        lambda c: (make_consolidated(), False))
     payload, _ = recommend.build_recommend(
         make_summary(), make_spot(), ":db:", "industry",
         datetime.datetime(2026, 8, 11, 15, 0), top_sectors=2, per_sector=5)
@@ -310,12 +319,12 @@ def test_score_all_sectors_returns_all_sorted(monkeypatch):
     assert [x["code"] for x in strong] == ["885887"]    # select_sectors 仍过滤(白酒/化工观望)
 
 
-def test_tier_for_verdict():
+def test_tier_for_verdict_v3():
+    assert recommend.tier_for_verdict("强烈关注") == "可介入"
     assert recommend.tier_for_verdict("关注") == "可介入"
     assert recommend.tier_for_verdict("持有/跟踪") == "观察"
-    for v in ("观望", "回调风险", "规避"):
+    for v in ("观望", "回避", None):
         assert recommend.tier_for_verdict(v) is None
-    assert recommend.tier_for_verdict(None) is None
 
 
 def test_bias_pct():
@@ -331,20 +340,21 @@ def test_collect_actionable_leaders_two_tiers_and_dedupe(monkeypatch):
     mock_sector(monkeypatch)                       # 3 板块全部 建议关注/composite 78
     monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
     by_code = {
-        "600050": {"trend": 100, "vp": 90, "signal": 80, "risk": 0},    # 综合 91.5 → 关注 → 可介入
-        "688981": {"trend": 60, "vp": 60, "signal": 50, "risk": 10},    # 综合 57.5 → 持有/跟踪 → 观察
+        "600050": {"position": 90, "vp": 60, "trend": 50, "signal": 60, "risk": 0},   # quality=0.55*90+0.15*60+0.10*50+0.20*60=75.5 → 强烈关注/可介入
+        "688981": {"position": 48, "vp": 48, "trend": 48, "signal": 48, "risk": 0},   # quality=48 → 持有/跟踪/观察;Task 5 加板块+8=56 仍在 [48,58) → 观察(两档保持)
     }
     def fake_score_candidate(row, daily_df, now):
         c = str(row["code"])
         s = by_code[c]
-        composite = an.stock_composite(s["trend"], s["vp"], s["signal"])
+        final = an.stock_composite_v3(s["position"], s["vp"], s["trend"], s["signal"], s["risk"])
         return {"code": ds.with_prefix(c), "name": str(row["name"]),
                 "price": row["price"], "change_pct": row["change_pct"],
-                "scores": {"trend": s["trend"], "volume_price": s["vp"], "signal": s["signal"],
-                           "risk": s["risk"], "composite": composite},
-                "verdict": an.stock_verdict(composite, s["risk"])}
+                "scores": {"position": s["position"], "trend": s["trend"],
+                           "volume_price": s["vp"], "signal": s["signal"],
+                           "risk": s["risk"], "composite": final},
+                "composite": final, "verdict": an.stock_verdict(final)}
     monkeypatch.setattr(recommend, "_score_candidate", fake_score_candidate)
-    daily = make_daily([10 + i for i in range(30)])
+    daily = make_daily([10 + i for i in range(65)])
     payload, stale = recommend.collect_actionable_leaders(
         make_summary(), make_spot(), ":db:", "industry",
         datetime.datetime(2026, 8, 11, 15, 0),
@@ -360,8 +370,8 @@ def test_collect_actionable_leaders_two_tiers_and_dedupe(monkeypatch):
     assert [x["tier"] for x in payload["items"]] == ["可介入", "观察"]
     assert payload["items"][0]["sector_name"] == "半导体"
     assert payload["items"][0]["tag"] == "龙头+强势"
-    assert payload["items"][0]["composite"] == 91.5
-    assert payload["items"][0]["bias_pct"] is not None     # bias 用真实 daily(现价 5.0 vs MA20 29.5)
+    assert payload["items"][0]["composite"] == pytest.approx(75.5)
+    assert payload["items"][0]["bias_pct"] is not None     # bias 用真实 daily(现价 5.0 vs MA20 64.5)
     assert payload["diagnostics"]["stocks_daily_failed"] == 0
 
 
@@ -378,7 +388,7 @@ def test_collect_actionable_leaders_resolve_failure_skips(monkeypatch):
     payload, _ = recommend.collect_actionable_leaders(
         make_summary(), make_spot(), ":db:", "industry",
         datetime.datetime(2026, 8, 11, 15, 0), resolve,
-        lambda c: (make_daily([10 + i for i in range(30)]), False))
+        lambda c: (make_consolidated(), False))
     reasons = sorted(s["reason"] for s in payload["skipped_sectors"])
     assert reasons == ["no_mapping", "source_fail"]
     assert payload["sectors_scanned"] == 3
@@ -399,7 +409,7 @@ def test_collect_actionable_leaders_daily_failure_skips(monkeypatch):
     def flaky(c):
         if c == "688981":
             raise ds.DataSourceError("boom")
-        return make_daily([10 + i for i in range(30)]), False
+        return make_consolidated(), False
     payload, _ = recommend.collect_actionable_leaders(
         make_summary(), make_spot(), ":db:", "industry",
         datetime.datetime(2026, 8, 11, 15, 0), resolve, flaky)
@@ -415,6 +425,6 @@ def test_collect_actionable_leaders_stale_aggregation(monkeypatch):
         make_summary(), make_spot(), ":db:", "industry",
         datetime.datetime(2026, 8, 11, 15, 0),
         lambda name: {"ok": True, "codes": ["600050"], "match_type": "manual", "source_name": "电子信息"},
-        lambda c: (make_daily([10 + i for i in range(30)]), True))   # 候选 stale
+        lambda c: (make_consolidated(), True))   # 候选 stale
     assert stale is True
     assert payload["items"][0]["code"] == "sh600050"

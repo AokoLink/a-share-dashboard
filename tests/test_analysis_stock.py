@@ -106,45 +106,81 @@ def test_signal_score_v3_steady_rise():
     assert an.compute_signal_score(df, q, dt_now(15, 0)) == pytest.approx(32.0)
 
 
-def test_stock_risk_max_semantics():
-    # 乖离率>15% → 70
-    closes = [10.0] * 30
-    closes[-1] = 30.0   # MA20≈11 → 乖离≈173%
-    df = make_daily(closes)
-    q = quote(price=30.0, change_pct=10.0)
-    assert an.compute_stock_risk(df, q, dt_now()) == pytest.approx(70)
-    # 放量跌破 MA20 → 70(风险分=max,两风险项取最大值 70)
-    closes2 = [10.0] * 30
-    df2 = make_daily(closes2)
-    q2 = quote(price=5.0, change_pct=-5.0, volume=500000)  # 10:30 量比20>1.5,破MA20
-    assert an.compute_stock_risk(df2, q2, dt_now()) == pytest.approx(70)
-    # 无风险项 → 0(温和上涨、缩量、价格≈MA20、无长上影)
-    df3 = make_daily([float(10 + i) for i in range(30)])
-    q3 = quote(price=19.5, change_pct=1.0, volume=20000,
-               high=19.6, low=19.4, open=19.5)   # 量比≈0.8<1.5,乖离≈0,无上影
-    assert an.compute_stock_risk(df3, q3, dt_now()) == pytest.approx(0)
+def test_bias_risk_gradient_continuous():
+    # 断点 15/20/25/30 两侧极限一致(分段线性,无台阶):
+    # 15⁻=15⁺=0;20⁻=40⁺=40;25⁻=25⁺=40;30⁻=30⁺=70;中段线性
+    assert an._bias_risk(15) == pytest.approx(0)
+    assert an._bias_risk(15.0001) == pytest.approx(40 * 0.0001 / 5)
+    assert an._bias_risk(19) == pytest.approx(40 * 4 / 5)        # 19 → 32
+    assert an._bias_risk(20) == pytest.approx(40)
+    assert an._bias_risk(20.0001) == pytest.approx(40)            # 20-25 平段
+    assert an._bias_risk(25) == pytest.approx(40)
+    assert an._bias_risk(25.0001) == pytest.approx(40 + 30 * 0.0001 / 5)
+    assert an._bias_risk(30) == pytest.approx(70)
+    assert an._bias_risk(30.0001) == pytest.approx(70)            # >30 恒 70
+    assert an._bias_risk(100) == pytest.approx(70)
 
 
-def test_stock_composite_and_verdict():
-    assert an.stock_composite(70, 65, 60) == pytest.approx(65.75)  # 规格 §8 校验
-    # 综合分表:≥70 无重大→关注;≥70 有重大→规避
-    assert an.stock_verdict(80, 30) == "关注"
-    assert an.stock_verdict(80, 70) == "规避"
-    # 55-69 无重大→持有/跟踪;有重大→回调风险
-    assert an.stock_verdict(60, 20) == "持有/跟踪"
-    assert an.stock_verdict(60, 70) == "回调风险"
-    # <55 无重大→观望;有重大→规避
-    assert an.stock_verdict(50, 30) == "观望"
-    assert an.stock_verdict(50, 70) == "规避"
+def test_stock_risk_v3_bias_only():
+    # 65 根平量,价格高出 MA20 约 18% → 仅乖离项:40*3/5 = 24
+    df = make_daily([9.8] * 63 + [11.8] * 2)      # MA20≈10.0 → bias≈18%
+    q = quote(price=11.8, change_pct=0.5, volume=100000)
+    assert an.compute_stock_risk(df, q, dt_now(15, 0)) == pytest.approx(24.0)
 
 
-def test_score_stock_wrapper():
-    closes = [float(10 + i * 0.2) for i in range(65)]
-    df = make_daily(closes)
-    q = quote(price=closes[-1], change_pct=2.0, volume=300000)
-    out = an.score_stock(df, q, dt_now(15, 0))  # 收盘后
-    assert set(out) == {"trend", "volume_price", "signal", "risk", "composite", "verdict"}
-    assert 0 <= out["risk"] <= 100
+def test_stock_risk_v3_additive_cap100():
+    # 乖离82%→70 + 放量滞涨→25 + 高位长上影→20 + 近20日回撤−50%→20 = 135 → cap 100
+    df = make_daily([10.0] * 24 + [19.8, 20.0])
+    q = quote(price=20.0, change_pct=1.0, volume=500000,
+              high=21.0, low=19.5, open=19.8)
+    assert an.compute_stock_risk(df, q, dt_now(15, 0)) == pytest.approx(100.0)
+
+
+def test_stock_risk_v3_none():
+    df = make_daily([float(10 + i) for i in range(65)])
+    q = quote(price=df["close"].iloc[-1], change_pct=1.0, volume=100000,
+              high=df["close"].iloc[-1] * 1.01, low=df["close"].iloc[-1] * 0.99,
+              open=df["close"].iloc[-1])
+    assert an.compute_stock_risk(df, q, dt_now(15, 0)) == pytest.approx(0.0)
+
+
+def test_composite_v3_risk_discount_and_bonus_before_discount():
+    # quality=50:bonus=0 → 50*(1-0.5)=25;bonus=10 → (50+10)*(1-0.5)=30(加成在折扣前)
+    base = dict(position=50.0, vp=50.0, trend=50.0, signal=50.0)
+    assert an.stock_composite_v3(risk=50.0, sector_bonus=0, **base) == pytest.approx(25.0)
+    assert an.stock_composite_v3(risk=50.0, sector_bonus=10, **base) == pytest.approx(30.0)
+    assert an.stock_composite_v3(risk=0.0, sector_bonus=-5, **base) == pytest.approx(45.0)
+    assert an.stock_composite_v3(position=None, vp=50, trend=50, signal=50, risk=10) is None
+
+
+def test_verdict_v3_five_tiers_unrounded():
+    assert an.stock_verdict(63) == "强烈关注"
+    assert an.stock_verdict(58) == "关注"
+    assert an.stock_verdict(57.996) == "持有/跟踪"   # 未舍入判定,避免两次 round 跨档
+    assert an.stock_verdict(58.004) == "关注"
+    assert an.stock_verdict(48) == "持有/跟踪"
+    assert an.stock_verdict(47.99) == "观望"
+    assert an.stock_verdict(38) == "观望"
+    assert an.stock_verdict(37.99) == "回避"
+    assert an.stock_verdict(None) is None
+
+
+def test_score_stock_v3_guard_and_no_verdict():
+    short = make_daily([float(10 + i) for i in range(40)])   # <61 根
+    out = an.score_stock(short, quote(), dt_now(15, 0))
+    assert set(out) == {"position", "trend", "volume_price", "signal", "risk", "composite"}
+    assert out == {"position": None, "trend": None, "volume_price": None,
+                   "signal": None, "risk": None, "composite": None}
+    full = make_daily([float(10 + i * 0.2) for i in range(65)])
+    out2 = an.score_stock(full, quote(price=full["close"].iloc[-1], change_pct=2.0,
+                                      volume=100000), dt_now(15, 0))
+    assert set(out2) == {"position", "trend", "volume_price", "signal", "risk", "composite"}
+    assert "verdict" not in out2                              # 无 verdict 泄漏(第二轮#2)
+    assert 0 <= out2["composite"] <= 100
+    # composite = stock_composite_v3(bonus=0)
+    expected = an.stock_composite_v3(out2["position"], out2["volume_price"],
+                                     out2["trend"], out2["signal"], out2["risk"])
+    assert out2["composite"] == pytest.approx(expected)
 
 
 def test_bias_sweet_boundaries():

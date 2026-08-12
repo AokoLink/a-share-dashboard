@@ -78,9 +78,9 @@ def filter_candidates(codes, spot_df, exclude_codes, min_amount=MIN_AMOUNT):
 
 
 def rank_candidates(scored, per_sector):
-    """剔除规避/高风险,按 composite 降序取前 per_sector。"""
-    kept = [x for x in scored if x["verdict"] != "规避" and x["scores"]["risk"] < 70]
-    kept.sort(key=lambda x: x["scores"]["composite"], reverse=True)
+    """剔除高风险(≥70)与回避;按最终综合分降序取前 per_sector。"""
+    kept = [x for x in scored if x["scores"]["risk"] < 70 and x["verdict"] != "回避"]
+    kept.sort(key=lambda x: x["composite"], reverse=True)
     return kept[:per_sector]
 
 
@@ -88,9 +88,12 @@ def _score_candidate(row, daily_df, now):
     quote = {"price": _num(row["price"]), "change_pct": _num(row["change_pct"]),
              "volume": _num(row["volume"]), "amount": _num(row["amount"])}
     scores = an.score_stock(daily_df, quote, now)
+    if scores["composite"] is None:            # 数据不足(历史<61根)→ 跳过,不进可介入
+        return None
+    final = scores["composite"]                # Task 5 起含 sector_bonus
     return {"code": ds.with_prefix(str(row["code"])), "name": str(row["name"]),
             "price": quote["price"], "change_pct": quote["change_pct"],
-            "scores": scores, "verdict": scores["verdict"]}
+            "scores": scores, "composite": final, "verdict": an.stock_verdict(final)}
 
 
 def _score_sector_stocks(spot_rows, get_daily, now, per_sector):
@@ -105,7 +108,9 @@ def _score_sector_stocks(spot_rows, get_daily, now, per_sector):
             try:
                 daily, stale = fut.result()
                 any_stale = any_stale or bool(stale)
-                ranked.append(_score_candidate(row, daily, now))
+                scored = _score_candidate(row, daily, now)
+                if scored is not None:
+                    ranked.append(scored)
             except Exception:
                 daily_failed += 1                # 单只失败 → 跳过,同板块其余继续
     return rank_candidates(ranked, per_sector), daily_failed, any_stale
@@ -148,8 +153,8 @@ def pick_leaders(spot_rows, total=5, exclude_codes=frozenset()):
 
 
 def tier_for_verdict(verdict):
-    """个股评价 → 可介入档位:关注→可介入,持有/跟踪→观察,其余→None(规避/回调风险/观望排除)。"""
-    if verdict == "关注":
+    """五档 verdict → 档位(规格 §4.6):强烈关注/关注→可介入;持有/跟踪→观察;其余→None。"""
+    if verdict in ("强烈关注", "关注"):
         return "可介入"
     if verdict == "持有/跟踪":
         return "观察"
@@ -205,6 +210,7 @@ def build_recommend(summary_df, spot_df, db, type_key, now, top_sectors=3, per_s
             "match_type": res["match_type"], "constituent_source": res["source_name"],
             "stocks": [{"code": x["code"], "name": x["name"], "price": x["price"],
                         "change_pct": x["change_pct"], "scores": x["scores"],
+                        "composite": round(x["composite"], 2),
                         "verdict": x["verdict"]} for x in ranked],
         })
     return ({"strong_count": len(strong), "sectors": sectors,
@@ -239,6 +245,8 @@ def collect_actionable_leaders(summary_df, spot_df, db, type_key, now, resolve_f
     def work(i, s, L, row):
         daily, stale = get_daily_fn(str(L["code"]))
         scored = _score_candidate(row, daily, now)
+        if scored is None:
+            return None, stale
         tier = tier_for_verdict(scored["verdict"])
         if tier is None:
             return None, stale
@@ -250,8 +258,9 @@ def collect_actionable_leaders(summary_df, spot_df, db, type_key, now, resolve_f
             "sector_code": "%s:%s" % (type_key, s["code"]),
             "sector_name": s["name"], "sector_verdict": s["verdict"],
             "sector_composite": s["composite"],
+            "position": scored["scores"]["position"],
             "trend": scored["scores"]["trend"], "volume_price": scored["scores"]["volume_price"],
-            "signal": scored["scores"]["signal"], "composite": scored["scores"]["composite"],
+            "signal": scored["scores"]["signal"], "composite": round(scored["composite"], 2),
             "risk": scored["scores"]["risk"],
             "bias_pct": bias_pct(daily, scored["price"]),
         }, stale
