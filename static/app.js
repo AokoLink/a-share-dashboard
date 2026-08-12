@@ -261,10 +261,54 @@ async function loadRecommend() {
   renderRecommend(b);
 }
 
+function renderActionableLeaders(b) {
+  const d = b.data, m = b.meta;
+  const cov = m.coverage || {};
+  $("#actionable-meta").innerHTML = cov.scanned != null
+    ? `已扫描板块 ${cov.scanned} 个,可介入/观察 ${cov.total} 只,跳过 ${cov.skipped} 个`
+    : "";
+  const tbody = $("#actionable-table");
+  if (!d.items.length) {
+    tbody.innerHTML = `<tr><td colspan="11" class="muted">当前无可介入龙头(规避超买追高)</td></tr>`;
+  } else {
+    tbody.innerHTML = d.items.map((x) => {
+      const chg = x.change_pct, bias = x.bias_pct;
+      return `<tr class="actionable-row" data-code="${x.code}">
+        <td>${x.sector_name}</td>
+        <td class="verdict">${x.sector_verdict}</td>
+        <td>${x.name}</td>
+        <td>${x.code}</td>
+        <td>${x.price == null ? "—" : x.price.toFixed(2)}</td>
+        <td class="${chg != null && chg >= 0 ? "up" : "down"}">${fmtPct(chg)}</td>
+        <td><i class="leader-tag">${x.tag}</i></td>
+        <td><span class="tier-badge ${x.tier === "可介入" ? "tier-buy" : "tier-watch"}">${x.tier}</span></td>
+        <td>${x.composite == null ? "…" : x.composite.toFixed(2)}</td>
+        <td>${x.risk}</td>
+        <td>${bias == null ? "—" : bias.toFixed(2) + "%"}</td>
+      </tr>`;
+    }).join("");
+    tbody.querySelectorAll("tr.actionable-row").forEach((tr) =>
+      tr.addEventListener("click", () => openStock(tr.dataset.code)));
+  }
+  $("#actionable-skipped").innerHTML = d.skipped_sectors.length
+    ? "被跳过: " + d.skipped_sectors.map((s) => `${s.name}(${s.reason})`).join(" | ")
+    : "";
+}
+
+async function loadActionableLeaders() {
+  try {
+    const b = await api("/api/actionable-leaders");
+    renderActionableLeaders(b);
+  } catch (e) {
+    $("#actionable-skipped").innerHTML = `<span class="muted">可介入龙头拉取失败</span>`;
+  }
+}
+
 function switchView(view) {
   state.view = view;
   $("#sector-view").classList.toggle("hidden", view !== "sectors");
   $("#reco-panel").classList.toggle("hidden", view !== "recommend");
+  $("#actionable-panel").classList.toggle("hidden", view !== "actionable");
 }
 
 // ---- 刷新 ----
@@ -272,6 +316,7 @@ async function refreshAll() {
   try { await loadMarket(); } catch (e) { $("#stale-flag").classList.remove("hidden"); }
   try { await loadSectors(); } catch (e) { /* 沿用旧列表 */ }
   if (state.view === "recommend") { try { await loadRecommend(); } catch (e) { /* 沿用旧 */ } }
+  else if (state.view === "actionable") { try { await loadActionableLeaders(); } catch (e) { /* 沿用旧 */ } }
   if (state.current) {
     try {
       if (state.current.kind === "sector") await openSector(state.current.code);
@@ -297,6 +342,7 @@ document.querySelectorAll(".tab").forEach((t) =>
     const view = t.dataset.view || "sectors";
     switchView(view);
     if (view === "recommend") loadRecommend().catch(() => { /* 沿用旧 */ });
+    else if (view === "actionable") loadActionableLeaders();   // 内部已处理失败态
     else { state.type = t.dataset.type || "industry"; loadSectors(); }
   }));
 $("#btn-sector-search").addEventListener("click", async () => {
