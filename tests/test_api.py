@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import datetime
 import os
+import tempfile
 import threading
 
 import pandas as pd
@@ -43,9 +44,8 @@ def make_quote():
             "turnover": 919035968, "change_pct": 0.3}
 
 
-def make_daily():
-    n = 65
-    closes = [1348.9] * n   # 与 make_quote 现价一致:平盘 → 600519/600000 均 观望(≥38)可入选,避免 v3 下 回避 被剔
+def make_daily(n=65, start=1348.9):
+    closes = [float(start)] * n   # 缺省平盘(start=1348.9 与 make_quote 现价一致):避免 v3 下 回避 被剔;n 供短历史测试
     return pd.DataFrame({
         "date": [f"2026-05-{i%28+1:02d}" for i in range(n)],
         "open": closes, "high": [c * 1.01 for c in closes], "low": [c * 0.99 for c in closes],
@@ -57,12 +57,12 @@ def make_minute():
                          "avg": [1342.0, 1343.0], "volume": [12000, 5000]})
 
 
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
-    db = str(tmp_path / "api.db")
+def client_factory(monkeypatch, db_path=None):
+    if db_path is None:
+        db_path = os.path.join(tempfile.mkdtemp(), "api.db")
     monkeypatch.setattr(ds, "validate_sector_map",
                         lambda: {"ok": True, "total": 0, "valid": 0, "stale": [], "renamed": []})
-    app = app_mod.create_app(db_path=db)
+    app = app_mod.create_app(db_path=db_path)
     monkeypatch.setattr(ds, "get_market_spot", lambda: (make_spot(), False))
     monkeypatch.setattr(ds, "get_index_realtime", lambda: (
         [{"code": "sh000001", "name": "上证指数", "price": 3456.78, "change_pct": 0.45}], False))
@@ -79,6 +79,11 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(an, "is_trading_time", lambda now: True)
     app.config["TESTING"] = True
     return app.test_client()
+
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    return client_factory(monkeypatch, db_path=str(tmp_path / "api.db"))
 
 
 def test_market_endpoint(client):
@@ -157,7 +162,8 @@ def test_sector_bad_param(client):
     assert r3.status_code == 400
 
 
-def test_stock_two_code_forms(client):
+def test_stock_two_code_forms(client, monkeypatch):
+    monkeypatch.setattr(ds, "resolve_code_sectors", lambda c: [])   # 钉死未映射 → sector_resolved=False,聚焦双 code 形态
     r1 = client.get("/api/stock?code=600519")
     r2 = client.get("/api/stock?code=sh600519")
     d1, d2 = r1.get_json()["data"], r2.get_json()["data"]
@@ -218,6 +224,7 @@ def test_stock_stale_propagates(monkeypatch, tmp_path):
     monkeypatch.setattr(ds, "get_stock_quote", lambda c: (make_quote(), True))
     monkeypatch.setattr(ds, "get_stock_daily", lambda c: (make_daily(), False))
     monkeypatch.setattr(ds, "get_stock_minute", lambda c: (make_minute(), False))
+    monkeypatch.setattr(ds, "resolve_code_sectors", lambda c: [])   # 离线:绕过板块打分,聚焦 stale 传播
     app.config["TESTING"] = True
     c = app.test_client()
     r = c.get("/api/stock?code=600519")
@@ -313,3 +320,43 @@ def test_actionable_leaders_source_fail(client, monkeypatch):
     r = client.get("/api/actionable-leaders")
     assert r.status_code == 500
     assert r.get_json()["error"]["code"] == "SOURCE_FAIL"
+
+
+def test_stock_detail_sector_resolution(monkeypatch):
+    # resolve 命中 600519→[白酒];score_all_sectors 给出白酒 composite=80 → bonus 8
+    monkeypatch.setattr(ds, "resolve_code_sectors", lambda c: ["白酒"])
+    monkeypatch.setattr(recommend, "score_all_sectors",
+                        lambda *a, **k: [{"name": "半导体", "composite": 50.0},
+                                         {"name": "白酒", "composite": 80.0}])
+    app = client_factory(monkeypatch)          # 见下方 Step 4 的 helper(复用现有 client fixture 逻辑)
+    r = app.get("/api/stock?code=600519")
+    d = r.get_json()["data"]
+    assert d["sector_resolved"] is True
+    assert "position" in d and d["position"] is not None
+    assert d["verdict"] in ("强烈关注", "关注", "持有/跟踪", "观望", "回避")
+    assert d["tier"] in ("可介入", "观察", None)
+    # composite = stock_composite_v3(..., bonus=8),未舍入判定 verdict,展示 round 2 位
+    sc = d["scores"]
+    assert d["composite"] == pytest.approx(
+        round(an.stock_composite_v3(sc["position"], sc["volume_price"], sc["trend"],
+                                    sc["signal"], sc["risk"], 8), 2), abs=0.01)
+
+
+def test_stock_detail_sector_unresolved(monkeypatch):
+    # 解析失败(未映射)→ sector_resolved=false、加成 0、不 500
+    monkeypatch.setattr(ds, "resolve_code_sectors", lambda c: [])
+    app = client_factory(monkeypatch)
+    r = app.get("/api/stock?code=600519")
+    d = r.get_json()["data"]
+    assert d["sector_resolved"] is False
+    assert d["composite"] is not None and d["verdict"] is not None
+
+
+def test_stock_short_history_all_null(monkeypatch):
+    app = client_factory(monkeypatch)
+    monkeypatch.setattr(ds, "get_stock_daily", lambda c: (make_daily(30), False))  # 30 根 <61,须在 factory 之后覆盖(其缺省 65 根)
+    r = app.get("/api/stock?code=600519")
+    d = r.get_json()["data"]
+    assert d["scores"]["composite"] is None
+    assert d["composite"] is None and d["verdict"] is None and d["tier"] is None
+    assert d["sector_resolved"] is False
