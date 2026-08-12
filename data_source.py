@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """数据层:akshare 封装 + 线程安全 TTL 缓存。所有 get_* 返回 (data, stale)。"""
+import json
+import os
 import threading
 import time
 from datetime import datetime
@@ -147,6 +149,25 @@ def with_prefix(code):
     if c.startswith(("4", "8")):
         return "bj" + c
     return "sh" + c
+
+
+# ---------- 个股 → 板块(规格 §5) ----------
+
+_SECTOR_CODES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sector_codes.json")
+_sector_codes = None
+
+
+def _load_sector_codes():
+    global _sector_codes
+    if _sector_codes is None:
+        with open(_SECTOR_CODES_PATH, encoding="utf-8") as f:
+            _sector_codes = json.load(f)
+    return _sector_codes
+
+
+def resolve_code_sectors(code: str) -> list[str]:
+    """code → THS 板块名列表(手动映射表优先,规格 §5)。未映射 → []。"""
+    return list(_load_sector_codes().get(normalize_code(code), []))
 
 
 # ---------- 腾讯盘口 ----------

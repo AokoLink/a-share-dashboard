@@ -261,3 +261,10 @@ def test_constituents_map_keys_values_valid(monkeypatch):
     assert all(isinstance(k, str) and k for k in ds.SECTOR_CONS_MAP)
     # 每个映射 value 都必须是有效新浪 label(与 SECTOR_CONS_EXPECTED 全集一致)
     assert set(ds.SECTOR_CONS_MAP.values()) <= set(ds.SECTOR_CONS_EXPECTED)
+
+
+def test_resolve_code_sectors_manual_map():
+    assert "白酒" in ds.resolve_code_sectors("600519")
+    assert "半导体" in ds.resolve_code_sectors("600050")
+    assert ds.resolve_code_sectors("sh600519") == ds.resolve_code_sectors("600519")  # 归一化
+    assert ds.resolve_code_sectors("999999") == []      # 未映射 → 空
