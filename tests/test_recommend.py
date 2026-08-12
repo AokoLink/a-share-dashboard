@@ -468,3 +468,18 @@ def test_score_candidate_short_history_skipped(monkeypatch):
            "volume": 100000, "amount": 2e8}
     assert recommend._score_candidate(row, make_daily([10 + i for i in range(30)]),
                                       datetime.datetime(2026, 8, 11, 15, 0)) is None
+
+
+def test_score_sector_stocks_skips_short_history(monkeypatch):
+    # 回归:数据不足(<61 根)→ _score_candidate 返回 None → _score_sector_stocks 跳过而非崩 rank_candidates
+    monkeypatch.setattr(an, "score_stock",
+                        lambda df, q, now: {"position": None, "trend": None, "volume_price": None,
+                                            "signal": None, "risk": None, "composite": None})
+    rows = [{"code": "600050", "name": "X", "price": 5.0, "change_pct": 1.0,
+             "volume": 100000, "amount": 2e8}]
+    ranked, daily_failed, any_stale = recommend._score_sector_stocks(
+        rows, lambda c: (make_daily([10 + i for i in range(30)]), False),
+        datetime.datetime(2026, 8, 11, 15, 0), per_sector=5, sector_composite=78.0)
+    assert ranked == []                 # None 被守卫跳过 → 不崩 rank_candidates
+    assert daily_failed == 0
+    assert any_stale is False

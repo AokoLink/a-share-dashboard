@@ -110,7 +110,9 @@ def _score_sector_stocks(spot_rows, get_daily, now, per_sector, sector_composite
             try:
                 daily, stale = fut.result()
                 any_stale = any_stale or bool(stale)
-                ranked.append(_score_candidate(row, daily, now, sector_composite))
+                scored = _score_candidate(row, daily, now, sector_composite)
+                if scored is not None:
+                    ranked.append(scored)
             except Exception:
                 daily_failed += 1                # 单只失败 → 跳过,同板块其余继续
     return rank_candidates(ranked, per_sector), daily_failed, any_stale
