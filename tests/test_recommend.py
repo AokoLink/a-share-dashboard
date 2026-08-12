@@ -325,3 +325,96 @@ def test_bias_pct():
     assert recommend.bias_pct(make_daily([1.0] * 10), 1.0) is None   # 不足 20 根 → 无 MA20
     assert recommend.bias_pct(pd.DataFrame(), 10.0) is None          # 空 df
     assert recommend.bias_pct(daily, None) is None
+
+
+def test_collect_actionable_leaders_two_tiers_and_dedupe(monkeypatch):
+    mock_sector(monkeypatch)                       # 3 板块全部 建议关注/composite 78
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    by_code = {
+        "600050": {"trend": 100, "vp": 90, "signal": 80, "risk": 0},    # 综合 91.5 → 关注 → 可介入
+        "688981": {"trend": 60, "vp": 60, "signal": 50, "risk": 10},    # 综合 57.5 → 持有/跟踪 → 观察
+    }
+    def fake_score_candidate(row, daily_df, now):
+        c = str(row["code"])
+        s = by_code[c]
+        composite = an.stock_composite(s["trend"], s["vp"], s["signal"])
+        return {"code": ds.with_prefix(c), "name": str(row["name"]),
+                "price": row["price"], "change_pct": row["change_pct"],
+                "scores": {"trend": s["trend"], "volume_price": s["vp"], "signal": s["signal"],
+                           "risk": s["risk"], "composite": composite},
+                "verdict": an.stock_verdict(composite, s["risk"])}
+    monkeypatch.setattr(recommend, "_score_candidate", fake_score_candidate)
+    daily = make_daily([10 + i for i in range(30)])
+    payload, stale = recommend.collect_actionable_leaders(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 11, 15, 0),
+        lambda name: {"ok": True, "codes": ["600050", "600100", "688981"],
+                      "match_type": "manual", "source_name": "电子信息"},
+        lambda c: (daily, False))
+    assert stale is False
+    assert payload["sectors_scanned"] == 3
+    assert payload["skipped_sectors"] == []
+    # 600100 停牌(volume=0)→ pick_leaders 排除;600050/688981 为各板块龙头
+    # 三板块 composite 相同(78)→ 按板块序先到先得,保留首个板块(半导体)那条
+    assert [x["code"] for x in payload["items"]] == ["sh600050", "sh688981"]
+    assert [x["tier"] for x in payload["items"]] == ["可介入", "观察"]
+    assert payload["items"][0]["sector_name"] == "半导体"
+    assert payload["items"][0]["tag"] == "龙头+强势"
+    assert payload["items"][0]["composite"] == 91.5
+    assert payload["items"][0]["bias_pct"] is not None     # bias 用真实 daily(现价 5.0 vs MA20 29.5)
+    assert payload["diagnostics"]["stocks_daily_failed"] == 0
+
+
+def test_collect_actionable_leaders_resolve_failure_skips(monkeypatch):
+    mock_sector(monkeypatch)
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+
+    def resolve(name):
+        if name == "白酒":
+            return {"ok": False, "reason": "no_mapping"}
+        if name == "半导体":
+            raise ds.DataSourceError("boom")     # 网络异常 → source_fail
+        return {"ok": True, "codes": ["600050"], "match_type": "manual", "source_name": "食品饮料"}
+    payload, _ = recommend.collect_actionable_leaders(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 11, 15, 0), resolve,
+        lambda c: (make_daily([10 + i for i in range(30)]), False))
+    reasons = sorted(s["reason"] for s in payload["skipped_sectors"])
+    assert reasons == ["no_mapping", "source_fail"]
+    assert payload["sectors_scanned"] == 3
+    assert payload["total"] == 1                 # 化工 600050 → 关注/持有跟踪 之一
+    assert payload["items"][0]["code"] == "sh600050"
+
+
+def test_collect_actionable_leaders_daily_failure_skips(monkeypatch):
+    mock_sector(monkeypatch)
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+
+    def resolve(name):
+        if name == "半导体":
+            return {"ok": True, "codes": ["600050", "688981"],
+                    "match_type": "manual", "source_name": "电子信息"}
+        return {"ok": True, "codes": ["600050"], "match_type": "manual", "source_name": "食品饮料"}
+
+    def flaky(c):
+        if c == "688981":
+            raise ds.DataSourceError("boom")
+        return make_daily([10 + i for i in range(30)]), False
+    payload, _ = recommend.collect_actionable_leaders(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 11, 15, 0), resolve, flaky)
+    codes = [x["code"] for x in payload["items"]]
+    assert codes == ["sh600050"]                 # 688981 日线失败被跳过,同板块其余保留
+    assert payload["diagnostics"]["stocks_daily_failed"] == 1
+
+
+def test_collect_actionable_leaders_stale_aggregation(monkeypatch):
+    mock_sector(monkeypatch)
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    payload, stale = recommend.collect_actionable_leaders(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 11, 15, 0),
+        lambda name: {"ok": True, "codes": ["600050"], "match_type": "manual", "source_name": "电子信息"},
+        lambda c: (make_daily([10 + i for i in range(30)]), True))   # 候选 stale
+    assert stale is True
+    assert payload["items"][0]["code"] == "sh600050"

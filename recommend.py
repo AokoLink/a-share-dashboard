@@ -210,3 +210,76 @@ def build_recommend(summary_df, spot_df, db, type_key, now, top_sectors=3, per_s
     return ({"strong_count": len(strong), "sectors": sectors,
              "skipped_sectors": skipped, "diagnostics": diagnostics},
             stale_any)
+
+
+def collect_actionable_leaders(summary_df, spot_df, db, type_key, now, resolve_fn, get_daily_fn):
+    """汇总全部已映射板块的龙头/强势股,过滤为可介入/观察两档。返回 (payload, stale_any)。
+
+    resolve_fn / get_daily_fn 可注入(测试 mock),生产传 ds.resolve_sector_constituents / ds.get_stock_daily。
+    板块评价仅作展示列(不过滤板块);跨板块同 code 去重按板块 composite 降序先到先得。
+    """
+    sectors = score_all_sectors(summary_df, db, type_key, store, _market_turnover(spot_df), now)
+    new_codes = ds.get_new_stocks()
+    spot_index = {str(r["code"]): r for r in spot_df.to_dict("records")}
+    tasks, skipped = [], []
+    for i, s in enumerate(sectors):
+        try:
+            res = resolve_fn(s["name"])
+        except Exception:
+            skipped.append({"name": s["name"], "reason": "source_fail"})
+            continue
+        if not res["ok"]:
+            skipped.append({"name": s["name"], "reason": res.get("reason", "source_fail")})
+            continue
+        leaders = pick_leaders([spot_index[c] for c in res.get("codes", []) if c in spot_index],
+                               total=5, exclude_codes=new_codes)
+        for L in leaders:
+            tasks.append((i, s, L, spot_index[L["code"]]))
+
+    def work(i, s, L, row):
+        daily, stale = get_daily_fn(str(L["code"]))
+        scored = _score_candidate(row, daily, now)
+        tier = tier_for_verdict(scored["verdict"])
+        if tier is None:
+            return None, stale
+        return {
+            "_rank": i,
+            "code": scored["code"], "name": scored["name"],
+            "price": scored["price"], "change_pct": scored["change_pct"],
+            "tag": L["tag"], "tier": tier,
+            "sector_code": "%s:%s" % (type_key, s["code"]),
+            "sector_name": s["name"], "sector_verdict": s["verdict"],
+            "sector_composite": s["composite"],
+            "trend": scored["scores"]["trend"], "volume_price": scored["scores"]["volume_price"],
+            "signal": scored["scores"]["signal"], "composite": scored["scores"]["composite"],
+            "risk": scored["scores"]["risk"],
+            "bias_pct": bias_pct(daily, scored["price"]),
+        }, stale
+
+    items, daily_failed, stale_any = [], 0, False
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futures = {ex.submit(work, i, s, L, row): 1 for i, s, L, row in tasks}
+        for fut in as_completed(futures):
+            try:
+                item, stale = fut.result()
+                stale_any = stale_any or bool(stale)
+                if item is not None:
+                    items.append(item)
+            except Exception:
+                daily_failed += 1              # 单只日线/打分失败 → 跳过该股,其余继续
+
+    # 跨板块去重:score_all_sectors 已按 composite 降序 → _rank 即板块序,先到先得
+    items.sort(key=lambda x: (x["_rank"], -(x["composite"] or 0)))
+    seen, unique = set(), []
+    for it in items:
+        if it["code"] in seen:
+            continue
+        seen.add(it["code"])
+        it.pop("_rank")                        # 内部字段,出参前移除
+        unique.append(it)
+    # 排序:可介入在前,观察在后;组内按综合分降序
+    unique.sort(key=lambda x: (x["tier"] != "可介入", -(x["composite"] or 0)))
+    return ({"sectors_scanned": len(sectors), "total": len(unique), "items": unique,
+             "skipped_sectors": skipped,
+             "diagnostics": {"stocks_daily_failed": daily_failed}},
+            stale_any)

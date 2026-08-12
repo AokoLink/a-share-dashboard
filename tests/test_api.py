@@ -10,6 +10,7 @@ import analysis as an
 import app as app_mod
 import data_source as ds
 import store
+import recommend
 
 
 def make_spot():
@@ -268,3 +269,43 @@ def test_recommend_stale_propagates(monkeypatch, tmp_path):
     app.config["TESTING"] = True
     r = app.test_client().get("/api/recommend")
     assert r.get_json()["meta"]["stale"] is True     # 任一候选 stale → 整包 stale
+
+
+def test_actionable_leaders_endpoint(client, monkeypatch):
+    payload = {
+        "sectors_scanned": 3, "total": 1, "items": [
+            {"code": "sh600050", "name": "中国联通", "price": 5.0, "change_pct": 3.0,
+             "tag": "龙头+强势", "tier": "可介入", "sector_code": "industry:885887",
+             "sector_name": "半导体", "sector_verdict": "建议关注", "sector_composite": 78.0,
+             "trend": 100, "volume_price": 90, "signal": 80, "composite": 91.5, "risk": 0,
+             "bias_pct": -83.05},
+        ],
+        "skipped_sectors": [{"name": "白酒", "reason": "no_mapping"}],
+        "diagnostics": {"stocks_daily_failed": 0},
+    }
+    monkeypatch.setattr(recommend, "collect_actionable_leaders",
+                        lambda *a, **k: (payload, False))
+    r = client.get("/api/actionable-leaders")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    d = body["data"]
+    assert d["generated_at"]
+    assert d["total"] == 1
+    it = d["items"][0]
+    assert it["tier"] == "可介入" and it["bias_pct"] == -83.05
+    assert it["sector_code"] == "industry:885887"
+    cov = body["meta"]["coverage"]
+    assert cov["scanned"] == 3 and cov["total"] == 1 and cov["skipped"] == 1
+    assert cov["skipped_by_reason"] == {"no_mapping": 1}
+    assert body["meta"]["mapping_health"]["ok"] is True
+    assert body["meta"]["stale"] is False
+
+
+def test_actionable_leaders_source_fail(client, monkeypatch):
+    def boom(t):
+        raise ds.DataSourceError("network down")
+    monkeypatch.setattr(ds, "get_sector_summary", boom)
+    r = client.get("/api/actionable-leaders")
+    assert r.status_code == 500
+    assert r.get_json()["error"]["code"] == "SOURCE_FAIL"
