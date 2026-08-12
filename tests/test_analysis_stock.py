@@ -32,34 +32,78 @@ def dt_now(h=15, m=0):
     return datetime(2026, 8, 11, h, m)  # 周二收盘后(默认)
 
 
-def test_volume_price_score_volume_surge():
-    # 量比2.0 + 涨幅5% → 放量上攻 +30
-    df = make_daily([float(10 + i) for i in range(30)])
-    df["volume"] = [100000] * 29 + [200000]   # 今日显著放量(但 avg5 用 -6:-1,今日计入后 5 日均量被抬高)
-    # 注:avg5 取 [-6:-1] 不含最后一根 → 5日均量=100000
-    q = quote(volume=400000, change_pct=5.0)  # 10:30 → 折算 400000*240/60=1600000 → 量比16
-    s = an.compute_volume_price_score(df, q, dt_now())
-    assert s == pytest.approx(70.0)  # 40+30(放量上攻);未突破平台
+def test_vol_health_tiers():
+    assert an._vol_health(1.5) == pytest.approx(35)
+    assert an._vol_health(1.51) == pytest.approx(26)
+    assert an._vol_health(2.5) == pytest.approx(26)
+    assert an._vol_health(2.51) == pytest.approx(12)
+    assert an._vol_health(None) == pytest.approx(12)
 
 
-def test_volume_price_shrink_healthy_pullback():
-    # 缩量(量比<0.7)+ 跌幅≤3% + 站上 MA20 → 缩量健康回踩
-    closes = [float(10 + i) for i in range(30)]
-    df = make_daily(closes)
-    df["volume"] = [100000] * 29 + [100000]
-    q = quote(volume=10000, change_pct=-1.0, price=30.0)  # 10:30 折算量比≈0.4
-    s = an.compute_volume_price_score(df, q, dt_now())
-    # 站上 MA20(close=30 > ma20≈24.5) + 缩量 + 跌幅≤3 → +30
-    assert s == pytest.approx(70.0)
+def test_price_volume_tiers():
+    assert an._price_volume(5, 1.5) == pytest.approx(35)
+    assert an._price_volume(5, None) == pytest.approx(25)     # vr 缺失不误判
+    assert an._price_volume(0.5, 0.5) == pytest.approx(15)
+    assert an._price_volume(0.5, None) == pytest.approx(25)
+    assert an._price_volume(-2, 1.5) == pytest.approx(5)
+    assert an._price_volume(-2, 0.5) == pytest.approx(25)
 
 
-def test_signal_score_macd_golden_cross_and_breakout():
-    # 构造 V 型:前段下跌后急升 → 金叉
-    closes = [float(50 - i) for i in range(30)] + [float(20 + i * 2) for i in range(30)]
-    df = make_daily(closes)
-    q = quote(price=closes[-1] * 1.1)  # 突破前20日平台
-    s = an.compute_signal_score(df, q)
-    assert s > 50.0  # 金叉 +40,突破 +30 → 120 封顶 100
+def test_vol_sustain_sweet_zone():
+    # r=0.7/1.0/1.5 边界 → 6/20/30/12(甜区 1.0~1.5 最高,≥1.5 回落)
+    assert an._vol_sustain(0.69) == pytest.approx(6)
+    assert an._vol_sustain(0.7) == pytest.approx(20)
+    assert an._vol_sustain(0.99) == pytest.approx(20)
+    assert an._vol_sustain(1.0) == pytest.approx(30)
+    assert an._vol_sustain(1.49) == pytest.approx(30)
+    assert an._vol_sustain(1.5) == pytest.approx(12)
+    assert an._vol_sustain(None) == pytest.approx(0)
+
+
+def test_macd_branch_priority():
+    # 当根金叉零轴上 30 > 零轴下 15 > 维持多头 12 > 弱多头 8 > 其余 0
+    assert an._macd_branch(1.0, 0.0, -1.0, 0.0) == pytest.approx(30)
+    assert an._macd_branch(-1.0, -2.0, -3.0, -2.0) == pytest.approx(15)
+    assert an._macd_branch(1.0, 0.0, 0.5, 0.3) == pytest.approx(12)   # 非当根,DIF>0
+    assert an._macd_branch(-1.0, -2.0, -1.5, -2.5) == pytest.approx(8)
+    assert an._macd_branch(-2.0, -1.0, -2.5, -1.5) == pytest.approx(0)
+
+
+def test_rsi_and_momentum_tiers():
+    assert an._rsi_score(30) == pytest.approx(25)   # r<30 落 ≤65 → 超卖修复加分
+    assert an._rsi_score(65) == pytest.approx(25)
+    assert an._rsi_score(65.1) == pytest.approx(12)
+    assert an._rsi_score(80) == pytest.approx(12)
+    assert an._rsi_score(80.1) == pytest.approx(5)
+    assert an._momentum_score(0) == pytest.approx(15)
+    assert an._momentum_score(8) == pytest.approx(15)
+    assert an._momentum_score(8.1) == pytest.approx(3)
+    assert an._momentum_score(-1) == pytest.approx(8)
+    assert an._momentum_score(-3) == pytest.approx(8)
+    assert an._momentum_score(-3.1) == pytest.approx(3)
+
+
+def test_breakout_gated_by_pos60():
+    # pos60≥0.6 时创新高不加分;pos60<0.6 时加 20(放量)或 10(不放量)
+    assert an._breakout_score(0.7, 10.0, 9.5, 1.5) == pytest.approx(0)
+    assert an._breakout_score(0.3, 10.0, 9.5, 1.5) == pytest.approx(20)
+    assert an._breakout_score(0.3, 10.0, 9.5, 1.0) == pytest.approx(10)
+    assert an._breakout_score(0.3, 9.0, 9.5, 1.5) == pytest.approx(0)
+
+
+def test_volume_price_score_v3_exact():
+    # 65 根平量 100000,收盘后 vr=1.0:分项一 35 + 分项二(涨0.5%,vr 1.0)→25 + 分项三 r=1.0→30 = 90
+    df = make_daily([float(10 + i) for i in range(65)])
+    q = quote(price=df["close"].iloc[-1], change_pct=0.5, volume=100000)
+    assert an.compute_volume_price_score(df, q, dt_now(15, 0)) == pytest.approx(90.0)
+
+
+def test_signal_score_v3_steady_rise():
+    # 持续上升 65 根:MACD 已金叉维持(DIF>0)→12 + RSI≈100→5 + 突破被门控(高位)→0
+    # + ret5=(74/69-1)=7.25% → 动量 15 = 32
+    df = make_daily([float(10 + i) for i in range(65)])
+    q = quote(price=df["close"].iloc[-1], change_pct=2.0, volume=100000)
+    assert an.compute_signal_score(df, q, dt_now(15, 0)) == pytest.approx(32.0)
 
 
 def test_stock_risk_max_semantics():

@@ -341,43 +341,115 @@ def _avg5_volume(daily_df):
     return None if pd.isna(v) or v <= 0 else v
 
 
+# ---- 个股评分 v3:量价/信号 子助手(规格 §4.2/§4.4) ----
+
+def _vol_health(vr):
+    """分项一 量比健康度。vr≤1.5→35;1.5<vr≤2.5→26;vr>2.5→12;缺失→12。"""
+    if vr is None:
+        return 12
+    if vr <= 1.5:
+        return 35
+    if vr <= 2.5:
+        return 26
+    return 12
+
+
+def _price_volume(chg, vr):
+    """分项二 价量一致。chg>1且vr>1.2→35;chg>0且vr<0.8→15;chg<−1且vr>1.2→5;其余→25。"""
+    if chg > 1 and vr is not None and vr > 1.2:
+        return 35
+    if chg > 0 and vr is not None and vr < 0.8:
+        return 15
+    if chg < -1 and vr is not None and vr > 1.2:
+        return 5
+    return 25
+
+
+def _vol_sustain(r):
+    """分项三 量能持续(甜区)。r<0.7→6;0.7≤r<1.0→20;1.0≤r<1.5→30;r≥1.5→12;缺失→0。"""
+    if r is None:
+        return 0
+    if r < 0.7:
+        return 6
+    if r < 1.0:
+        return 20
+    if r < 1.5:
+        return 30
+    return 12
+
+
+def _rsi_score(rsi):
+    if rsi <= 65:
+        return 25
+    if rsi <= 80:
+        return 12
+    return 5
+
+
+def _momentum_score(ret5):
+    if 0 <= ret5 <= 8:
+        return 15
+    if -3 <= ret5 < 0:
+        return 8
+    return 3
+
+
+def _macd_branch(dif, dea, prev_dif, prev_dea):
+    """MACD 互斥分支(规格 §4.4):当根金叉优先,零轴上严格更高。"""
+    if prev_dif <= prev_dea and dif > dea:      # 当根金叉
+        return 30 if dif > 0 else 15
+    if dif > dea:                               # 已金叉维持
+        return 12 if dif > 0 else 8
+    return 0
+
+
+def _pos60(daily_df):
+    """60日位置(0..1)。分母≤0 → 0.5。"""
+    lo_min = daily_df["low"].iloc[-60:].min()
+    hi_max = daily_df["high"].iloc[-60:].max()
+    if hi_max - lo_min <= 0:
+        return 0.5
+    return (daily_df["close"].iloc[-1] - lo_min) / (hi_max - lo_min)
+
+
+def _breakout_score(pos60, last_close, prev_high, vr):
+    """低位门控突破(规格 §4.4):仅 pos60<0.6 时创新高加分。"""
+    if pos60 is None or pos60 >= 0.6:
+        return 0
+    if last_close > prev_high:
+        return 20 if vr is not None and vr > 1.2 else 10
+    return 0
+
+
 def compute_volume_price_score(daily_df, quote, now):
-    if len(daily_df) < 5:
-        return 50.0
-    elapsed = trading_minutes_elapsed(now)
-    vr = custom_volume_ratio(quote.get("volume", 0), elapsed, _avg5_volume(daily_df))
-    price = quote.get("price", daily_df["close"].iloc[-1])
-    change = quote.get("change_pct", 0.0)
-    score = 40.0
-    if vr is not None:
-        if vr > 1.5 and change > 0:
-            score += 30  # 放量上攻
-        df = add_ma(daily_df, (20,))
-        ma20 = df["ma20"].iloc[-1]
-        if vr > 1.5 and len(daily_df) > 21 and price > daily_df["high"].iloc[-22:-1].max():
-            score += 30  # 放量突破平台
-        elif (vr < 0.7 and change >= -3 and not pd.isna(ma20) and price > ma20):
-            score += 30  # 缩量健康回踩
-    return min(100.0, score)
+    """量价分(规格 §4.2):量比健康 + 价量一致 + 量能持续(甜区)。"""
+    if len(daily_df) < 25:
+        return 0.0
+    vr = custom_volume_ratio(quote.get("volume", 0), trading_minutes_elapsed(now), _avg5_volume(daily_df))
+    chg = quote.get("change_pct", 0.0) or 0.0
+    b20 = daily_df["volume"].iloc[-25:-5].mean()
+    a5 = daily_df["volume"].iloc[-5:].mean()
+    r = a5 / b20 if b20 and b20 > 0 else None
+    return min(100.0, _vol_health(vr) + _price_volume(chg, vr) + _vol_sustain(r))
 
 
-def compute_signal_score(daily_df, quote):
+def compute_signal_score(daily_df, quote, now):
+    """信号分(规格 §4.4):MACD 优先级 + RSI + 低位门控突破 + 动量。"""
     if len(daily_df) < 26:
-        return 50.0
+        return 0.0
     df = add_macd(daily_df)
     last, prev = df.iloc[-1], df.iloc[-2]
-    score = 50.0
-    if not pd.isna(last["dif"]) and not pd.isna(last["dea"]):
-        if prev["dif"] <= prev["dea"] and last["dif"] > last["dea"]:
-            score += 40   # MACD 金叉
-        elif prev["dif"] >= prev["dea"] and last["dif"] < last["dea"]:
-            score -= 40   # MACD 死叉
-    if len(df) > 21:
-        prev_high = df["high"].iloc[-21:-1].max()  # 前20日(不含当日)
-        price = quote.get("price", last["close"])
-        if price > prev_high:
-            score += 30   # 突破近期平台高点
-    return min(100.0, max(0.0, score))
+    dif, dea = last["dif"], last["dea"]
+    if (_is_missing(dif) or _is_missing(dea) or _is_missing(prev["dif"]) or _is_missing(prev["dea"])):
+        macd = 0
+    else:
+        macd = _macd_branch(dif, dea, prev["dif"], prev["dea"])
+    rsi = _rsi_score(rsi14(daily_df["close"]))
+    vr = custom_volume_ratio(quote.get("volume", 0), trading_minutes_elapsed(now), _avg5_volume(daily_df))
+    prev_high = df["high"].iloc[-21:-1].max() if len(df) > 21 else None
+    breakout = _breakout_score(_pos60(daily_df), last["close"], prev_high, vr)
+    ret5 = (last["close"] / df["close"].iloc[-6] - 1) * 100 if len(df) >= 6 else 0.0
+    return macd + rsi + breakout + _momentum_score(ret5)
 
 
 def compute_stock_risk(daily_df, quote, now):
@@ -427,7 +499,7 @@ def stock_verdict(composite, risk):
 def score_stock(daily_df, quote, now):
     trend = compute_trend_score(daily_df)
     vp = compute_volume_price_score(daily_df, quote, now)
-    signal = compute_signal_score(daily_df, quote)
+    signal = compute_signal_score(daily_df, quote, now)
     risk = compute_stock_risk(daily_df, quote, now)
     composite = stock_composite(trend, vp, signal)
     return {"trend": trend, "volume_price": vp, "signal": signal,
