@@ -225,22 +225,113 @@ def collect_sector_metrics(db, type_key, code, change_pct, turnover, up_count, d
     return scores
 
 
+# ---- 个股评分 v3:位置/趋势 子助手(规格 §4.1/§4.3) ----
+
+def _platform_score(amp):
+    """近10日振幅平台分。amp:百分比;amp≤8→30;8<amp≤15→15;amp>15→0;缺失→0。"""
+    if amp is None:
+        return 0
+    if amp <= 8:
+        return 30
+    if amp <= 15:
+        return 15
+    return 0
+
+
+def _bias_sweet(bias):
+    """乖离甜区(规格 §4.1),单位 %。0/3/8/15/20 处连续;−8/−3 残留小台阶。"""
+    if bias < -8:
+        return 0
+    if bias < -3:
+        return 15
+    if bias < 0:
+        return 35
+    if bias <= 3:
+        return 35 + 65 * min(1, bias / 3)
+    if bias <= 8:
+        return 100 - (bias - 3) * 12
+    if bias <= 15:
+        return 40 - (bias - 8) * 4
+    if bias <= 20:
+        return 12 - (bias - 15) * 1.4
+    return 5
+
+
+def _trend_fresh(df):
+    """近5根内 MA5 上穿 MA10 →15;否则当前 MA5>MA10 →8;否则 0。df 需含 ma5/ma10 列。"""
+    for i in range(max(0, len(df) - 5), len(df)):
+        if i == 0:
+            continue
+        pm5, pm10 = df["ma5"].iloc[i - 1], df["ma10"].iloc[i - 1]
+        cm5, cm10 = df["ma5"].iloc[i], df["ma10"].iloc[i]
+        if (not _is_missing(pm5) and not _is_missing(pm10) and not _is_missing(cm5)
+                and not _is_missing(cm10) and pm5 <= pm10 and cm5 > cm10):
+            return 15
+    m5, m10 = df["ma5"].iloc[-1], df["ma10"].iloc[-1]
+    if not _is_missing(m5) and not _is_missing(m10) and m5 > m10:
+        return 8
+    return 0
+
+
+def rsi14(closes):
+    """Wilder RSI(14)。数据不足或全平 → 50;全涨 → 100;全跌 → 0。"""
+    s = pd.Series(closes, dtype=float).dropna()
+    if len(s) < 15:
+        return 50.0
+    delta = s.diff()
+    avg_gain = delta.clip(lower=0.0).ewm(alpha=1.0 / 14, adjust=False).mean()
+    avg_loss = (-delta.clip(upper=0.0)).ewm(alpha=1.0 / 14, adjust=False).mean()
+    g, l = float(avg_gain.iloc[-1]), float(avg_loss.iloc[-1])
+    if g == 0 and l == 0:
+        return 50.0
+    if l == 0:
+        return 100.0
+    return 100.0 - 100.0 / (1.0 + g / l)
+
+
+def max_drawdown_20(daily_df):
+    """近20根收盘最大回撤(%,负数)。不足 → 0。"""
+    closes = daily_df["close"].tail(20)
+    if len(closes) < 2:
+        return 0.0
+    peak = closes.cummax()
+    return float((closes - peak).div(peak).min() * 100)
+
+
+def compute_position_score(daily_df):
+    """位置分(规格 §4.1):低60日位置高分 + 乖离甜区 + 平台。"""
+    if len(daily_df) < 61:
+        return 0.0
+    df = add_ma(daily_df, (20,))
+    last_close = df["close"].iloc[-1]
+    lo_min = df["low"].iloc[-60:].min()
+    hi_max = df["high"].iloc[-60:].max()
+    pos60 = 0.5 if hi_max - lo_min <= 0 else (last_close - lo_min) / (hi_max - lo_min)
+    pos_factor = 100.0 * (1.0 - pos60)
+    ma20 = df["ma20"].iloc[-1]
+    bias = 0.0 if _is_missing(ma20) or ma20 <= 0 else (last_close - ma20) / ma20 * 100
+    base = df["close"].iloc[-11] if len(df) >= 11 else 0
+    amp = 0 if base is None or base <= 0 \
+        else (df["high"].iloc[-10:].max() - df["low"].iloc[-10:].min()) / base * 100
+    return min(100.0, 0.5 * pos_factor + 0.35 * _bias_sweet(bias) + 0.15 * _platform_score(amp))
+
+
 # ---- 个股量价打分(规格 §6.3/§7) ----
 
 def compute_trend_score(daily_df):
-    if len(daily_df) < 5:
-        return 50.0
+    """趋势结构分(规格 §4.3):order 三档 + fresh 金叉奖励;自然上限 55。"""
+    if len(daily_df) < 61:
+        return 0.0
     df = add_ma(daily_df)
-    last = df.iloc[-1]
-    score = 40.0
-    m5, m10, m20, m60 = last["ma5"], last["ma10"], last["ma20"], last["ma60"]
-    if not pd.isna(m5) and not pd.isna(m10) and not pd.isna(m20) and m5 > m10 > m20:
-        score += 30
-    if not pd.isna(m20) and last["close"] > m20:
-        score += 20
-    if not pd.isna(m60) and last["close"] > m60:
-        score += 10
-    return score
+    m5, m10, m20, m60 = (df["ma%d" % p].iloc[-1] for p in (5, 10, 20, 60))
+    order = 0
+    if not _is_missing(m5) and not _is_missing(m10) and m5 > m10:
+        order += 1
+    if not _is_missing(m10) and not _is_missing(m20) and m10 > m20:
+        order += 1
+    if not _is_missing(m20) and not _is_missing(m60) and m20 > m60:
+        order += 1
+    return 40.0 * order / 3.0 + _trend_fresh(df)
 
 
 def _avg5_volume(daily_df):

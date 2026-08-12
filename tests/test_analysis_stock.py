@@ -28,20 +28,8 @@ def make_daily(closes, volumes=None):
         "open": opens, "high": highs, "low": lows, "close": closes, "volume": vols})
 
 
-def dt_now(h=10, m=30):
-    return datetime(2026, 8, 11, h, m)  # 周二盘中
-
-
-def test_trend_score_bull_alignment():
-    # 持续上升 → 多头排列 + 站上 MA20/60 → 高分
-    closes = [float(10 + i * 0.3) for i in range(65)]
-    df = make_daily(closes)
-    assert an.compute_trend_score(df) == pytest.approx(100.0)
-    # 持续下跌 → 破位 → 低分(基础40)
-    df2 = make_daily([float(100 - i * 0.5) for i in range(65)])
-    assert an.compute_trend_score(df2) == pytest.approx(40.0)
-    # 数据不足 → 基础分
-    assert an.compute_trend_score(make_daily([1.0, 2.0])) == pytest.approx(50.0)
+def dt_now(h=15, m=0):
+    return datetime(2026, 8, 11, h, m)  # 周二收盘后(默认)
 
 
 def test_volume_price_score_volume_surge():
@@ -113,3 +101,73 @@ def test_score_stock_wrapper():
     out = an.score_stock(df, q, dt_now(15, 0))  # 收盘后
     assert set(out) == {"trend", "volume_price", "signal", "risk", "composite", "verdict"}
     assert 0 <= out["risk"] <= 100
+
+
+def test_bias_sweet_boundaries():
+    # 0/3/8/15/20 处连续;−8/−3 残留台阶存在但偏转 < 一个档位宽(5)
+    assert an._bias_sweet(0) == pytest.approx(35)
+    assert an._bias_sweet(0.01) == pytest.approx(35 + 65 * (0.01 / 3))
+    assert an._bias_sweet(3) == pytest.approx(100)
+    assert an._bias_sweet(3.1) == pytest.approx(100 - 0.1 * 12)
+    assert an._bias_sweet(8) == pytest.approx(40)
+    assert an._bias_sweet(15) == pytest.approx(12)
+    assert an._bias_sweet(15.1) == pytest.approx(12 - 0.1 * 1.4)
+    assert an._bias_sweet(20) == pytest.approx(5)
+    assert an._bias_sweet(20.1) == pytest.approx(5)
+    assert an._bias_sweet(-8.01) == pytest.approx(0)   # 台阶落在 −8 处(规格 §4.1:−8 起入 15 档)
+    assert an._bias_sweet(-8) == pytest.approx(15)
+    assert an._bias_sweet(-3) == pytest.approx(35)
+    assert an._bias_sweet(-3.01) == pytest.approx(15)
+
+
+def test_platform_score_three_tiers():
+    assert an._platform_score(8) == pytest.approx(30)
+    assert an._platform_score(8.1) == pytest.approx(15)
+    assert an._platform_score(15) == pytest.approx(15)
+    assert an._platform_score(15.1) == pytest.approx(0)
+    assert an._platform_score(None) == pytest.approx(0)
+
+
+def test_position_score_flat_zero_bias():
+    # 65 根全平:pos60=0.5→pos_factor=50;bias=0→甜区35;platform amp=2%→30
+    # position = 0.5*50 + 0.35*35 + 0.15*30 = 41.75
+    assert an.compute_position_score(make_daily([10.0] * 65)) == pytest.approx(41.75)
+
+
+def test_position_score_ma20_zero_guard():
+    # 全部价格为 0:MA20=0 → bias 按 0 处理,不抛异常;pos60 分母 0 → 0.5
+    assert an.compute_position_score(make_daily([0.0] * 65)) == pytest.approx(41.75)
+    assert an.compute_position_score(make_daily([1.0] * 10)) == pytest.approx(0.0)  # 数据不足 → 0
+
+
+def test_rsi14_wilder():
+    # 全涨 → 100;全跌 → 0;全平 → 50
+    assert an.rsi14(pd.Series([10.0 + i for i in range(20)])) == pytest.approx(100)
+    assert an.rsi14(pd.Series([30.0 - i for i in range(20)])) == pytest.approx(0)
+    assert an.rsi14(pd.Series([10.0] * 20)) == pytest.approx(50)
+
+
+def test_max_drawdown_20():
+    closes = [10.0] * 10 + [10.0, 9.0, 8.0, 7.0, 8.0, 9.0]   # 峰值 10 → 谷底 7 → −30%
+    assert an.max_drawdown_20(make_daily(closes)) == pytest.approx(-30)
+    assert an.max_drawdown_20(make_daily([10.0] * 20)) == pytest.approx(0)
+
+
+def _ma_df(ma5, ma10):
+    return pd.DataFrame({"ma5": [float(x) for x in ma5], "ma10": [float(x) for x in ma10]})
+
+
+def test_trend_fresh_cross():
+    # 近 5 根内 MA5 上穿 MA10 → 15(构造:末尾两根前 MA5≤MA10,末根 MA5>MA10)
+    assert an._trend_fresh(_ma_df([10, 9, 11], [10, 10, 10])) == pytest.approx(15)
+    # 当前 MA5>MA10 但无新交叉 → 8
+    assert an._trend_fresh(_ma_df([9, 10, 11], [8, 9, 10])) == pytest.approx(8)
+    # MA5<MA10 → 0
+    assert an._trend_fresh(_ma_df([10, 10, 9], [10, 11, 11])) == pytest.approx(0)
+
+
+def test_trend_score_v3():
+    # 持续上升:order3(40)+ fresh8 = 48;持续下跌:order0 + fresh0 = 0
+    assert an.compute_trend_score(make_daily([float(10 + i * 0.3) for i in range(65)])) == pytest.approx(48.0)
+    assert an.compute_trend_score(make_daily([float(100 - i * 0.5) for i in range(65)])) == pytest.approx(0.0)
+    assert an.compute_trend_score(make_daily([1.0, 2.0])) == pytest.approx(0.0)  # 数据不足
