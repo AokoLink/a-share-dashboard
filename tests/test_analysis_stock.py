@@ -129,7 +129,7 @@ def test_stock_risk_v3_bias_only():
 
 
 def test_stock_risk_v3_additive_cap100():
-    # 乖离82%→70 + 放量滞涨→25 + 高位长上影→20 + 近20日回撤−50%→20 = 135 → cap 100
+    # 乖离82%→70 + 放量滞涨→25 + 高位长上影→20 = 115 → cap 100(近20日回撤项此 fixture 为 0,未触发;见 max_drawdown_20 单测)
     df = make_daily([10.0] * 24 + [19.8, 20.0])
     q = quote(price=20.0, change_pct=1.0, volume=500000,
               high=21.0, low=19.5, open=19.8)
