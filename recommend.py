@@ -164,14 +164,18 @@ def tier_for_verdict(verdict):
 
 
 def sector_bonus(sector_composite):
-    """板块共振加成(规格 §5):≥70→+8;55≤x<70→+4;x<40→−5;其余→+0;缺失→0。"""
+    """板块共振加成(规格 §5):≥68→+8;60≤x<68→+4;x<50→−5;其余→+0;缺失→0。
+
+    阈值经 Task 8 校准(§9.4)按 live 板块 composite 分布重锚:原 70/55/40 下
+    +4 档覆盖约 61% 板块(近乎恒触发)、−5 仅 3%;重锚后 +8≈21%、+4≈29%、0≈42%、−5≈8%。
+    """
     if sector_composite is None:
         return 0
-    if sector_composite >= 70:
+    if sector_composite >= 68:
         return 8
-    if sector_composite >= 55:
+    if sector_composite >= 60:
         return 4
-    if sector_composite < 40:
+    if sector_composite < 50:
         return -5
     return 0
 

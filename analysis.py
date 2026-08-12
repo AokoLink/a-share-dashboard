@@ -502,16 +502,20 @@ def stock_composite_v3(position, vp, trend, signal, risk, sector_bonus=0):
 
 
 def stock_verdict(composite_raw):
-    """五档 verdict(规格 §4.6):≥63 强烈关注;≥58 关注;≥48 持有/跟踪;≥38 观望;<38 回避。用未舍入值判定。"""
+    """五档 verdict(规格 §4.6):≥67 强烈关注;≥62 关注;≥52 持有/跟踪;≥42 观望;<42 回避。用未舍入值判定。
+
+    阈值经 Task 8 校准(§9.5)整组上移 +4:原 63/58/48/38 下可介入率 40.2% 超出
+    top 20–30% 目标,上移后 ≈26%。
+    """
     if composite_raw is None:
         return None
-    if composite_raw >= 63:
+    if composite_raw >= 67:
         return "强烈关注"
-    if composite_raw >= 58:
+    if composite_raw >= 62:
         return "关注"
-    if composite_raw >= 48:
+    if composite_raw >= 52:
         return "持有/跟踪"
-    if composite_raw >= 38:
+    if composite_raw >= 42:
         return "观望"
     return "回避"
 

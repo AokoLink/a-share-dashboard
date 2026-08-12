@@ -154,14 +154,15 @@ def test_composite_v3_risk_discount_and_bonus_before_discount():
 
 
 def test_verdict_v3_five_tiers_unrounded():
-    assert an.stock_verdict(63) == "强烈关注"
-    assert an.stock_verdict(58) == "关注"
-    assert an.stock_verdict(57.996) == "持有/跟踪"   # 未舍入判定,避免两次 round 跨档
-    assert an.stock_verdict(58.004) == "关注"
-    assert an.stock_verdict(48) == "持有/跟踪"
-    assert an.stock_verdict(47.99) == "观望"
-    assert an.stock_verdict(38) == "观望"
-    assert an.stock_verdict(37.99) == "回避"
+    # 阈值经 Task 8 校准整组上移 +4(§9.5):63/58/48/38 → 67/62/52/42
+    assert an.stock_verdict(67) == "强烈关注"
+    assert an.stock_verdict(62) == "关注"
+    assert an.stock_verdict(61.996) == "持有/跟踪"   # 未舍入判定,避免两次 round 跨档
+    assert an.stock_verdict(62.004) == "关注"
+    assert an.stock_verdict(52) == "持有/跟踪"
+    assert an.stock_verdict(51.99) == "观望"
+    assert an.stock_verdict(42) == "观望"
+    assert an.stock_verdict(41.99) == "回避"
     assert an.stock_verdict(None) is None
 
 

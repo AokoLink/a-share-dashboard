@@ -432,31 +432,32 @@ def test_collect_actionable_leaders_stale_aggregation(monkeypatch):
 
 
 def test_sector_bonus_thresholds():
+    # 阈值经 Task 8 校准按 live 分布重锚(§9.4):70/55/40 → 68/60/50
     assert recommend.sector_bonus(None) == 0
-    assert recommend.sector_bonus(70) == 8
-    assert recommend.sector_bonus(69.9) == 4
-    assert recommend.sector_bonus(55) == 4
-    assert recommend.sector_bonus(54.9) == 0
-    assert recommend.sector_bonus(40) == 0
-    assert recommend.sector_bonus(39.9) == -5
+    assert recommend.sector_bonus(68) == 8
+    assert recommend.sector_bonus(67.9) == 4
+    assert recommend.sector_bonus(60) == 4
+    assert recommend.sector_bonus(59.9) == 0
+    assert recommend.sector_bonus(50) == 0
+    assert recommend.sector_bonus(49.9) == -5
 
 
 def test_score_candidate_applies_sector_bonus(monkeypatch):
-    # 纯因子全 50,risk=0:quality=50;板块 composite=78 → bonus=8 → final=58 → 关注/可介入
+    # 纯因子全 55,risk=0:quality=55;板块 composite=78 → bonus=8 → final=63 → 关注/可介入(校准后 62 起可介入)
     monkeypatch.setattr(an, "score_stock",
-                        lambda df, q, now: {"position": 50, "trend": 50, "volume_price": 50,
-                                            "signal": 50, "risk": 0, "composite": 50.0})
+                        lambda df, q, now: {"position": 55, "trend": 55, "volume_price": 55,
+                                            "signal": 55, "risk": 0, "composite": 55.0})
     row = {"code": "600050", "name": "X", "price": 5.0, "change_pct": 1.0,
            "volume": 100000, "amount": 2e8}
     scored = recommend._score_candidate(row, make_daily([10 + i for i in range(65)]),
                                         datetime.datetime(2026, 8, 11, 15, 0), 78.0)
-    assert scored["composite"] == pytest.approx(58.0)
+    assert scored["composite"] == pytest.approx(63.0)
     assert scored["verdict"] == "关注"
     assert recommend.tier_for_verdict(scored["verdict"]) == "可介入"
-    # 弱板块 39.9 → bonus=-5 → final=45 → 观望 → 不可介入
+    # 弱板块 39.9 → bonus=-5 → final=50 → 观望 → 不可介入
     scored2 = recommend._score_candidate(row, make_daily([10 + i for i in range(65)]),
                                          datetime.datetime(2026, 8, 11, 15, 0), 39.9)
-    assert scored2["composite"] == pytest.approx(45.0)
+    assert scored2["composite"] == pytest.approx(50.0)
     assert recommend.tier_for_verdict(scored2["verdict"]) is None
 
 
