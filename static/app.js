@@ -18,6 +18,12 @@ function api(path) {
 
 function fmtPct(v) { return v === null || v === undefined ? "—" : (v > 0 ? "+" : "") + v.toFixed(2) + "%"; }
 
+function verdictClass(v) {
+  if (v === "强烈关注") return "verdict-high";
+  if (v === "回避") return "verdict-avoid";
+  return "";
+}
+
 function renderIndices(indices) {
   $("#indices").innerHTML = indices.map((i) =>
     `<span>${i.name} <b class="${i.change_pct >= 0 ? "up" : "down"}">${fmtPct(i.change_pct)}</b>` +
@@ -121,14 +127,24 @@ async function openStock(code) {
 
 function renderStockScores(d) {
   const sc = d.scores;
-  $("#stock-scores").innerHTML =
-    `<div class="card"><div class="label">${d.name}</div><div class="value">${d.quote.price}</div><div class="muted">${fmtPct(d.quote.change_pct)}</div></div>` +
-    `<div class="card"><div class="label">综合分</div><div class="value">${sc.composite.toFixed(2)}</div></div>` +
-    `<div class="card"><div class="label">趋势</div><div class="value">${sc.trend.toFixed(0)}</div></div>` +
-    `<div class="card"><div class="label">量价</div><div class="value">${sc.volume_price.toFixed(0)}</div></div>` +
-    `<div class="card"><div class="label">信号</div><div class="value">${sc.signal.toFixed(0)}</div></div>` +
-    `<div class="card"><div class="label">风险</div><div class="value">${sc.risk.toFixed(0)}</div></div>` +
-    `<div class="card"><div class="verdict">${d.verdict}</div></div>`;
+  let html =
+    `<div class="card"><div class="label">${d.name}</div><div class="value">${d.quote.price}</div><div class="muted">${fmtPct(d.quote.change_pct)}</div></div>`;
+  if (d.composite === null || d.composite === undefined) {
+    html += `<div class="card"><div class="verdict">数据不足(历史 <3 个月)</div></div>`;
+  } else {
+    html +=
+      `<div class="card"><div class="label">综合分</div><div class="value">${d.composite.toFixed(2)}</div></div>` +
+      `<div class="card"><div class="label">位置</div><div class="value">${sc.position == null ? "…" : sc.position.toFixed(0)}</div></div>` +
+      `<div class="card"><div class="label">趋势</div><div class="value">${sc.trend == null ? "…" : sc.trend.toFixed(0)}</div></div>` +
+      `<div class="card"><div class="label">量价</div><div class="value">${sc.volume_price == null ? "…" : sc.volume_price.toFixed(0)}</div></div>` +
+      `<div class="card"><div class="label">信号</div><div class="value">${sc.signal == null ? "…" : sc.signal.toFixed(0)}</div></div>` +
+      `<div class="card"><div class="label">风险</div><div class="value">${sc.risk == null ? "…" : sc.risk.toFixed(0)}</div></div>` +
+      `<div class="card"><div class="verdict ${verdictClass(d.verdict)}">${d.verdict}</div></div>`;
+  }
+  if (d.sector_resolved === false) {
+    html += `<div class="muted" style="margin-top:8px">板块未解析,未含共振加成</div>`;
+  }
+  $("#stock-scores").innerHTML = html;
 }
 
 // ---- ECharts 图表 ----
@@ -234,14 +250,15 @@ function renderRecommend(b) {
         <span class="muted">成分股:${s.constituent_source}${s.match_type === "keyword" ? "[关键词]" : ""}</span>
       </div>
       <table class="reco-table">
-        <thead><tr><th>代码</th><th>名称</th><th>现价</th><th>涨跌幅</th><th>综合</th><th>风险</th><th>结论</th></tr></thead>
+        <thead><tr><th>代码</th><th>名称</th><th>现价</th><th>涨跌幅</th><th>位置</th><th>综合</th><th>风险</th><th>结论</th></tr></thead>
         <tbody>${s.stocks.map((x) => {
           const chg = x.change_pct;
           return `<tr class="reco-row" data-code="${x.code}">
             <td>${x.code}</td><td>${x.name}</td>
             <td>${x.price == null ? "—" : x.price.toFixed(2)}</td>
             <td class="${chg != null && chg >= 0 ? "up" : "down"}">${fmtPct(chg)}</td>
-            <td>${x.scores.composite == null ? "…" : x.scores.composite.toFixed(2)}</td>
+            <td>${x.scores.position == null ? "…" : x.scores.position.toFixed(0)}</td>
+            <td>${x.composite == null ? "…" : x.composite.toFixed(2)}</td>
             <td>${x.scores.risk}</td>
             <td class="verdict">${x.verdict}</td>
           </tr>`;
@@ -269,7 +286,7 @@ function renderActionableLeaders(b) {
     : "";
   const tbody = $("#actionable-table");
   if (!d.items.length) {
-    tbody.innerHTML = `<tr><td colspan="11" class="muted">当前无可介入龙头(规避超买追高)</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" class="muted">当前无可介入龙头(规避超买追高)</td></tr>`;
   } else {
     tbody.innerHTML = d.items.map((x) => {
       const chg = x.change_pct, bias = x.bias_pct;
@@ -280,6 +297,7 @@ function renderActionableLeaders(b) {
         <td>${x.code}</td>
         <td>${x.price == null ? "—" : x.price.toFixed(2)}</td>
         <td class="${chg != null && chg >= 0 ? "up" : "down"}">${fmtPct(chg)}</td>
+        <td>${x.position == null ? "…" : x.position.toFixed(0)}</td>
         <td><i class="leader-tag">${x.tag}</i></td>
         <td><span class="tier-badge ${x.tier === "可介入" ? "tier-buy" : "tier-watch"}">${x.tier}</span></td>
         <td>${x.composite == null ? "…" : x.composite.toFixed(2)}</td>

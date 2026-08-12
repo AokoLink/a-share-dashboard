@@ -56,3 +56,5 @@ tr.actionable-row:hover { background: var(--bg); }
 .tier-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; color: #fff; }
 .tier-buy { background: var(--down); }
 .tier-watch { background: var(--muted); }
+.verdict-high { color: var(--down); font-weight: 700; }
+.verdict-avoid { color: var(--muted); font-weight: 700; }
