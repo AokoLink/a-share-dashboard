@@ -291,3 +291,37 @@ def test_pick_leaders_empty_and_degenerate():
     assert [x["code"] for x in l1] == ["600001", "600002"]
     assert all(x["tag"] == "强势" for x in l1)
     assert l1[0]["amount"] is None
+
+
+def test_score_all_sectors_returns_all_sorted(monkeypatch):
+    real = an.collect_sector_metrics
+    def fake(db, t, c, *a, **k):
+        if c == "885559":                      # 白酒 → 观望,但 score_all_sectors 仍返回
+            return {**real(db, t, c, *a, **k), "verdict": "观望", "composite": 30.0}
+        return real(db, t, c, *a, **k)         # 半导体/化工 → 真实打分
+    monkeypatch.setattr(an, "collect_sector_metrics", fake)
+    all_rows = recommend.score_all_sectors(make_summary(), ":db:", "industry", fake_store(), 1e12,
+                                           datetime.datetime(2026, 8, 11, 15, 0))
+    codes = [x["code"] for x in all_rows]
+    assert codes[0] == "885887"                                   # 真实打分(consecutive=2)最高,居首
+    assert set(codes) == {"885887", "885559", "885123"}           # 全板块都返回(不过滤)
+    strong = recommend.select_sectors(make_summary(), ":db:", "industry", fake_store(), 1e12,
+                                      datetime.datetime(2026, 8, 11, 15, 0))
+    assert [x["code"] for x in strong] == ["885887"]    # select_sectors 仍过滤(白酒/化工观望)
+
+
+def test_tier_for_verdict():
+    assert recommend.tier_for_verdict("关注") == "可介入"
+    assert recommend.tier_for_verdict("持有/跟踪") == "观察"
+    for v in ("观望", "回调风险", "规避"):
+        assert recommend.tier_for_verdict(v) is None
+    assert recommend.tier_for_verdict(None) is None
+
+
+def test_bias_pct():
+    daily = make_daily([10 + i for i in range(30)])   # 收盘 10..39,末位 MA20 = 29.5
+    assert abs(recommend.bias_pct(daily, 33.0) - 11.86) < 0.01
+    assert abs(recommend.bias_pct(daily, 29.5)) < 0.001
+    assert recommend.bias_pct(make_daily([1.0] * 10), 1.0) is None   # 不足 20 根 → 无 MA20
+    assert recommend.bias_pct(pd.DataFrame(), 10.0) is None          # 空 df
+    assert recommend.bias_pct(daily, None) is None

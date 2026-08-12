@@ -26,8 +26,8 @@ def _market_turnover(spot_df):
     return float(spot_df["amount"].sum()) if len(spot_df) else 0.0
 
 
-def select_sectors(summary_df, db, type_key, store_ctx, market_turnover, now):
-    """对全部板块用公共打分函数打分,返回强势板块(verdict 入选)按 composite 降序。"""
+def score_all_sectors(summary_df, db, type_key, store_ctx, market_turnover, now):
+    """对全部板块用公共打分函数打分,按 composite 降序返回(不过滤)。"""
     rows = []
     for _, r in summary_df.iterrows():
         scores = an.collect_sector_metrics(
@@ -37,8 +37,14 @@ def select_sectors(summary_df, db, type_key, store_ctx, market_turnover, now):
         rows.append({"code": str(r["code"]), "name": str(r["name"]),
                      "composite": scores["composite"], "verdict": scores["verdict"],
                      "scores": scores})
-    strong = [x for x in rows if x["verdict"] in QUALIFYING_VERDICTS]
-    strong.sort(key=lambda x: (x["composite"] is None, -(x["composite"] or 0)))
+    rows.sort(key=lambda x: (x["composite"] is None, -(x["composite"] or 0)))
+    return rows
+
+
+def select_sectors(summary_df, db, type_key, store_ctx, market_turnover, now):
+    """返回强势板块(verdict 入选)按 composite 降序。"""
+    strong = [x for x in score_all_sectors(summary_df, db, type_key, store_ctx, market_turnover, now)
+              if x["verdict"] in QUALIFYING_VERDICTS]
     return strong
 
 
@@ -139,6 +145,29 @@ def pick_leaders(spot_rows, total=5, exclude_codes=frozenset()):
         if len(out) >= total:
             break
     return out
+
+
+def tier_for_verdict(verdict):
+    """个股评价 → 可介入档位:关注→可介入,持有/跟踪→观察,其余→None(规避/回调风险/观望排除)。"""
+    if verdict == "关注":
+        return "可介入"
+    if verdict == "持有/跟踪":
+        return "观察"
+    return None
+
+
+def bias_pct(daily_df, price):
+    """现价偏离 MA20 百分比;(price - ma20)/ma20*100。MA20 缺失 → None。"""
+    price = _num(price)
+    if price is None:
+        return None
+    if not len(daily_df):
+        return None
+    df = an.add_ma(daily_df, (20,))
+    ma20 = _num(df["ma20"].iloc[-1])
+    if not ma20:
+        return None
+    return round((price - ma20) / ma20 * 100, 2)
 
 
 def build_recommend(summary_df, spot_df, db, type_key, now, top_sectors=3, per_sector=5):
