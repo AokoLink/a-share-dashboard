@@ -476,7 +476,7 @@ def compute_stock_risk(daily_df, quote, now):
     items += _bias_risk(bias)
     vr = custom_volume_ratio(quote.get("volume", 0), trading_minutes_elapsed(now), _avg5_volume(daily_df))
     if vr is not None and vr > 1.5 and not _is_missing(ma20) and price < ma20 and change < 0:
-        items += 40                                   # 放量跌破 MA20
+        items += 10                                   # 放量跌破 MA20(§9.3 校准:命中组 fwd5 +0.58% 反超未命中 −0.10% 共 0.68pp,+40 反效 → 降权至 +10)
     if vr is not None and vr > 1.5 and len(daily_df) >= 3:
         prev_change = (daily_df["close"].iloc[-2] / daily_df["close"].iloc[-3] - 1) * 100
         if change < prev_change and change < 2:

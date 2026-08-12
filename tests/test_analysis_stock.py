@@ -147,6 +147,18 @@ def test_stock_risk_v3_drawdown_aggregate_branch():
     assert risk == pytest.approx(20.0)
 
 
+def test_stock_risk_v3_drop_ma20_downweighted():
+    # 放量跌破 MA20(price<MA20 ∧ change<0 ∧ vr>1.5):§9.3 校准命中组 fwd5 反超 0.68pp,
+    # +40 反效 → 降权至 +10。构造:63 平 + 跌两日,末根 5 倍量跌至 9.0。
+    # 其余项均不触发:bias=(9.0−9.91)/9.91≈−9.2% 归零;prev_change=−8% 使放量滞涨
+    # (change<prev_change) 不触发;上影 body=0;回撤 −10%>−25%。仅放量跌破 → 断言精确 10。
+    df = make_daily([10.0] * 63 + [9.2, 9.0], volumes=[100000] * 64 + [500000])
+    q = quote(price=9.0, change_pct=(9.0 / 9.2 - 1) * 100, volume=500000,
+              high=9.1, low=8.9, open=9.0)
+    risk = an.compute_stock_risk(df, q, dt_now(15, 0))
+    assert risk == pytest.approx(10.0)
+
+
 def test_stock_risk_v3_none():
     df = make_daily([float(10 + i) for i in range(65)])
     q = quote(price=df["close"].iloc[-1], change_pct=1.0, volume=100000,
