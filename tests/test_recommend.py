@@ -52,7 +52,7 @@ def make_consolidated():
     """65 根低位横盘(先下跌 40 根再横盘 25 根)→ 位置≈65/风险0 → 综合≈55 → 持有跟踪。
 
     v3 乘法折扣下,[10+i] 递增 65 根会让 600050(现价 5.0)落在 60 日区间顶部 → 位置≈5 → 综合≈27 → 回避 被剔除,
-    无法验证"可介入候选被排名"的集成行为;此 fixture 使候选落在 持有跟踪(48≤x<58,非回避),供排名与过滤路径使用。
+    无法验证"可介入候选被排名"的集成行为;此 fixture 使候选落在 持有跟踪(52≤x<62,非回避),供排名与过滤路径使用。
     """
     return make_daily([7.0 - 0.04 * i for i in range(40)] + [5.4] * 25)
 
@@ -341,7 +341,7 @@ def test_collect_actionable_leaders_two_tiers_and_dedupe(monkeypatch):
     monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
     by_code = {
         "600050": {"position": 90, "vp": 60, "trend": 50, "signal": 60, "risk": 0},   # quality=0.55*90+0.15*60+0.10*50+0.20*60=75.5 → 强烈关注/可介入
-        "688981": {"position": 48, "vp": 48, "trend": 48, "signal": 48, "risk": 0},   # quality=48 → 持有/跟踪/观察;Task 5 加板块+8=56 仍在 [48,58) → 观察(两档保持)
+        "688981": {"position": 48, "vp": 48, "trend": 48, "signal": 48, "risk": 0},   # quality=48 未含板块 → 观望;Task 5 加板块+8=56 ∈ [52,62) → 持有跟踪 → 观察(两档保持)
     }
     def fake_score_candidate(row, daily_df, now, sector_composite=None):
         c = str(row["code"])
