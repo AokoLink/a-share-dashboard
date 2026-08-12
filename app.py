@@ -223,10 +223,11 @@ def register_routes(app):
         sector_resolved = False
         sector_bonus_val = 0.0
         if scores["composite"] is not None:
-            names = ds.resolve_code_sectors(code6)
+            names = []
             comps = []
-            if names:
-                try:                                   # 尽力而为:板块打分失败不拖垮个股详情
+            try:                                   # 尽力而为:板块映射/打分失败不拖垮个股详情
+                names = ds.resolve_code_sectors(code6)
+                if names:
                     summary, _ = ds.get_sector_summary("industry")
                     spot, _ = ds.get_market_spot()
                     scored_sectors = recommend.score_all_sectors(
@@ -234,8 +235,8 @@ def register_routes(app):
                         float(spot["amount"].sum()) if len(spot) else 0.0, now)
                     by_name = {s["name"]: s["composite"] for s in scored_sectors}
                     comps = [by_name[n] for n in names if n in by_name and by_name[n] is not None]
-                except Exception:
-                    comps = []
+            except Exception:
+                comps = []
             if comps:
                 sector_resolved = True
                 sector_bonus_val = recommend.sector_bonus(max(comps))

@@ -95,7 +95,8 @@ def _score_candidate(row, daily_df, now, sector_composite=None):
                                   scores["trend"], scores["signal"], scores["risk"], bonus)
     return {"code": ds.with_prefix(str(row["code"])), "name": str(row["name"]),
             "price": quote["price"], "change_pct": quote["change_pct"],
-            "scores": scores, "composite": final, "verdict": an.stock_verdict(final)}
+            "scores": scores, "composite": final,   # scores["composite"] 为加成前分;消费方一律读顶层 composite(加成后)
+            "verdict": an.stock_verdict(final)}
 
 
 def _score_sector_stocks(spot_rows, get_daily, now, per_sector, sector_composite=None):

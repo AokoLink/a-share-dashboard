@@ -136,6 +136,17 @@ def test_stock_risk_v3_additive_cap100():
     assert an.compute_stock_risk(df, q, dt_now(15, 0)) == pytest.approx(100.0)
 
 
+def test_stock_risk_v3_drawdown_aggregate_branch():
+    # 近 20 日峰值→谷底回撤 −35% < −25% → +20 风险项(此前无单测覆盖)。
+    # 其余项均不触发:price=10 贴近 MA20=9.3 → 乖离≈7.5% 归零;平量 15:00 vr=1.0
+    # 无放量项;quote 上影 0.2<2*0.4 不构成高位长上影。仅回撤项 → 断言精确 20。
+    df = make_daily([10.0] * 45 + [10.0, 9.0, 8.0, 7.0, 6.5, 7.5, 8.5, 9.5, 10.0, 10.0] +
+                    [10.0] * 10)
+    q = quote(price=df["close"].iloc[-1], change_pct=0.5, volume=100000)
+    risk = an.compute_stock_risk(df, q, dt_now(15, 0))
+    assert risk == pytest.approx(20.0)
+
+
 def test_stock_risk_v3_none():
     df = make_daily([float(10 + i) for i in range(65)])
     q = quote(price=df["close"].iloc[-1], change_pct=1.0, volume=100000,
