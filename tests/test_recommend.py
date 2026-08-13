@@ -442,6 +442,23 @@ def test_sector_bonus_thresholds():
     assert recommend.sector_bonus(49.9) == -5
 
 
+def test_sector_bonus_quality_gate(monkeypatch):
+    # 决策:quality<50 不给加成
+    monkeypatch.setattr(recommend, "BONUS_QUALITY_GATE", True)
+    monkeypatch.setattr(recommend, "BONUS_GE75", False)
+    assert recommend.sector_bonus(70.0, quality=40) == 0        # quality<50 → 无加成
+    assert recommend.sector_bonus(70.0, quality=60) == 8        # ≥68 档
+    assert recommend.sector_bonus(65.0, quality=60) == 4
+    assert recommend.sector_bonus(70.0, quality=None) == 8      # quality 缺失 → 不 gate
+
+
+def test_sector_bonus_ge75(monkeypatch):
+    monkeypatch.setattr(recommend, "BONUS_GE75", True)
+    monkeypatch.setattr(recommend, "BONUS_QUALITY_GATE", False)
+    assert recommend.sector_bonus(70.0) == 4                    # <75 → 降档
+    assert recommend.sector_bonus(76.0) == 8
+
+
 def test_score_candidate_applies_sector_bonus(monkeypatch):
     # 纯因子全 55,risk=0:quality=55;板块 composite=78 → bonus=8 → final=63 → 关注/可介入(校准后 62 起可介入)
     monkeypatch.setattr(an, "score_stock",

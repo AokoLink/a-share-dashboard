@@ -12,6 +12,8 @@ BIG_DROP_PCT = -7.0         # 大跌排除线(不设对称跌停,创业板/科�
 QUALIFYING_VERDICTS = ("建议关注", "跟踪(热点延续)")
 HOT_COMPOSITE_THRESHOLD = 68.0      # 热板块谓词(spec §3.1);decisions.md P0b 定稿维持 68
 HOT_WEIGHT_MODE = "signal"          # P0b 权重模式(decisions.md 定稿):"signal"(b)/"rel_strength"(c)/"off"
+BONUS_GE75 = False           # P3: +8 门槛提到 ≥75;decisions.md 定稿
+BONUS_QUALITY_GATE = False   # P3: quality<50 不给加成;decisions.md 定稿
 
 
 def _num(v):
@@ -92,7 +94,7 @@ def _score_candidate(row, daily_df, now, sector_composite=None):
     scores = an.score_stock(daily_df, quote, now)
     if scores["composite"] is None:            # 数据不足(历史<61根)→ 跳过
         return None
-    bonus = sector_bonus(sector_composite)
+    bonus = sector_bonus(sector_composite, scores["composite"])
     final = an.stock_composite_v3(scores["position"], scores["volume_price"],
                                   scores["trend"], scores["signal"], scores["risk"], bonus)
     return {"code": ds.with_prefix(str(row["code"])), "name": str(row["name"]),
@@ -137,7 +139,7 @@ def _apply_hot_weights(ranked, base_g5, sector_composite):
         else:
             w = None                             # rel 模式 + 基数<3 → 回退 v3(spec §3.3)
         scores = x["scores"]
-        bonus = sector_bonus(sector_composite)   # 生产口径板块加成(Task 14 起改传 scores["composite"] 作 quality)
+        bonus = sector_bonus(sector_composite, scores["composite"])
         final = an.stock_composite_v3(scores["position"], scores["volume_price"],
                                       scores["trend"], scores["signal"], scores["risk"],
                                       bonus, rel_strength=rel, weights=w)
@@ -227,17 +229,24 @@ def tier_for_verdict(verdict):
     return None
 
 
-def sector_bonus(sector_composite):
+def sector_bonus(sector_composite, quality=None):
     """板块共振加成(规格 §5):≥68→+8;60≤x<68→+4;x<50→−5;其余→+0;缺失→0。
 
     阈值经 Task 8 校准(§9.4)按 live 板块 composite 分布重锚:原 70/55/40 下
     +4 档覆盖约 61% 板块(近乎恒触发)、−5 仅 3%;重锚后 +8≈21%、+4≈29%、0≈42%、−5≈8%。
     −5 边界刻意保留规格 <50 而非对齐 P30 锚(55.26):对底部 30% 板块统一 −5 过激进,
     只惩罚极端板块(实测约 8%),这是有意的不对称,非疏漏。
+
+    P3 决策(BONUS_GE75/BONUS_QUALITY_GATE)可加门槛:GE75 时 +8 档提到 ≥75;
+    QUALITY_GATE 时 quality<50 不给正加成。quality=None → 不 gate。
     """
     if sector_composite is None:
         return 0
-    if sector_composite >= 68:
+    if quality is not None and BONUS_QUALITY_GATE and quality < 50:
+        return 0
+    ge75 = BONUS_GE75
+    hi = 75.0 if ge75 else 68.0
+    if sector_composite >= hi:
         return 8
     if sector_composite >= 60:
         return 4
