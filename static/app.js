@@ -6,6 +6,7 @@ const state = {
   current: null, // {kind:'sector'|'stock', code}
   autoTimer: null,
 };
+const GAP_WARN_PCT = -1.5;  // provisional, P1 探针定稿(见 spec §5.4)
 
 const $ = (s) => document.querySelector(s);
 
@@ -241,6 +242,33 @@ function renderRecommend(b) {
   $("#reco-coverage").innerHTML = cov.strong_candidates != null
     ? `今日强势板块 ${cov.strong_candidates} 个,已覆盖 ${cov.mapped} 个,跳过 ${cov.skipped} 个`
     : "";
+  // 静态免责(数字为旧策略历史回测,spec §5.3)
+  $("#reco-disclaimer").innerHTML =
+    `信号基于 ${d.close_date || "…"} 收盘;基于旧策略的历史回测(2025-08~2026-08):` +
+    `历史 209 个信号日次日开盘 66.5% 低开、均值 −0.21%。次日开盘执行,勿挂昨日收盘价。` +
+    `<span class="muted">(仅供研究参考)</span>`;
+  // 昨日信号对比块(spec §5.2/§5.3)
+  const ps = d.prev_snapshot;
+  if (ps && ps.stocks && ps.stocks.length) {
+    const rows = ps.stocks.map((s) => {
+      const g = s.gap_pct;
+      const warn = g != null && g <= GAP_WARN_PCT;
+      const label = ps.is_next_day ? "次日" : (ps.gap_days != null ? `隔 ${ps.gap_days} 个交易日` : "非相邻交易日");
+      const gapTxt = g == null ? "—" : `${g >= 0 ? "+" : ""}${g.toFixed(2)}%`;
+      return `<tr class="${warn ? "gap-warn-row" : ""}">
+        <td>${s.code}</td><td>${s.name}</td>
+        <td>${s.signal_close == null ? "—" : s.signal_close.toFixed(2)}</td>
+        <td>${s.today_open == null ? "—" : s.today_open.toFixed(2)}</td>
+        <td class="${g != null && g < 0 ? "down" : ""}">${gapTxt}${warn ? ' <span class="gap-warn">信号撤回/谨慎</span>' : ""}</td>
+        <td class="muted">${label}</td>
+      </tr>`;
+    }).join("");
+    $("#reco-exec").innerHTML = `<b class="muted">昨日信号(基于 ${ps.close_date} 收盘, 对比今日开盘):</b>
+      <table class="reco-table"><thead><tr><th>代码</th><th>名称</th><th>信号收盘</th><th>今日开盘</th><th>开盘差</th><th>校验</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  } else {
+    $("#reco-exec").innerHTML = "";
+  }
   $("#reco-sectors").innerHTML = d.sectors.length ? d.sectors.map((s) => `
     <div class="reco-sector panel">
       <div class="reco-sector-head">

@@ -58,3 +58,6 @@ tr.actionable-row:hover { background: var(--bg); }
 .tier-watch { background: var(--muted); }
 .verdict-high { color: var(--up); font-weight: 700; }   /* 强烈关注 → 红(A股红=强势;原 --down 绿与语义相反)*/
 .verdict-avoid { color: var(--muted); font-weight: 700; }
+#reco-exec { margin-bottom: 8px; }
+#reco-exec .gap-warn { color: var(--up); font-weight: 700; }
+tr.gap-warn-row td { background: color-mix(in srgb, var(--up) 8%, transparent); }
