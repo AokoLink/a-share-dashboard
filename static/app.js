@@ -6,7 +6,7 @@ const state = {
   current: null, // {kind:'sector'|'stock', code}
   autoTimer: null,
 };
-const GAP_WARN_PCT = -1.5;  // provisional, P1 探针定稿(见 spec §5.4)
+const GAP_WARN_PCT = -0.682;  // P1 探针定稿:个股次日 gap 分布 P20(原 provisional -1.5)
 
 const $ = (s) => document.querySelector(s);
 
