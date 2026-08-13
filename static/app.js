@@ -58,7 +58,7 @@ async function loadSectors() {
     `<td>${s.name}</td><td class="${s.index_change_pct >= 0 ? "up" : "down"}">${fmtPct(s.index_change_pct)}</td>` +
     `<td>${scoreCell(s.emotion_score)}</td><td>${scoreCell(s.strength_score)}</td>` +
     `<td>${scoreCell(s.risk_score)}</td><td>${s.composite_score === null ? "…" : s.composite_score.toFixed(2)}</td>` +
-    `<td class="verdict">${s.verdict}</td></tr>`).join("");
+    `<td class="verdict">${s.verdict}${s.overheated ? '<span class="overheat-badge">过热</span>' : ""}</td></tr>`).join("");
   tbody.querySelectorAll("tr.sector-row").forEach((tr) =>
     tr.addEventListener("click", () => openSector(tr.dataset.code)));
 }
@@ -87,7 +87,7 @@ function renderSectorScores(d) {
     `<div class="card"><div class="label">情绪</div><div class="value">${sc.emotion === null ? "…" : sc.emotion.toFixed(0)}</div></div>` +
     `<div class="card"><div class="label">强度</div><div class="value">${sc.strength.toFixed(0)}</div></div>` +
     `<div class="card"><div class="label">风险</div><div class="value">${sc.risk.toFixed(0)}</div></div>` +
-    `<div class="card"><div class="verdict">${d.verdict}</div></div>`;
+    `<div class="card"><div class="verdict">${d.verdict}${d.overheated ? '<span class="overheat-badge">过热</span>' : ""}</div></div>`;
 }
 
 function renderSectorLeaders(d) {
@@ -273,7 +273,7 @@ function renderRecommend(b) {
     <div class="reco-sector panel">
       <div class="reco-sector-head">
         <b>${s.name}</b>
-        <span class="verdict">${s.verdict}</span>
+        <span class="verdict">${s.verdict}</span>${s.overheated ? '<span class="overheat-badge">过热</span>' : ""}
         <span class="muted">综合 ${s.composite_score == null ? "…" : s.composite_score.toFixed(2)}</span>
         <span class="muted">成分股:${s.constituent_source}${s.match_type === "keyword" ? "[关键词]" : ""}</span>
       </div>

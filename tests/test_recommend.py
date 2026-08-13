@@ -542,6 +542,41 @@ def test_build_recommend_snapshot_fields(monkeypatch):
     assert "close_date" not in s                      # close_date 为 payload 级众数聚合,不放入每股响应(设计 §5.2)
 
 
+def test_build_recommend_sector_overheated_key(monkeypatch):
+    # Fix 1 (P0 徽章):出参 sector 须带结构化 overheated(bool)。mock 打分返回 True → 透传到 sector 输出。
+    monkeypatch.setattr(an, "collect_sector_metrics", lambda *a, **k: {
+        "verdict": "建议关注", "composite": 78.0, "consecutive_days": 0,
+        "emotion": 80, "strength": 70, "risk": 10, "overheated": True})
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": True, "codes": ["600050"], "match_type": "manual",
+                                      "source_name": "电子信息"})
+    monkeypatch.setattr(ds, "get_stock_daily", lambda c: (make_consolidated(), False))
+    payload, _ = recommend.build_recommend(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 13, 10, 0), 1, 5)
+    s = payload["sectors"][0]
+    assert "overheated" in s
+    assert isinstance(s["overheated"], bool)
+    assert s["overheated"] is True                       # 真实过热 → 徽章路径可见
+
+
+def test_build_recommend_sector_overheated_default_false(monkeypatch):
+    # mock 未返回 overheated → 防御默认 False(缺失键不崩,前端徽章不渲染)
+    mock_sector(monkeypatch, composite=78.0, verdict="建议关注")
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": True, "codes": ["600050"], "match_type": "manual",
+                                      "source_name": "电子信息"})
+    monkeypatch.setattr(ds, "get_stock_daily", lambda c: (make_consolidated(), False))
+    payload, _ = recommend.build_recommend(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 13, 10, 0), 1, 5)
+    s = payload["sectors"][0]
+    assert "overheated" in s and isinstance(s["overheated"], bool)
+    assert s["overheated"] is False
+
+
 def test_signal_date_fallback_non_trading(monkeypatch):
     # 周六 10:00 → 非交易日 → signal_date 回退 close_date(无得分股票 → 均为 None)
     mock_sector(monkeypatch, composite=78.0, verdict="建议关注")   # 板块入选,成分股空 → 无得分 → too_few 跳过

@@ -282,12 +282,13 @@ def register_routes(app):
         prev_snapshot = None
         try:
             prev = store.get_recommend_snapshot_before(db_path, payload["signal_date"])
-            store.upsert_recommend_snapshot(
-                db_path, payload["signal_date"], now.strftime("%Y-%m-%d %H:%M:%S"),
-                payload["close_date"], payload["prev_trading_date"],
-                [{"code": x["code"], "name": x["name"], "signal_close": x["signal_close"]}
-                 for sec in payload["sectors"] for x in sec["stocks"]])
-            if prev:
+            if payload["close_date"] is not None:    # 退化快照(close_date=None)不落库,不遮蔽上一期真实快照
+                store.upsert_recommend_snapshot(
+                    db_path, payload["signal_date"], now.strftime("%Y-%m-%d %H:%M:%S"),
+                    payload["close_date"], payload["prev_trading_date"],
+                    [{"code": x["code"], "name": x["name"], "signal_close": x["signal_close"]}
+                     for sec in payload["sectors"] for x in sec["stocks"]])
+            if prev and prev["close_date"] is not None:
                 is_next_day = (prev["close_date"] == payload["prev_trading_date"])
                 td = payload.get("trading_dates") or []
                 gap_days = sum(1 for d in td if prev["close_date"] < d <= payload["signal_date"])
@@ -300,7 +301,7 @@ def register_routes(app):
                 stocks = []
                 for s in prev.get("stocks", []):
                     code6 = s.get("code", "")
-                    if len(code6) >= 2 and code6[:2] in ("sh", "sz"):
+                    if len(code6) >= 2 and code6[:2] in ("sh", "sz", "bj"):
                         code6 = code6[2:]
                     o = spot_open.get(code6)
                     sc = s.get("signal_close")

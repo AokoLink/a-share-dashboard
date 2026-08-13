@@ -247,6 +247,7 @@ def test_recommend_endpoint(client, monkeypatch):
     assert len(d["sectors"]) == 2
     s0 = d["sectors"][0]
     assert s0["match_type"] == "manual"
+    assert "overheated" in s0 and isinstance(s0["overheated"], bool)   # Fix 1:P0 徽章出参可到达
     assert s0["stocks"] and "price" in s0["stocks"][0] and "change_pct" in s0["stocks"][0]
     assert d["diagnostics"] == {"stocks_not_in_spot": 0, "stocks_daily_failed": 0}
     meta = body["meta"]
@@ -390,3 +391,49 @@ def test_recommend_prev_snapshot(monkeypatch, tmp_path):
     assert s["code"] == "600000" and s["signal_close"] == 10.0
     assert s["today_open"] == pytest.approx(9.8)           # make_spot open 列 600000 → 9.8
     assert abs(s["gap_pct"] - (-2.0)) < 0.01               # (9.8/10.0 - 1)*100
+
+
+def test_recommend_degenerate_snapshot_not_written(monkeypatch, tmp_path):
+    # Fix 2:全部强势板块映射失败 → close_date=None → 不得写退化快照(遮蔽上一期真实快照,且致次日 gap 计算 TypeError)
+    db = str(tmp_path / "reco_degen.db")
+    monkeypatch.setattr(an, "collect_sector_metrics", lambda *a, **k: {
+        "verdict": "建议关注", "composite": 78.0, "consecutive_days": 1,
+        "emotion": 80, "strength": 70, "risk": 10})
+    c = client_factory(monkeypatch, db_path=db)
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": False, "reason": "no_mapping"})
+    r = c.get("/api/recommend")
+    assert r.status_code == 200
+    d = r.get_json()["data"]
+    assert d["sectors"] == []
+    assert d["close_date"] is None
+    # 退化快照不得落库:recommend_snapshot 表应保持空
+    assert store.get_recommend_snapshot_before(db, "9999-99-99") is None
+    import sqlite3
+    conn = sqlite3.connect(db)
+    n = conn.execute("SELECT COUNT(*) FROM recommend_snapshot").fetchone()[0]
+    conn.close()
+    assert n == 0
+
+
+def test_recommend_prev_snapshot_bj_prefix(monkeypatch, tmp_path):
+    # Fix 3:上一期快照含北交所股(bj 前缀)→ 今日开盘对比须剔除前缀命中 spot(bj 不再被静默跳过)
+    db = str(tmp_path / "reco_bj.db")
+    monkeypatch.setattr(an, "collect_sector_metrics", lambda *a, **k: {
+        "verdict": "建议关注", "composite": 78.0, "consecutive_days": 1,
+        "emotion": 80, "strength": 70, "risk": 10})
+    c = client_factory(monkeypatch, db_path=db)
+    spot = make_spot().copy()
+    spot.loc[4] = {"code": "830799", "name": "北交所股", "price": 11.0, "change_pct": 1.0,
+                   "volume": 10000, "amount": 1e8, "open": 10.5}
+    monkeypatch.setattr(ds, "get_market_spot", lambda: (spot, False))
+    r1 = c.get("/api/recommend").get_json()["data"]
+    prev_close = r1["prev_trading_date"]
+    store.upsert_recommend_snapshot(db, "2026-08-12", "2026-08-12 17:40:00",
+                                    prev_close, r1["prev_trading_date"],
+                                    [{"code": "bj830799", "name": "北交所股", "signal_close": 10.0}])
+    r2 = c.get("/api/recommend").get_json()["data"]
+    ps = r2["prev_snapshot"]
+    assert ps is not None
+    bj = [x for x in ps["stocks"] if x["code"] == "bj830799"]
+    assert bj and bj[0]["today_open"] == pytest.approx(10.5)

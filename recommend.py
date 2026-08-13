@@ -42,6 +42,7 @@ def score_all_sectors(summary_df, db, type_key, store_ctx, market_turnover, now)
             store_ctx, market_turnover, now, True)
         rows.append({"code": str(r["code"]), "name": str(r["name"]),
                      "composite": scores["composite"], "verdict": scores["verdict"],
+                     "overheated": bool(scores.get("overheated", False)),
                      "scores": scores})
     rows.sort(key=lambda x: (x["composite"] is None, -(x["composite"] or 0)))
     return rows
@@ -309,6 +310,7 @@ def build_recommend(summary_df, spot_df, db, type_key, now, top_sectors=3, per_s
         sectors.append({
             "code": "%s:%s" % (type_key, s["code"]), "name": s["name"],
             "verdict": s["verdict"], "composite_score": s["composite"],
+            "overheated": bool(s.get("overheated", False)),
             "match_type": res["match_type"], "constituent_source": res["source_name"],
             "stocks": [{"code": x["code"], "name": x["name"], "price": x["price"],
                         "change_pct": x["change_pct"], "scores": x["scores"],
