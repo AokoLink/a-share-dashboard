@@ -398,7 +398,7 @@ $("#btn-sector-search").addEventListener("click", async () => {
     `<tr class="sector-row" data-code="${s.code}"><td>${s.name}</td><td>${fmtPct(s.index_change_pct)}</td>` +
     `<td>${scoreCell(s.emotion_score)}</td><td>${scoreCell(s.strength_score)}</td>` +
     `<td>${scoreCell(s.risk_score)}</td><td>${s.composite_score === null ? "…" : s.composite_score.toFixed(2)}</td>` +
-    `<td class="verdict">${s.verdict}</td></tr>`).join("");
+    `<td class="verdict">${s.verdict}${s.overheated ? '<span class="overheat-badge">过热</span>' : ""}</td></tr>`).join("");
   document.querySelectorAll("#sector-table tr.sector-row").forEach((tr) =>
     tr.addEventListener("click", () => openSector(tr.dataset.code)));
 });
