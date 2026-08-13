@@ -268,3 +268,13 @@ def test_resolve_code_sectors_manual_map():
     assert "半导体" in ds.resolve_code_sectors("600050")
     assert ds.resolve_code_sectors("sh600519") == ds.resolve_code_sectors("600519")  # 归一化
     assert ds.resolve_code_sectors("999999") == []      # 未映射 → 空
+
+
+def test_market_spot_includes_open(monkeypatch):
+    ds.cache._data.clear()                          # 避免被其他用例缓存污染(与 test_market_spot_stale_on_failure 同模式)
+    raw = make_spot().copy()
+    raw["今开"] = [9.9, 1340.0, 11.8, 44.5, 199.0]  # 东财 spot 列名「今开」
+    monkeypatch.setattr(ds._ak, "stock_zh_a_spot", lambda: raw)
+    df, stale = ds.get_market_spot()
+    assert stale is False and "open" in df.columns
+    assert float(df.loc[0, "open"]) == pytest.approx(9.9)   # sh600000 今开 9.9

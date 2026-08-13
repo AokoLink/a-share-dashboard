@@ -219,8 +219,9 @@ def get_market_spot():
             "change_pct": _pick(raw, "涨跌幅", "change_pct"),
             "volume": _pick(raw, "成交量", "volume"),
             "amount": _pick(raw, "成交额", "amount"),
+            "open": _pick(raw, "今开", "open"),
         })
-        for col in ("price", "change_pct", "volume", "amount"):
+        for col in ("price", "change_pct", "volume", "amount", "open"):
             out[col] = pd.to_numeric(out[col], errors="coerce")
         return out
 
