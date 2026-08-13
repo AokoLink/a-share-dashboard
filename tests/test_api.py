@@ -109,6 +109,7 @@ def test_sectors_search_and_composite(client):
     assert semi["consecutive_days"] == 1  # 当日已 upsert(rank 1≤20),从今天起算连续 1 天
     assert semi["data_complete"] is True
     assert semi["composite_score"] is None or 0 <= semi["composite_score"] <= 100
+    assert "overheated" in semi and semi["overheated"] is False   # Task 13:徽章字段可到达
     r2 = client.get("/api/sectors?type=industry&search=半导")
     assert r2.get_json()["data"]["total"] == 1
     assert r2.get_json()["data"]["sectors"][0]["name"] == "半导体"
@@ -122,6 +123,7 @@ def test_sector_detail(client):
     assert d["name"] == "半导体"
     assert d["index_history"][0]["date"].startswith("2026-")
     assert d["scores"]["composite"] is None or 0 <= d["scores"]["composite"] <= 100
+    assert "overheated" in d and d["overheated"] is False         # Task 13:徽章字段可到达
     assert d["leaders_status"] == "ok"
     # fixture resolve → 600519/600000,均在 spot;600519 金额最大(9.2e8)→ 龙头池首位
     assert d["leaders"][0]["code"] == "600519"

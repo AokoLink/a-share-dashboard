@@ -111,7 +111,7 @@ def test_collect_sector_metrics_full_pipeline():
     r = an.collect_sector_metrics(
         ":db:", "industry", "885887", 5.0, 1e10, 90.0, 5.0, 5.0,
         FakeStore(), 1e12, now)
-    assert set(r) == {"emotion", "strength", "risk", "composite", "verdict", "consecutive_days"}
+    assert set(r) == {"emotion", "strength", "risk", "composite", "verdict", "consecutive_days", "overheated"}
     assert r["consecutive_days"] == 2
     # up 94.7% → 情绪 96.17;强度=(100*40+50*30+33.3*30)/100=65 ≥ 60 → P3 建议关注;risk 0
     assert r["verdict"] == "建议关注"
@@ -131,3 +131,30 @@ def test_collect_sector_metrics_after_close_uses_turnover_ratio():
     assert r["emotion"] == pytest.approx((50 * 40 + 100 * 25 + 20 * 15) / 80)  # 60.0
     # prev=None → 放量滞涨分支需 prev_change,不触发;指数涨0.5<5 → risk 0
     assert r["risk"] == pytest.approx(0)
+
+
+def test_sector_verdict_overheat_distinct_label(monkeypatch):
+    import analysis as an
+    # 连涨≥4 + e_hi + s_hi + not r_hi → overheated;路径 A → 独立标签
+    monkeypatch.setattr(an, "OVERHEAT_MIN_DAYS", 4)
+    monkeypatch.setattr(an, "P0_PATH", "intercept")
+    out = an.score_sector({
+        "up_ratio": 0.8, "limit_ratio": None, "turnover_ratio": 1.0,
+        "leader_change_pct": 5.0, "change_pct": 2.0, "consecutive_days": 4,
+        "change_3d": 6.0, "prev_change": 2.0, "activity": 0.05, "data_complete": True})
+    assert out["overheated"] is True
+    assert out["verdict"] == "过热(连涨)"
+    assert out["verdict"] != "谨慎追高(过热)"      # 不与风险驱动标签撞名
+    assert out["composite"] == an.composite_score(out["strength"], out["emotion"], out["risk"])  # composite 未变
+
+
+def test_sector_verdict_overheat_badge_path(monkeypatch):
+    import analysis as an
+    monkeypatch.setattr(an, "OVERHEAT_MIN_DAYS", 4)
+    monkeypatch.setattr(an, "P0_PATH", "badge")
+    out = an.score_sector({
+        "up_ratio": 0.8, "limit_ratio": None, "turnover_ratio": 1.0,
+        "leader_change_pct": 5.0, "change_pct": 2.0, "consecutive_days": 4,
+        "change_3d": 6.0, "prev_change": 2.0, "activity": 0.05, "data_complete": True})
+    assert out["overheated"] is True
+    assert out["verdict"] == "建议关注"           # 路径 B 保留推荐,徽章在前端

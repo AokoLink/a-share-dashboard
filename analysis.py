@@ -11,6 +11,11 @@ AM_END = 11 * 60 + 30
 PM_START = 13 * 60
 PM_END = 15 * 60
 
+# ---- P0 过热判定(规格 §4.1;decisions.md P0 定稿) ----
+
+OVERHEAT_MIN_DAYS = 4          # 过热判定:连续上榜天数阈值(spec §4.1 默认;badge 路径仅作信息徽章)
+P0_PATH = "badge"              # "intercept"(路径 A,独立标签排除)/ "badge"(路径 B,仅徽章,生产现状)
+
 
 def trading_minutes_elapsed(now: datetime) -> int:
     m = now.hour * 60 + now.minute
@@ -183,7 +188,7 @@ def composite_score(strength, emotion, risk):
 
 
 def score_sector(metrics):
-    """板块打分唯一入口:组合 emotion/strength/risk/composite/verdict。
+    """板块打分唯一入口:组合 emotion/strength/risk/composite/verdict/overheated。
     metrics 键见接口说明;与旧 app 路由内联口径完全一致。"""
     emotion = sector_emotion(metrics["up_ratio"], metrics["limit_ratio"],
                              metrics["turnover_ratio"], metrics["leader_change_pct"])
@@ -194,8 +199,16 @@ def score_sector(metrics):
     composite = composite_score(strength, emotion, risk)
     verdict = sector_verdict(emotion, strength, risk, metrics["consecutive_days"],
                              metrics["data_complete"])
+    e_hi = emotion is not None and emotion >= 70
+    s_hi = strength is not None and strength >= 60
+    r_hi = risk is not None and risk >= 65
+    cd = metrics.get("consecutive_days")
+    overheated = (cd is not None and cd >= OVERHEAT_MIN_DAYS and e_hi and s_hi and not r_hi
+                  and metrics.get("data_complete", True))
+    if overheated and P0_PATH == "intercept":
+        verdict = "过热(连涨)"        # 独立标签,不在 QUALIFYING_VERDICTS → 排除(路径 A;生产 badge 惰性)
     return {"emotion": emotion, "strength": strength, "risk": risk,
-            "composite": composite, "verdict": verdict}
+            "composite": composite, "verdict": verdict, "overheated": overheated}
 
 
 def collect_sector_metrics(db, type_key, code, change_pct, turnover, up_count, down_count,

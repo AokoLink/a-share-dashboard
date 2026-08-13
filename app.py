@@ -142,7 +142,8 @@ def register_routes(app):
                 "index_change_pct": chg,
                 "emotion_score": scores["emotion"], "strength_score": scores["strength"],
                 "risk_score": scores["risk"], "composite_score": scores["composite"],
-                "verdict": scores["verdict"], "consecutive_days": scores["consecutive_days"],
+                "verdict": scores["verdict"], "overheated": scores["overheated"],
+                "consecutive_days": scores["consecutive_days"],
                 "data_complete": True,
             })
 
@@ -200,7 +201,8 @@ def register_routes(app):
         return ok({"code": "%s:%s" % (type_key, code), "name": str(r["name"]),
                    "scores": {"emotion": scores["emotion"], "strength": scores["strength"],
                               "risk": scores["risk"], "composite": scores["composite"]},
-                   "verdict": verdict, "index_history": hist_rows,
+                   "verdict": verdict, "overheated": scores["overheated"],
+                   "index_history": hist_rows,
                    "leaders": leaders, "leaders_status": leaders_status,
                    "leaders_source": leaders_source},
                   stale=stale1 or stale2 or stale3)
