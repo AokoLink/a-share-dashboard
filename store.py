@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """持久化层:SQLite 每日快照。db 参数为数据库文件路径。"""
+import json
 import os
 import sqlite3
 
@@ -14,6 +15,10 @@ CREATE TABLE IF NOT EXISTS sector_daily (
   date TEXT, type TEXT, code TEXT, name TEXT,
   change_pct REAL, up_ratio REAL, turnover REAL, rank INTEGER,
   PRIMARY KEY(date, type, code)
+);
+CREATE TABLE IF NOT EXISTS recommend_snapshot (
+  signal_date TEXT PRIMARY KEY,
+  generated_at TEXT, close_date TEXT, prev_trading_date TEXT, payload TEXT
 );
 """
 
@@ -129,3 +134,30 @@ def get_consecutive_days(db, type, code, date, top_n=20):
             break
     conn.close()
     return days
+
+
+def upsert_recommend_snapshot(db, signal_date, generated_at, close_date, prev_trading_date, stocks):
+    conn = _connect(db)
+    conn.execute(
+        """INSERT INTO recommend_snapshot(signal_date, generated_at, close_date, prev_trading_date, payload)
+           VALUES(?,?,?,?,?)
+           ON CONFLICT(signal_date) DO UPDATE SET
+             generated_at=excluded.generated_at, close_date=excluded.close_date,
+             prev_trading_date=excluded.prev_trading_date, payload=excluded.payload""",
+        (signal_date, generated_at, close_date, prev_trading_date,
+         json.dumps(stocks, ensure_ascii=False)))
+    conn.commit()
+    conn.close()
+
+
+def get_recommend_snapshot_before(db, signal_date):
+    conn = _connect(db)
+    cur = conn.execute(
+        "SELECT * FROM recommend_snapshot WHERE signal_date < ? ORDER BY signal_date DESC LIMIT 1",
+        (signal_date,))
+    row = cur.fetchone()
+    conn.close()
+    d = _row_to_dict(row)
+    if d and d.get("payload"):
+        d["stocks"] = json.loads(d["payload"])
+    return d

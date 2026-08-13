@@ -60,3 +60,23 @@ def test_consecutive_days_counts_rank_streak(db):
     for i, (d, r) in enumerate(rows):
         store.upsert_sector_daily(db, d, "industry", "885887", "半导体", 1.0, 0.5, 100.0 + i, r)
     assert store.get_consecutive_days(db, "industry", "885887", "2026-08-06") == 2  # 8-06,8-05 连续,8-04 断开
+
+
+def test_recommend_snapshot_upsert_and_get_before(tmp_path):
+    db = str(tmp_path / "reco_snap.db")
+    store.init_db(db)
+    stocks = [{"code": "sh600050", "name": "联通", "signal_close": 5.01}]
+    store.upsert_recommend_snapshot(db, "2026-08-12", "2026-08-12 17:40:00",
+                                    "2026-08-12", "2026-08-11", stocks)
+    # 同日重建覆盖(PK 幂等)
+    store.upsert_recommend_snapshot(db, "2026-08-12", "2026-08-12 18:00:00",
+                                    "2026-08-12", "2026-08-11",
+                                    [{"code": "sh600050", "name": "联通", "signal_close": 5.02}])
+    # 盘中 08-13 生成 → get_before(08-13) 命中 08-12
+    store.upsert_recommend_snapshot(db, "2026-08-13", "2026-08-13 09:30:00",
+                                    "2026-08-12", "2026-08-12", [])
+    row = store.get_recommend_snapshot_before(db, "2026-08-13")
+    assert row is not None and row["signal_date"] == "2026-08-12"
+    assert row["close_date"] == "2026-08-12"
+    assert row["stocks"][0]["signal_close"] == 5.02     # 同日重建覆盖生效
+    assert store.get_recommend_snapshot_before(db, "2026-08-12") is None   # 无更早
