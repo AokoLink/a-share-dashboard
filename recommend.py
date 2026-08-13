@@ -14,6 +14,8 @@ HOT_COMPOSITE_THRESHOLD = 68.0      # 热板块谓词(spec §3.1);decisions.md P
 HOT_WEIGHT_MODE = "signal"          # P0b 权重模式(decisions.md 定稿):"signal"(b)/"rel_strength"(c)/"off"
 BONUS_GE75 = False           # P3: +8 门槛提到 ≥75;decisions.md 定稿
 BONUS_QUALITY_GATE = False   # P3: quality<50 不给加成;decisions.md 定稿
+PRICE_FLOOR = None           # P4: 低于此价的候选排除(None=关);decisions.md 定稿
+PRICE_REL_MIN = False        # P4: 低价股需更高 rel_strength 分位;decisions.md 定稿
 
 
 def _num(v):
@@ -70,6 +72,8 @@ def filter_candidates(codes, spot_df, exclude_codes, min_amount=MIN_AMOUNT):
         chg = _num(row["change_pct"])
         if not price or not vol or chg is None:
             continue                              # 停牌
+        if PRICE_FLOOR is not None and price < PRICE_FLOOR:
+            continue                              # 低价护栏(spec §8)
         if chg >= an.limit_threshold(str(code)):
             continue                              # 涨停买不进
         if chg <= BIG_DROP_PCT:

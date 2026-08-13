@@ -255,6 +255,24 @@ def test_filter_candidates_hard_filters():
     assert not_in == 0
 
 
+def test_price_floor_excludes_low_price(monkeypatch):
+    monkeypatch.setattr(recommend, "PRICE_FLOOR", 3.0)
+    monkeypatch.setattr(recommend, "PRICE_REL_MIN", False)
+    spot = make_spot().copy()
+    spot.loc[spot["code"] == "600050", "price"] = 2.5          # 压到 <3
+    # 600100 在 make_spot 中 volume=0(停牌)→ 恒被停牌过滤剔除;用 300750 验证价格护栏独立排除
+    kept, _ = recommend.filter_candidates(["600050", "300750"], spot, set())
+    codes = [str(r["code"]) for r in kept]
+    assert "600050" not in codes and "300750" in codes
+
+
+def test_price_floor_default_off():
+    assert recommend.PRICE_FLOOR is None
+    spot = make_spot()
+    kept, _ = recommend.filter_candidates(["600050"], spot, set())
+    assert any(str(r["code"]) == "600050" for r in kept)
+
+
 def test_pick_leaders_mixed():
     rows = [
         {"code": "600001", "name": "甲股", "price": 10.0, "change_pct": 2.0, "amount": 5e8, "volume": 10000},
