@@ -471,16 +471,52 @@ def test_score_candidate_short_history_skipped(monkeypatch):
                                       datetime.datetime(2026, 8, 11, 15, 0)) is None
 
 
-def test_score_sector_stocks_skips_short_history(monkeypatch):
-    # 回归:数据不足(<61 根)→ _score_candidate 返回 None → _score_sector_stocks 跳过而非崩 rank_candidates
+def test_score_sector_stocks_returns_dates(monkeypatch):
+    # 原 test_score_sector_stocks_skips_short_history 更名为本函数:_score_sector_stocks 返回 4 元组(新增 dates)
     monkeypatch.setattr(an, "score_stock",
                         lambda df, q, now: {"position": None, "trend": None, "volume_price": None,
                                             "signal": None, "risk": None, "composite": None})
     rows = [{"code": "600050", "name": "X", "price": 5.0, "change_pct": 1.0,
              "volume": 100000, "amount": 2e8}]
-    ranked, daily_failed, any_stale = recommend._score_sector_stocks(
+    ranked, daily_failed, any_stale, dates = recommend._score_sector_stocks(
         rows, lambda c: (make_daily([10 + i for i in range(30)]), False),
         datetime.datetime(2026, 8, 11, 15, 0), per_sector=5, sector_composite=78.0)
     assert ranked == []                 # None 被守卫跳过 → 不崩 rank_candidates
-    assert daily_failed == 0
-    assert any_stale is False
+    assert daily_failed == 0 and any_stale is False
+    assert len(dates) == 28             # 日期并集照常收集;make_daily 30 根按 i%28+1 回绕 → 28 个唯一日期
+
+
+def test_build_recommend_snapshot_fields(monkeypatch):
+    mock_sector(monkeypatch, composite=78.0, verdict="建议关注")
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": True, "codes": ["600050"], "match_type": "manual",
+                                      "source_name": "电子信息"})
+    daily_df = make_consolidated()                  # 65 根,本文件 make_daily 末根 date = "2026-07-09"
+    monkeypatch.setattr(ds, "get_stock_daily", lambda c: (daily_df, False))
+    now = datetime.datetime(2026, 8, 13, 10, 0)      # 2026-08-13 周四盘中 → signal_date=2026-08-13
+    payload, stale = recommend.build_recommend(
+        make_summary(), make_spot(), ":db:", "industry", now, 1, 5)
+    assert payload["signal_date"] == "2026-08-13"
+    assert payload["close_date"] == str(daily_df.iloc[-1]["date"])          # 末根日线日期(勿硬编码,见 make_daily 生成规则)
+    # 交易日历 = make_daily 回绕生成的 2026-07-01..28;prev_trading_date = signal_date 前最近交易日 = 日历最大值
+    assert payload["prev_trading_date"] == str(daily_df["date"].max())
+    assert payload["trading_dates"] and payload["trading_dates"][-1] < "2026-08-13"
+    s = payload["sectors"][0]["stocks"][0]
+    assert s["signal_close"] == pytest.approx(5.4)   # 末根 close = 5.4(make_consolidated)
+    assert "close_date" not in s                      # close_date 为 payload 级众数聚合,不放入每股响应(设计 §5.2)
+
+
+def test_signal_date_fallback_non_trading(monkeypatch):
+    # 周六 10:00 → 非交易日 → signal_date 回退 close_date(无得分股票 → 均为 None)
+    mock_sector(monkeypatch, composite=78.0, verdict="建议关注")   # 板块入选,成分股空 → 无得分 → too_few 跳过
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": True, "codes": [], "match_type": "manual",
+                                      "source_name": "电子信息"})
+    payload, _ = recommend.build_recommend(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 15, 10, 0), 1, 5)   # 2026-08-15 周六(weekday()=5)
+    assert payload["sectors"] == []
+    assert payload["signal_date"] is None and payload["close_date"] is None
+    assert payload["signal_date"] == payload["close_date"]

@@ -96,14 +96,16 @@ def _score_candidate(row, daily_df, now, sector_composite=None):
     return {"code": ds.with_prefix(str(row["code"])), "name": str(row["name"]),
             "price": quote["price"], "change_pct": quote["change_pct"],
             "scores": scores, "composite": final,   # scores["composite"] 为加成前分;消费方一律读顶层 composite(加成后)
-            "verdict": an.stock_verdict(final)}
+            "verdict": an.stock_verdict(final),
+            "signal_close": round(float(daily_df["close"].iloc[-1]), 2),
+            "close_date": str(daily_df["date"].iloc[-1])}
 
 
 def _score_sector_stocks(spot_rows, get_daily, now, per_sector, sector_composite=None):
-    """并发拉日线并打分。返回 (ranked, daily_failed, any_stale)。"""
-    ranked, daily_failed, any_stale = [], 0, False
+    """并发拉日线并打分。返回 (ranked, daily_failed, any_stale, dates)。"""
+    ranked, daily_failed, any_stale, dates = [], 0, False, set()
     if not spot_rows:
-        return [], 0, False
+        return [], 0, False, set()
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = {ex.submit(get_daily, str(r["code"])): r for r in spot_rows}
         for fut in as_completed(futures):
@@ -111,12 +113,21 @@ def _score_sector_stocks(spot_rows, get_daily, now, per_sector, sector_composite
             try:
                 daily, stale = fut.result()
                 any_stale = any_stale or bool(stale)
+                if len(daily):
+                    dates.update(str(x) for x in daily["date"])
                 scored = _score_candidate(row, daily, now, sector_composite)
                 if scored is not None:
                     ranked.append(scored)
             except Exception:
                 daily_failed += 1                # 单只失败 → 跳过,同板块其余继续
-    return rank_candidates(ranked, per_sector), daily_failed, any_stale
+    return rank_candidates(ranked, per_sector), daily_failed, any_stale, dates
+
+
+def _signal_date(now, close_date):
+    """推荐生成交易日:工作日盘中/收盘后 → now.date();否则回退 close_date(开盘前/周末/节假日)。"""
+    if now.weekday() < 5 and (an.is_trading_time(now) or an.is_after_close(now)):
+        return now.date().isoformat()
+    return close_date
 
 
 def pick_leaders(spot_rows, total=5, exclude_codes=frozenset()):
@@ -202,6 +213,7 @@ def build_recommend(summary_df, spot_df, db, type_key, now, top_sectors=3, per_s
     strong = select_sectors(summary_df, db, type_key, store, _market_turnover(spot_df), now)
     new_codes = ds.get_new_stocks()
     sectors, skipped = [], []
+    all_dates, close_dates = set(), []
     stale_any = False
     diagnostics = {"stocks_not_in_spot": 0, "stocks_daily_failed": 0}
     for s in strong:
@@ -219,8 +231,10 @@ def build_recommend(summary_df, spot_df, db, type_key, now, top_sectors=3, per_s
             continue
         kept, not_in_spot = filter_candidates(res["codes"], spot_df, new_codes)
         diagnostics["stocks_not_in_spot"] += not_in_spot
-        ranked, daily_failed, any_stale = _score_sector_stocks(
+        ranked, daily_failed, any_stale, s_dates = _score_sector_stocks(
             kept, ds.get_stock_daily, now, per_sector, s["composite"])
+        all_dates.update(s_dates)
+        close_dates.extend(x["close_date"] for x in ranked)
         diagnostics["stocks_daily_failed"] += daily_failed
         stale_any = stale_any or any_stale
         if not ranked:
@@ -234,11 +248,22 @@ def build_recommend(summary_df, spot_df, db, type_key, now, top_sectors=3, per_s
             "stocks": [{"code": x["code"], "name": x["name"], "price": x["price"],
                         "change_pct": x["change_pct"], "scores": x["scores"],
                         "composite": round(x["composite"], 2),
-                        "verdict": x["verdict"]} for x in ranked],
+                        "verdict": x["verdict"], "signal_close": x["signal_close"]} for x in ranked],
         })
-    return ({"strong_count": len(strong), "sectors": sectors,
-             "skipped_sectors": skipped, "diagnostics": diagnostics},
-            stale_any)
+    payload = {"strong_count": len(strong), "sectors": sectors,
+               "skipped_sectors": skipped, "diagnostics": diagnostics}
+    # P1 快照出参:两日期语义分离(§5.2)
+    close_date = max(close_dates, key=close_dates.count) if close_dates else None   # 众数;停牌缺末根时取多数
+    signal_date = _signal_date(now, close_date)
+    dates_sorted = sorted(all_dates)
+    # prev_trading_date 需 signal_date 锚点;全板块无得分(close_dates 空 → signal_date=None)时直接置 None,避免 d < None 崩溃
+    prev_trading_date = (max((d for d in dates_sorted if d < signal_date), default=None)
+                         if signal_date is not None else None)
+    payload["signal_date"] = signal_date
+    payload["close_date"] = close_date
+    payload["prev_trading_date"] = prev_trading_date
+    payload["trading_dates"] = dates_sorted[-20:]    # 最近 20 个交易日,供 Task 4 算 gap_days
+    return (payload, stale_any)
 
 
 def collect_actionable_leaders(summary_df, spot_df, db, type_key, now, resolve_fn, get_daily_fn):
