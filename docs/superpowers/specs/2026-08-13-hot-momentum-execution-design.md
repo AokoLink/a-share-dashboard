@@ -1,6 +1,6 @@
 # 「热板块动量选股 + 次日执行口径」设计文档
 
-> 状态:已确认 + 评审修订 v3(二轮评审:10+3 必改、建议、小问题全部吸收)
+> 状态:已确认 + 评审修订 v4(三轮评审全部吸收)
 > 日期:2026-08-13
 > 修订依据:用户 P0-P4 提案 + nxday 次日回测证据(`_analysis/nxday_backtest.py` + `nxday_results.json`,2026-08-13 新增)
 > 前置决策:① 接受动量,改选股权重(热板块内动量赢滞涨);② 一期全做(六项一个 spec);③ 采用方案一(任何改变选股的机制,阈值/形态由探针产出)
@@ -116,7 +116,7 @@ _score_sector_stocks 线程池拉全成分股日线(现状已如此,未新增网
 
 `data_source.get_market_spot()`(data_source.py:212-227)现只选 code/name/price/change_pct/volume/amount 六列,**无今开 → §5.2 的 gap 永远算不出**。加一行 `"open": _pick(raw, "今开", "open")`,并入 `to_numeric` 循环。
 
-### 5.2 快照生命周期(评审 #2,核心;v3 修 signal_date/close_date 语义分离)
+### 5.2 快照生命周期(评审 #2,核心;v3 语义分离;v4 修 prev_trading_date 锚点)
 
 **问题**(v2 遗留):快照键曾用 `daily_df 末根日期`,混了两个语义——「推荐在哪天生成」(应 = now 的交易日)与「日线数据滞后到哪天」(daily_df 末根,盘中 = 昨日)。`get_stock_daily` 用 `akshare.stock_zh_a_daily`(data_source.py:259-268)返回**已完成交易日**日线,盘中不含当日。用末根日期做键时:盘中一整天 signal_date 恒等于昨日、60s 刷新反复 upsert 同一 PK,昨晚 17:40 的干净快照被盘中刷新覆盖;且 `get_before(昨日)` 返回**前天**——错位一天。
 
@@ -124,11 +124,11 @@ _score_sector_stocks 线程池拉全成分股日线(现状已如此,未新增网
 
 | 字段 | 语义 | 取值 |
 |---|---|---|
-| `signal_date` | 推荐**生成**的交易日(PK) | 由 `now` + `is_trading_time`/`is_after_close` 派生:交易日盘中或收盘后(周一至五且 `is_trading_time(now) or is_after_close(now)`)→ `now.date()`;否则(周末/节假日/开盘前)→ 回退 `close_date` |
+| `signal_date` | 推荐**生成**的交易日(PK) | 由 `now` + `is_trading_time`/`is_after_close` 派生:交易日盘中或收盘后(周一至五且 `is_trading_time(now) or is_after_close(now)`)→ `now.date()`;否则(周末/节假日/开盘前)→ 回退 `close_date`。**开盘前(0:00–9:30)回退会覆盖昨晚快照,无害**:开盘前 spot 实时价=昨收,选股输入与昨晚几乎一致、signal_close 相同,勿当 bug 排查 |
 | `close_date` | 信号收盘价对应的**日线末根**日期 | 得分股票 daily_df 末根日期的**众数**(非 max——停牌/延迟股末根更早,max 会虚高) |
 
 - **store.py 新增表** `recommend_snapshot(signal_date TEXT PRIMARY KEY, generated_at TEXT, close_date TEXT, prev_trading_date TEXT, payload TEXT)`;`payload` = JSON `[{code, name, signal_close}]`(每股 signal_close 用**各自** daily_df 末根收盘,round 2;停牌股仍用自己更早的末根,不拖累 close_date)。
-- **`prev_trading_date`**:`close_date` 之前最近一个交易日,由本次推荐各股 daily_df 的 date 并集(交易日历)派生,存进快照供 §5.3 校验相邻性。
+- **`prev_trading_date`**:`signal_date` 之前最近一个交易日(锚点是**今天**的生成交易日,不是日线滞后日 `close_date`——盘中两者相差一天,锚错会让相邻性判断恒 False),由本次推荐各股 daily_df 的 date 并集(交易日历)派生,存进快照供 §5.3 校验相邻性。**该字段本质是「当前请求」算出的请求态属性,存入快照仅为复用之便**(可复用于更早一期的校验),非历史快照该记的事实。
 - **build_recommend 出参**加 `signal_date`、`close_date` 与每股 `signal_close`。
 - **app.py `api_recommend`**:① build → payload(含 signal_date/close_date);② `prev = store.get_recommend_snapshot_before(payload["signal_date"])`(latest 行 WHERE signal_date < 当前);③ `store.save_recommend_snapshot(signal_date, now, close_date, prev_trading_date, stocks)` upsert(PK 去重,同日重建覆盖);④ prev 每只股票与**今日 spot open**(§5.1)合并算 `gap = open/signal_close − 1`,出参 `prev_snapshot`(含 prev.signal_date / prev.close_date)。
 
@@ -142,11 +142,21 @@ _score_sector_stocks 线程池拉全成分股日线(现状已如此,未新增网
 
 「昨晚(08-12)推荐今早低开多少」:get_before(08-13) 正确命中 08-12,不再错位。
 
+**相邻性锚点验证**(v4,prev.close_date 恒 = 08-12):
+
+| 场景 | signal_date | prev_trading_date(signal_date 之前) | is_next_day(prev.close_date=08-12 == 它) |
+|---|---|---|---|
+| 08-13 盘中 | 08-13 | 08-12 | **True** ✓ |
+| 08-13 收盘后 | 08-13 | 08-12 | **True** ✓ |
+| 周一 08-17 盘中(跨周末) | 08-17 | 08-14(周五) | **True** ✓ |
+
+若锚错到 close_date(盘中=08-12),prev_trading_date 会算成 08-11,is_next_day 恒 False——「次日低开」警示盘中永不显示。锚点必须 = signal_date。
+
 ### 5.3 前端(`renderRecommend`)
 
 - **静态免责**(标注出处与时效,评审 #9):「信号基于 {close_date} 收盘;**基于旧策略的历史回测(2025-08~2026-08)**:历史 {209} 个信号日次日开盘 {66.5%} 低开、均值 −{0.21}%。次日开盘执行,勿挂昨日收盘价。P0b 换权重后这些数字将重标。」
 - **昨日信号对比块**:渲染 `prev_snapshot` ——「昨日信号(基于 {prev.close_date} 收盘):代码/名称/信号收盘/今日开盘/低开%」,`gap <= -1.5` 时标红 chip「低开 {gap}%,信号撤回/谨慎」。
-- **相邻性校验**(评审 #2,核心):`is_next_day = (prev.close_date == 当前 prev_trading_date)`。**仅当 is_next_day 为真**才渲染「次日低开」;否则 prev 是周末/节假日/漏生成前的隔多日快照,`今日 open/signal_close − 1` 是**多日 gap**,不标「次日低开」,改标「隔 N 个交易日」(N = 交易日历中 close_date 到今日的间隔)。
+- **相邻性校验**(评审 #2,核心;v4 修锚点):`is_next_day = (prev.close_date == 当前请求算出的 prev_trading_date)`,其中 `prev_trading_date = signal_date 之前最近一个交易日`(锚点是今天的生成交易日,非 close_date)。**仅当 is_next_day 为真**才渲染「次日低开」;否则 prev 是周末/节假日/漏生成前的隔多日快照,`今日 open/signal_close − 1` 是**多日 gap**,不标「次日低开」,改标「隔 N 个交易日」(N = 交易日历中 close_date 到今日的间隔)。
 - `prev_snapshot` 为空(首日/无上一期)→ 不渲染;个股 spot 无 open → 跳过该股。
 
 ### 5.4 警示阈值(评审 #10)
@@ -187,7 +197,7 @@ _score_sector_stocks 线程池拉全成分股日线(现状已如此,未新增网
 | concurrent_days 缺失(data_complete=False) | `overheated=False`,不触发(沿用 data_complete 处理) |
 | signal_date 为最新(无更早快照) | `prev_snapshot` 空 |
 | close_date 含停牌股(末根更早) | close_date 取众数;停牌股 signal_close 用各自末根,不拖累众数 |
-| prev.close_date != 当前 prev_trading_date(隔多日) | 不标「次日低开」,改标「隔 N 个交易日」 |
+| prev.close_date != 当前请求算出的 prev_trading_date(隔多日) | 不标「次日低开」,改标「隔 N 个交易日」 |
 | 重锚常量 | 旧值留注释注明原因(现有 §9.4/§9.5 模式) |
 
 ## 10. 测试(v2 更新)
@@ -198,7 +208,7 @@ _score_sector_stocks 线程池拉全成分股日线(现状已如此,未新增网
   - rel_strength 分位:并列分位取均值秩、基数 <3 回退、基数定义(过滤后+≥6根,与 61 根打分解耦)。
   - `sector_verdict` 过热检测:`overheated` 结构化字段;路径 A 独立标签「过热(连涨)」不撞「谨慎追高(过热)」。
   - `sector_bonus` 新门槛(若 P3 探针产出)。
-  - store `recommend_snapshot`:upsert 按 signal_date 覆盖、`get_before` 语义、`prev_trading_date` 派生正确。
+  - store `recommend_snapshot`:upsert 按 signal_date 覆盖、`get_before` 语义、`prev_trading_date` 派生正确(**锚点 = signal_date 之前最近交易日,非 close_date;盘中两者相差一天需钉值区分**)。
   - close_date 众数:含停牌股(末根更早)时仍取多数股的最新交易日。
   - app `api_recommend`:prev_snapshot 合并(今日 open × 上一期 signal_close)、gap 计算、`is_next_day` 相邻性判定(相邻 → 次日低开;隔多日 → 隔 N 个交易日)、无上一期→空。
   - app payload 新字段存在性(`signal_date` / `close_date` / `signal_close` / `prev_snapshot`)。
