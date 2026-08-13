@@ -22,6 +22,7 @@ def make_spot():
         "change_pct": [1.0, 0.3, -2.0, 5.0],
         "volume": [100000, 682720, 80000, 90000],
         "amount": [1e8, 9.2e8, 2e8, 5e8],
+        "open": [9.8, 1348.0, 12.0, 45.0],
     })
 
 
@@ -360,3 +361,30 @@ def test_stock_short_history_all_null(monkeypatch):
     assert d["scores"]["composite"] is None
     assert d["composite"] is None and d["verdict"] is None and d["tier"] is None
     assert d["sector_resolved"] is False
+
+
+def test_recommend_prev_snapshot(monkeypatch, tmp_path):
+    db = str(tmp_path / "reco_snap_api.db")
+    monkeypatch.setattr(an, "collect_sector_metrics", lambda *a, **k: {
+        "verdict": "建议关注", "composite": 78.0, "consecutive_days": 1,
+        "emotion": 80, "strength": 70, "risk": 10})
+    c = client_factory(monkeypatch, db_path=db)
+    # 第一次:无上一期 → prev_snapshot None
+    r1 = c.get("/api/recommend").get_json()["data"]
+    assert r1["prev_snapshot"] is None
+    # 手动写入上一期快照:其 close_date 须等于当前 prev_trading_date 才触发 is_next_day。
+    # (Task 3 语义:close_date=末根日线日期、prev_trading_date=日历最大;make_daily 回绕下二者不同
+    #  — 2026-05-09 vs 2026-05-28 — 故不能复用 r1["close_date"]。)
+    prev_close = r1["prev_trading_date"]
+    store.upsert_recommend_snapshot(db, "2026-08-12", "2026-08-12 17:40:00",
+                                    prev_close, r1["prev_trading_date"],
+                                    [{"code": "600000", "name": "浦发银行", "signal_close": 10.0}])
+    r2 = c.get("/api/recommend").get_json()["data"]
+    ps = r2["prev_snapshot"]
+    assert ps is not None and ps["signal_date"] == "2026-08-12"
+    assert ps["is_next_day"] is True                       # prev.close_date == 当前 prev_trading_date
+    assert len(ps["stocks"]) == 1
+    s = ps["stocks"][0]
+    assert s["code"] == "600000" and s["signal_close"] == 10.0
+    assert s["today_open"] == pytest.approx(9.8)           # make_spot open 列 600000 → 9.8
+    assert abs(s["gap_pct"] - (-2.0)) < 0.01               # (9.8/10.0 - 1)*100
