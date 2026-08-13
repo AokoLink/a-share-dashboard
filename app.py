@@ -241,7 +241,7 @@ def register_routes(app):
                 comps = []
             if comps:
                 sector_resolved = True
-                sector_bonus_val = recommend.sector_bonus(max(comps))
+                sector_bonus_val = recommend.sector_bonus(max(comps), scores["composite"])
             final = an.stock_composite_v3(scores["position"], scores["volume_price"],
                                           scores["trend"], scores["signal"],
                                           scores["risk"], sector_bonus_val)
