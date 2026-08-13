@@ -493,11 +493,23 @@ def compute_stock_risk(daily_df, quote, now):
     return min(100.0, items)
 
 
-def stock_composite_v3(position, vp, trend, signal, risk, sector_bonus=0):
-    """综合分(规格 §4.6):质量分(55/15/10/20) + 板块加成,再 × 风险折扣。未舍入。"""
+V3_WEIGHTS = (0.55, 0.15, 0.10, 0.20)          # (position, vp, trend, signal)
+HOT_REL_WEIGHTS = (0.40, 0.15, 0.10, 0.20)     # 配置 c: + rel_strength×0.15
+HOT_SIGNAL_WEIGHTS = (0.40, 0.15, 0.10, 0.35)  # 配置 b(decisions.md 定稿 HOT_WEIGHT_MODE="signal")
+
+
+def stock_composite_v3(position, vp, trend, signal, risk, sector_bonus=0,
+                       rel_strength=None, weights=None):
+    """综合分(规格 §4.6):质量 = Σ(weights×因子) + (rel_strength×0.15 若非 None),
+    再加板块加成,× 风险折扣。weights 缺省:rel_strength 非 None → HOT_REL_WEIGHTS(配置 c),
+    否则 V3_WEIGHTS;显式 weights(配置 b 等)覆盖。未舍入。"""
     if None in (position, vp, trend, signal, risk):
         return None
-    quality = 0.55 * position + 0.15 * vp + 0.10 * trend + 0.20 * signal
+    if weights is None:
+        weights = HOT_REL_WEIGHTS if rel_strength is not None else V3_WEIGHTS
+    quality = weights[0] * position + weights[1] * vp + weights[2] * trend + weights[3] * signal
+    if rel_strength is not None:
+        quality += 0.15 * rel_strength
     return (quality + sector_bonus) * max(0.0, 1.0 - risk / 100.0)
 
 

@@ -520,3 +520,62 @@ def test_signal_date_fallback_non_trading(monkeypatch):
     assert payload["sectors"] == []
     assert payload["signal_date"] is None and payload["close_date"] is None
     assert payload["signal_date"] == payload["close_date"]
+
+
+def test_hot_sector_rel_strength_applied(monkeypatch):
+    # composite=78(热)→ 热谓词命中 → HOT_WEIGHT_MODE="signal" → 按 HOT_SIGNAL_WEIGHTS 重算。
+    # signal 模式 rel_strength 不计算(rel_map 空)恒 None;复合分须为 signal 权重重算(非 v3 默认 55/15/10/20)。
+    mock_sector(monkeypatch, composite=78.0, verdict="建议关注")
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": True, "codes": ["600050", "688981", "300750"],
+                                      "match_type": "manual", "source_name": "电子信息"})
+    # 末根 close = 22.8(signal_close 断言锚点);先跌后平 → 位置分高,热 signal 重算后非回避、可入推荐。
+    # (brief 原上升序列在 signal 权重下全成分 回避 → 板块空,无法测到重算;此夹具保持 22.8 锚点但形状可存活)
+    daily_closes = [22.8 + 0.1 * (54 - i) for i in range(55)] + [22.8] * 10
+    monkeypatch.setattr(ds, "get_stock_daily",
+                        lambda c: (make_daily(daily_closes), False))
+    payload, _ = recommend.build_recommend(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 13, 10, 0), 1, 5)
+    assert payload["sectors"], "热板块应产生推荐"
+    for s in payload["sectors"][0]["stocks"]:
+        assert s["rel_strength"] is None                     # signal 模式:rel_map 空 → rel_strength 恒 None
+        # 复合分按 HOT_SIGNAL_WEIGHTS 重算(板块 78 → sector_bonus=8;风险折扣保留)
+        expected = an.stock_composite_v3(
+            s["scores"]["position"], s["scores"]["volume_price"], s["scores"]["trend"],
+            s["scores"]["signal"], s["scores"]["risk"], recommend.sector_bonus(78.0),
+            rel_strength=None, weights=an.HOT_SIGNAL_WEIGHTS)
+        assert s["composite"] == pytest.approx(round(expected, 2))
+        assert s["signal_close"] == pytest.approx(22.8)      # 末根 close(价夹具,与权重无关)
+
+
+def test_non_hot_sector_no_rel_strength(monkeypatch):
+    # composite=60(非热)→ 谓词未命中 → 不套 rel_strength / signal 权重,保持 v3 权重。
+    mock_sector(monkeypatch, composite=60.0, verdict="跟踪(热点延续)")
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": True, "codes": ["600050", "688981", "300750"],
+                                      "match_type": "manual", "source_name": "电子信息"})
+    daily_closes = [22.8 + 0.1 * (54 - i) for i in range(55)] + [22.8] * 10
+    monkeypatch.setattr(ds, "get_stock_daily",
+                        lambda c: (make_daily(daily_closes), False))
+    payload, _ = recommend.build_recommend(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 13, 10, 0), 1, 5)
+    assert payload["sectors"]
+    s = payload["sectors"][0]["stocks"][0]
+    assert "rel_strength" not in s or s["rel_strength"] is None
+
+
+def test_rel_strengths_ties_and_small_base():
+    # 并列分位 = 均值秩(spec §3.3):3 等值 → rank 2.0 → pct 2/3 → 66.67
+    out = recommend._rel_strengths([("a", 0.01), ("b", 0.01), ("c", 0.01)])
+    assert len(out) == 3 and all(abs(v - 66.67) < 0.01 for v in out.values())
+    # 升序 → 33.33/66.67/100
+    out2 = recommend._rel_strengths([("a", 0.01), ("b", 0.03), ("c", 0.05)])
+    assert abs(out2["a"] - 33.33) < 0.01 and abs(out2["c"] - 100.0) < 0.01
+    # 基数 <3 → 空(spec §3.3 回退 v3)
+    assert recommend._rel_strengths([]) == {}
+    assert recommend._rel_strengths([("a", 0.01)]) == {}
+    assert recommend._rel_strengths([("a", 0.01), ("b", 0.02)]) == {}

@@ -275,3 +275,15 @@ def test_trend_score_v3():
     assert an.compute_trend_score(make_daily([float(10 + i * 0.3) for i in range(65)])) == pytest.approx(48.0)
     assert an.compute_trend_score(make_daily([float(100 - i * 0.5) for i in range(65)])) == pytest.approx(0.0)
     assert an.compute_trend_score(make_daily([1.0, 2.0])) == pytest.approx(0.0)  # 数据不足
+
+
+def test_stock_composite_v3_weights():
+    # v3 默认权重 55/15/10/20
+    assert an.stock_composite_v3(100, 0, 0, 0, 0) == pytest.approx(55.0)
+    # 热 rel(配置 c):rel_strength 非 None 且未给 weights → HOT_REL_WEIGHTS + rel×0.15
+    assert an.stock_composite_v3(100, 0, 0, 0, 0, rel_strength=100.0) == pytest.approx(55.0)   # 0.40*100 + 0.15*100
+    assert an.stock_composite_v3(100, 0, 0, 100, 0, rel_strength=0.0) == pytest.approx(60.0)   # 0.40*100 + 0.20*100 + 0.15*0
+    # 热 signal(配置 b):weights 显式覆盖(HOT_SIGNAL_WEIGHTS)
+    assert an.stock_composite_v3(100, 0, 0, 100, 0, weights=(0.40, 0.15, 0.10, 0.35)) == pytest.approx(75.0)
+    # 风险折扣保留
+    assert an.stock_composite_v3(50, 50, 50, 50, 100) == pytest.approx(0.0)

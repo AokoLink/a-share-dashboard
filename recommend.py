@@ -10,6 +10,8 @@ MAX_WORKERS = 8
 MIN_AMOUNT = 1e8            # 流动性下限:1 亿元
 BIG_DROP_PCT = -7.0         # 大跌排除线(不设对称跌停,创业板/科创板 -7 非跌停)
 QUALIFYING_VERDICTS = ("建议关注", "跟踪(热点延续)")
+HOT_COMPOSITE_THRESHOLD = 68.0      # 热板块谓词(spec §3.1);decisions.md P0b 定稿维持 68
+HOT_WEIGHT_MODE = "signal"          # P0b 权重模式(decisions.md 定稿):"signal"(b)/"rel_strength"(c)/"off"
 
 
 def _num(v):
@@ -101,9 +103,55 @@ def _score_candidate(row, daily_df, now, sector_composite=None):
             "close_date": str(daily_df["date"].iloc[-1])}
 
 
+def _g5_of(daily_df):
+    """个股 5 日区间涨幅 = 末根/6根前 − 1(spec §3.3 rel 分位基数)。不足 6 根 → None。"""
+    if daily_df is None or len(daily_df) < 6:
+        return None
+    try:
+        return float(daily_df["close"].iloc[-1]) / float(daily_df["close"].iloc[-6]) - 1.0
+    except Exception:
+        return None
+
+
+def _rel_strengths(base_g5):
+    """板块内 5 日涨幅分位(spec §3.3):均值秩 ×100。base_g5=[(code, g5), ...];基数<3 → {}。"""
+    if len(base_g5) < 3:
+        return {}
+    import pandas as pd
+    pcts = pd.Series([g for _, g in base_g5]).rank(pct=True, method="average") * 100.0
+    return {code: float(p) for (code, _), p in zip(base_g5, pcts)}
+
+
+def _apply_hot_weights(ranked, base_g5, sector_composite):
+    """热板块内 P0b 权重重算(spec §3.2/§3.3)。non-hot 或模式 off → 原样返回。"""
+    hot = sector_composite is not None and sector_composite >= HOT_COMPOSITE_THRESHOLD
+    if not hot or HOT_WEIGHT_MODE == "off":
+        return ranked
+    rel_map = _rel_strengths(base_g5) if HOT_WEIGHT_MODE == "rel_strength" else {}
+    for x in ranked:
+        rel = rel_map.get(x["code"][-6:]) if rel_map else None   # x["code"] 带 sh/sz 前缀 → 截 6 位
+        if rel is not None:
+            w = an.HOT_REL_WEIGHTS
+        elif HOT_WEIGHT_MODE == "signal":
+            w = an.HOT_SIGNAL_WEIGHTS
+        else:
+            w = None                             # rel 模式 + 基数<3 → 回退 v3(spec §3.3)
+        scores = x["scores"]
+        bonus = sector_bonus(sector_composite)   # 生产口径板块加成(Task 14 起改传 scores["composite"] 作 quality)
+        final = an.stock_composite_v3(scores["position"], scores["volume_price"],
+                                      scores["trend"], scores["signal"], scores["risk"],
+                                      bonus, rel_strength=rel, weights=w)
+        x["composite"] = final
+        x["verdict"] = an.stock_verdict(final)
+        if rel is not None:
+            x["rel_strength"] = round(rel, 2)
+    return ranked
+
+
 def _score_sector_stocks(spot_rows, get_daily, now, per_sector, sector_composite=None):
-    """并发拉日线并打分。返回 (ranked, daily_failed, any_stale, dates)。"""
+    """并发拉日线并打分;热板块内按 P0b 权重两遍重算 final/verdict。返回 (ranked, daily_failed, any_stale, dates)。"""
     ranked, daily_failed, any_stale, dates = [], 0, False, set()
+    base_g5 = []          # (code, g5) — 分位基数 = 过滤后成分股 + ≥6根(spec §3.3)
     if not spot_rows:
         return [], 0, False, set()
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
@@ -115,11 +163,15 @@ def _score_sector_stocks(spot_rows, get_daily, now, per_sector, sector_composite
                 any_stale = any_stale or bool(stale)
                 if len(daily):
                     dates.update(str(x) for x in daily["date"])
+                g5 = _g5_of(daily)
+                if g5 is not None:
+                    base_g5.append((str(row["code"]), g5))
                 scored = _score_candidate(row, daily, now, sector_composite)
                 if scored is not None:
                     ranked.append(scored)
             except Exception:
                 daily_failed += 1                # 单只失败 → 跳过,同板块其余继续
+    ranked = _apply_hot_weights(ranked, base_g5, sector_composite)
     return rank_candidates(ranked, per_sector), daily_failed, any_stale, dates
 
 
@@ -248,7 +300,8 @@ def build_recommend(summary_df, spot_df, db, type_key, now, top_sectors=3, per_s
             "stocks": [{"code": x["code"], "name": x["name"], "price": x["price"],
                         "change_pct": x["change_pct"], "scores": x["scores"],
                         "composite": round(x["composite"], 2),
-                        "verdict": x["verdict"], "signal_close": x["signal_close"]} for x in ranked],
+                        "verdict": x["verdict"], "signal_close": x["signal_close"],
+                        "rel_strength": x.get("rel_strength")} for x in ranked],
         })
     payload = {"strong_count": len(strong), "sectors": sectors,
                "skipped_sectors": skipped, "diagnostics": diagnostics}
