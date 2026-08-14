@@ -199,3 +199,21 @@ def test_run_backtest_integration(monkeypatch):
     assert results["n_train"] + results["n_valid"] == results["n_eval"]
     assert results["n_train"] == int(0.8 * results["n_eval"])
     assert results["data_range"]["start"] == d["date"].iloc[0]
+
+
+def test_predict_now_integration(monkeypatch):
+    d = make_daily([10.0 + 0.1 * i for i in range(70)], volumes=[1e7] * 70)
+    monkeypatch.setattr(bt, "load_sector_map", lambda p: {})
+    monkeypatch.setattr(bt, "build_universe", lambda dd, sm: ({"000001": d}, ["000001"]))
+    monkeypatch.setattr(bt, "build_calendar",
+                        lambda univ, codes: (list(d["date"]),
+                                             {"000001": {dt: i for i, dt in enumerate(d["date"])}}))
+    monkeypatch.setattr(bt, "build_buyable", lambda univ, pos, ad, i: ({"000001"}, {}, {}, {}))
+    monkeypatch.setattr(bt, "score_at", lambda dd, i, now: {"composite": 50.0})
+    res = pr.predict_now("/dummy", "/dummy")
+    assert res["as_of_date"] == d["date"].iloc[-1]
+    assert len(res["predictions"]) == 1
+    pred = res["predictions"][0]
+    assert pred["code"] == "000001"
+    assert pred["date"] == d["date"].iloc[-1]
+    assert pred["T+3"]["direction"] is not None

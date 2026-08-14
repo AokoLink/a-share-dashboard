@@ -345,3 +345,23 @@ def run_backtest(data_dir, sector_map_path):
         "valid_window": {"start": str(all_days[valid_days[0]]), "end": str(all_days[valid_days[-1]])},
         "n_eval": n, "step": step, "n_train": n_train, "n_valid": n - n_train,
     }
+
+
+def predict_now(data_dir, sector_map_path):
+    sector_map = bt.load_sector_map(sector_map_path)
+    universe, codes = bt.build_universe(data_dir, sector_map)
+    if not universe:
+        raise RuntimeError(f"no usable daily pkl in {data_dir}")
+    all_days, pos_of = bt.build_calendar(universe, codes)
+    start = max(61, len(all_days) - 1 - EVAL_DAYS)
+    step = max(1, (len(all_days) - 2 - start) // 300)
+    eval_days = list(range(start, len(all_days) - 1, step))
+    samples = _collect_samples(universe, pos_of, all_days, eval_days)
+    cals = _fit_all(samples)
+    fwd = forward_universe(universe, pos_of, all_days)
+    predictions = []
+    for c in sorted(fwd):
+        pred = predict_at(universe[c], fwd[c], AFTER_CLOSE, cals)
+        if pred is not None:
+            predictions.append(pred)
+    return {"as_of_date": all_days[-1], "predictions": predictions}
