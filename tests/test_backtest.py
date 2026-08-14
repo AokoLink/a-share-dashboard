@@ -190,3 +190,96 @@ def test_score_at_no_future_leak(monkeypatch):
     assert seen_prices == [float(closes[63])] * 2     # 两次都只读到 T 的 close
     nr = bt.next_returns(d, i)
     assert nr is not None and nr["gap"] > 1.0         # 验证 next_returns 确实读了 T+1
+
+
+def _with_change_pct(df, vals):
+    df = df.copy()
+    df["change_pct"] = [float(v) for v in vals]
+    return df
+
+
+def test_build_buyable_filters():
+    d1 = _with_change_pct(make_daily([10.0, 11.0, 12.0]), [0.0, 10.0, 0.0])  # 600000 bar1 涨停(>=9.9)
+    d2 = _with_change_pct(make_daily([10.0, 11.0, 12.0], volumes=[1000] * 3), [0.0, 1.0, 0.0])  # 量能不足
+    d3 = _with_change_pct(make_daily([1000.0, 1001.0, 1002.0], volumes=[200000] * 3), [0.0, 1.0, 0.0])  # 合格
+    universe = {"600000": d1, "000001": d2, "600519": d3}
+    codes = ["600000", "000001", "600519"]
+    all_days, pos_of = bt.build_calendar(universe, codes)
+    buy, od_m, gap_m, c1_m = bt.build_buyable(universe, pos_of, all_days, 1)
+    assert buy == {"600519"}
+    assert set(od_m) == set(gap_m) == set(c1_m) == {"600519"}
+
+
+def test_select_baskets_exact():
+    sector_members = {"S1": ["a", "b", "c", "d", "e", "f", "g"], "S2": ["h", "i"], "S3": ["j"]}
+    buyable = {"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
+    hot = ["S1", "S2", "S3"]
+    scores = {
+        "a": {"composite": 80, "risk": 10, "position": 30},
+        "b": {"composite": 70, "risk": 10, "position": 80},
+        "c": {"composite": 65, "risk": 10, "position": 50},
+        "d": {"composite": 55, "risk": 10, "position": 20},
+        "e": {"composite": 50, "risk": 80, "position": 90},  # risk>=70 -> 排除
+        "f": {"composite": 40, "risk": 10, "position": 10},
+        "g": {"composite": 30, "risk": 10, "position": 70},
+        "h": {"composite": 75, "risk": 10, "position": 40},
+        "i": {"composite": 60, "risk": 10, "position": 60},
+        "j": {"composite": 90, "risk": 10, "position": 25},
+    }
+    def get_score(code, bar):
+        return scores[code]
+    all_days = ["2026-01-01"]
+    dt = all_days[0]
+    pos_of = {c: {dt: 0} for c in buyable}
+    b = bt.select_baskets(sector_members, pos_of, all_days, 0, buyable, hot, get_score, 0, np.random.default_rng(0))
+    assert b["A"] == ["a", "b", "c", "d", "f", "h", "i", "j"]
+    assert b["E_hi"] == ["b", "g", "c", "a", "d", "i", "h", "j"]
+    assert b["E_lo"] == ["g", "c", "a", "d", "f", "i", "h", "j"]
+    assert b["B"] == ["j", "a", "h", "b", "c", "i", "d", "f", "g"]  # (0-0)%10==0 采样
+    assert b["C"] == ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]  # 10<=15 不抽样
+    assert set(b["D"]) == buyable
+
+
+def test_select_baskets_B_not_sampled():
+    sector_members = {"S1": ["a", "b", "c"]}
+    buyable = {"a", "b", "c"}
+    hot = ["S1"]
+    def get_score(code, bar):
+        return {"composite": 60, "risk": 10, "position": 50}
+    all_days = ["2026-01-01"]
+    pos_of = {c: {all_days[0]: 0} for c in buyable}
+    b = bt.select_baskets(sector_members, pos_of, all_days, 0, buyable, hot, get_score, 3, np.random.default_rng(0))
+    assert b["B"] is None  # (0-3)%10 != 0 -> 未采样
+
+
+def test_select_baskets_E_position_tie_breaks_by_fa():
+    sector_members = {"S1": ["x", "y"]}
+    buyable = {"x", "y"}
+    hot = ["S1"]
+    scores = {
+        "x": {"composite": 70, "risk": 10, "position": 50},
+        "y": {"composite": 80, "risk": 10, "position": 50},  # 同 position,fa 更高
+    }
+    def get_score(code, bar):
+        return scores[code]
+    all_days = ["2026-01-01"]
+    pos_of = {c: {all_days[0]: 0} for c in buyable}
+    b = bt.select_baskets(sector_members, pos_of, all_days, 0, buyable, hot, get_score, 0, np.random.default_rng(0))
+    # 先 -fa 排序(y 前),稳定 -position 重排,并列按 fa 序 -> y 仍在前
+    assert b["E_hi"] == ["y", "x"]
+
+
+def test_select_baskets_C_rng_sampling_deterministic():
+    members = [f"c{i:02d}" for i in range(20)]
+    sector_members = {"S1": members}
+    buyable = set(members)
+    hot = ["S1"]
+    def get_score(code, bar):
+        return {"composite": 50, "risk": 10, "position": 50}
+    all_days = ["2026-01-01"]
+    pos_of = {c: {all_days[0]: 0} for c in members}
+    b1 = bt.select_baskets(sector_members, pos_of, all_days, 0, buyable, hot, get_score, 0, np.random.default_rng(0))
+    b2 = bt.select_baskets(sector_members, pos_of, all_days, 0, buyable, hot, get_score, 0, np.random.default_rng(0))
+    assert len(b1["C"]) == 15
+    assert b1["C"] == b2["C"]
+    assert set(b1["C"]) <= buyable

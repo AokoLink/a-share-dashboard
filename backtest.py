@@ -122,3 +122,66 @@ def score_at(d, i, now):
              "amount": float(df["volume"].iloc[-1]) * float(df["close"].iloc[-1])}
     sc = an.score_stock(df, quote, now)
     return sc if sc["composite"] is not None else None
+
+
+def build_buyable(universe, pos_of, all_days, i):
+    dt = all_days[i]
+    buy = set()
+    od_m, gap_m, c1_m = {}, {}, {}
+    for c in universe:
+        bar = pos_of[c].get(dt)
+        if bar is None or bar + 1 >= len(universe[c]):
+            continue
+        d = universe[c]
+        chg = float(d["change_pct"].iloc[bar])
+        close = float(d["close"].iloc[bar])
+        nr = next_returns(d, bar)
+        if nr is None:
+            continue
+        th = an.limit_threshold(c)
+        if chg >= th or chg <= -7.0:
+            continue
+        if float(d["volume"].iloc[bar]) * close < MIN_AMOUNT:
+            continue
+        buy.add(c)
+        od_m[c] = nr["od"]; gap_m[c] = nr["gap"]; c1_m[c] = nr["close1"]
+    return buy, od_m, gap_m, c1_m
+
+
+def select_baskets(sector_members, pos_of, all_days, i, buyable, hot, get_score, start, rng):
+    dt = all_days[i]
+    hot_members = set()
+    for s in hot:
+        hot_members.update(sector_members.get(s, []))
+    basket_a, pos_hi, pos_lo = [], [], []
+    for s in hot:
+        scored = []
+        for c in sector_members.get(s, []):
+            if c not in buyable:
+                continue
+            sc = get_score(c, pos_of[c][dt])
+            if sc is None or sc["risk"] >= 70:
+                continue
+            bonus = 8 if sc["composite"] >= 68 else 4 if sc["composite"] >= 60 else 0
+            fa = sc["composite"] + bonus
+            scored.append((fa, c, sc["position"]))
+        scored.sort(key=lambda x: -x[0])          # 先 -fa(spec §5.6 E 两段式)
+        basket_a += [x[1] for x in scored[:PER_SECTOR]]
+        scored.sort(key=lambda x: -x[2])          # 稳定重排 -position,并列按 fa 序
+        pos_hi += [x[1] for x in scored[:PER_SECTOR]]
+        pos_lo += [x[1] for x in scored[-PER_SECTOR:]]
+    basket_b = None
+    if (i - start) % B_SAMPLE_EVERY == 0:
+        scored_b = []
+        for c in sorted(buyable):
+            sc = get_score(c, pos_of[c][dt])
+            if sc is None or sc["risk"] >= 70:
+                continue
+            scored_b.append((sc["composite"], c))
+        scored_b.sort(key=lambda x: -x[0])
+        basket_b = [c for _, c in scored_b[:TOP_SECTORS * PER_SECTOR]]
+    basket_c = sorted(hot_members & buyable)
+    if len(basket_c) > TOP_SECTORS * PER_SECTOR:
+        basket_c = list(rng.choice(basket_c, size=TOP_SECTORS * PER_SECTOR, replace=False))
+    basket_d = list(buyable)
+    return {"A": basket_a, "E_hi": pos_hi, "E_lo": pos_lo, "B": basket_b, "C": basket_c, "D": basket_d}
