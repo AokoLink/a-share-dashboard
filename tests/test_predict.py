@@ -65,3 +65,39 @@ def test_labels_trend3_none_when_short():
 def test_labels_next_returns_none():
     d = make_daily([10.0])  # i=0 → i+1 >= len → next_returns None
     assert pr._labels(d, 0) is None
+
+
+def test_fit_calibrator_bin_probabilities():
+    pairs = [(1.0, 0)] * 10 + [(9.0, 1)] * 10
+    cal = pr._fit_calibrator(pairs, 2)
+    assert not cal.degraded
+    assert cal.p_up(1.0) == pytest.approx(0.0)
+    assert cal.p_up(9.0) == pytest.approx(1.0)
+
+
+def test_fit_calibrator_pav_monotone():
+    pairs = [(1.0, 1)] * 4 + [(2.0, 0)] * 4 + [(3.0, 1)] * 4
+    cal = pr._fit_calibrator(pairs, 3)
+    ps = [p for _, p in cal.bins]
+    assert ps == sorted(ps)  # PAV 后单调不减
+    assert cal.p_up(1.0) == pytest.approx(0.5)
+    assert cal.p_up(2.0) == pytest.approx(0.5)
+    assert cal.p_up(3.0) == pytest.approx(1.0)
+
+
+def test_p_up_boundary_and_none():
+    cal = pr._fit_calibrator([(1.0, 0)] * 5 + [(2.0, 1)] * 5, 2)
+    assert cal.p_up(0.5) == pytest.approx(0.0)
+    assert cal.p_up(1.0) == pytest.approx(0.0)
+    assert cal.p_up(1.5) == pytest.approx(0.0)
+    assert cal.p_up(2.0) == pytest.approx(1.0)
+    assert cal.p_up(99.0) == pytest.approx(1.0)
+    assert cal.p_up(None) is None
+    assert cal.p_up(float("nan")) is None
+
+
+def test_fit_calibrator_degraded_single_bin():
+    cal = pr._fit_calibrator([(1.0, 1), (2.0, 0)], 10)
+    assert cal.degraded
+    assert len(cal.bins) == 1
+    assert cal.p_up(1.0) == pytest.approx(0.5)
