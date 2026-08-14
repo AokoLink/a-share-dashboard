@@ -17,7 +17,7 @@ import pandas as pd
 import analysis as an
 import backtest as bt
 
-MODULE_VERSION = "1.0.0"
+MODULE_VERSION = "1.1.0"
 EVAL_DAYS = 1200
 TRAIN_FRAC = 0.8
 N_BINS = 10

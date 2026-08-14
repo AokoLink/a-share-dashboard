@@ -415,3 +415,34 @@ def test_metric_path_hold_yields_none():
     m = pr._metric_path(gap_cal, od_cal, [(5.0, 1, 1)])
     assert m["n"] == 0
     assert m["acc_path"] is None
+
+
+def test_build_report_serializes_return_risk():
+    cal = pr._fit_calibrator([(5.0, 1)] * 10, 2)
+    ret = pr._fit_calibrator([(5.0, 0.02)] * 10, 2, monotone=False)
+    results = {
+        "calibrators": {"direction": cal, "return": ret},
+        "n_samples": {"direction": 10, "return": 10},
+        "metrics": {
+            "direction": {"n": 10, "base_rate": 0.5, "hit_rate": 0.6, "ece": 0.1, "brier": 0.2, "n_hold": 1},
+            "return": {"n": 3, "mae": 0.02, "mae_std": 0.01, "rmse": 0.03, "rmse_std": 0.01,
+                       "sign_agreement": 0.5, "sign_n": 2, "mean_residual": -0.01,
+                       "residual_std": 0.02,
+                       "dir_cond_mae": {"up": {"mae": 0.02, "n": 3},
+                                        "down": {"mae": None, "n": 0},
+                                        "hold": {"mae": None, "n": 0}}},
+            "risk": {"n": 4, "adverse_rate": 0.25, "ece": 0.01, "brier": 0.05, "lift": 0.3},
+            "path": {"n": 8, "acc_path": 0.5},
+        },
+        "data_range": {"start": "2026-01-01", "end": "2026-08-13"},
+        "train_window": {"start": "2026-01-01", "end": "2026-06-01"},
+        "valid_window": {"start": "2026-06-02", "end": "2026-08-13"},
+        "n_eval": 300, "step": 3, "n_train": 240, "n_valid": 60,
+    }
+    payload = pr.build_report(results)
+    assert payload["metrics"]["return"]["mae"] == pytest.approx(0.02)
+    assert payload["metrics"]["return"]["dir_cond_mae"]["up"]["n"] == 3
+    assert payload["metrics"]["risk"]["lift"] == pytest.approx(0.3)
+    assert payload["module_version"] == "1.1.0"
+    md = pr.render_markdown(payload)
+    assert "return" in md and "risk" in md
