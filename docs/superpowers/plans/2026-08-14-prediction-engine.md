@@ -300,7 +300,11 @@ def _fit_calibrator(pairs, n_bins):
         hi = (b + 1) * n // n_bins
         chunk = clean[lo:hi]
         p = sum(l for _, l in chunk) / len(chunk)
-        bins.append([chunk[-1][0], p, len(chunk)])
+        if hi < n:
+            upper = (chunk[-1][0] + clean[hi][0]) / 2.0
+        else:
+            upper = chunk[-1][0]
+        bins.append([upper, p, len(chunk)])
     while True:
         merged = False
         out = []
