@@ -32,7 +32,7 @@
 
 模块**只读**本地缓存,不发起网络请求。
 
-- 日线缓存:`--data-dir` 指向 `_analysis/daily/*.pkl`(默认 `_analysis/daily`)。每文件一只股票,文件名 = 6 位纯数字代码(无 sh/sz/bj 前缀)。列精确为 `[date, open, high, low, close, volume]`,`date` 为 `"YYYY-MM-DD"` 字符串,RangeIndex,**无 `amount`/成交额列**。前复权(qfq)。1623 只,全局区间 1990-12-19 → 2026-08-11。
+- 日线缓存:`--data-dir` 指向 `_analysis/daily/*.pkl`(默认 `_analysis/daily`)。每文件一只股票,文件名 = 6 位纯数字代码(无 sh/sz/bj 前缀)。列精确为 `[date, open, high, low, close, volume]`,`date` 为 `"YYYY-MM-DD"` 字符串,RangeIndex,**无 `amount`/成交额列**。前复权(qfq)。1623 只,原始全史区间 1990-12-19 → 2026-08-11(截尾 1200 根后评估窗口 ≈ 2021-08 → 2026-08,见 §7)。
 - 板块映射:`--sector-map` 指向 `_analysis/code2sector.json`(默认)。**该文件为 GBK 编码**(非 UTF-8),格式为扁平 dict:`{6位代码: [THS 板块名列表]}`,1799 键,值一码多板块。模块须以 `encoding="gbk"` 显式打开(探针靠 Windows 默认 GBK 隐式解码,属脆弱写法,生产模块必须显式)。
 
 输入均位于 gitignored `_analysis/`,不提交;输出报告提交(§7)。
@@ -122,15 +122,17 @@ T+1 = **同一只股票自身序列的下一行**(停牌股 i+1 可能跳过日�
 
 对每个板块 s,对每个成员算 `_win_gain(c, i, 5)`;若有效成员 ≥3,则 `heat[s] = median(成员 5 日涨幅)`。`hot = 按 heat 降序取前 TOP_SECTORS`。
 
+**确定性(并列定序):** `sector_members` 必须按 `code2sector.json` 文件顺序构建(探针 :66-70 依文件顺序迭代)。`hot`、`scored`(§5.6)用 Python 稳定排序,并列浮点按该插入顺序定序;`buyable` 迭代用 `sorted(buyable)`、C 候选用 `sorted(hot_members ∩ buyable)`,保证跨运行确定。
+
 ### 5.6 篮子
 
 **每日可买集合 `buyable`(评分前预过滤,逐字):** 对每只 c(在 `pos_of` 中有当日 bar i 且 `i+1 < len`):`next_returns` 非 None;`change_pct < an.limit_threshold(code)` 且 `change_pct > -7.0`(剔除涨停与近跌停);`volume[i]*close[i] >= MIN_AMOUNT`。
 
-- **A(实际管线代理):** 对每个 `hot` 板块,取 `成员 ∩ buyable` → `get_score` 非 None 且 `risk < 70` → `bonus = 8 if composite>=68 else 4 if composite>=60 else 0` → `fa = composite + bonus` → 按 `-fa` 排序取前 `PER_SECTOR`。跨 3 个热板块拼接(至多 15 只)。度量 A 的 od / gap / close1。`scored` 条目按 `(fa, fb, fc, fc10, fc20, code, position, composite)` 记录(第 6/7/8 位为 code/position/composite,供 E 分拆用)。
+- **A(实际管线代理):** 对每个 `hot` 板块,取 `成员 ∩ buyable` → `get_score` 非 None 且 `risk < 70` → `bonus = 8 if composite>=68 else 4 if composite>=60 else 0` → `fa = composite + bonus` → 按 `-fa` 排序取前 `PER_SECTOR`。跨 3 个热板块拼接(至多 15 只)。度量 A 的 od / gap / close1。`scored` 条目按 `(fa, code, position)` 记录(第 1/2 位为 code/position,供 E 分拆用;不含探针的 fb/fc/fc10/fc20 与 composite 残留,它们属 P0b/P3 子分析)。
 - **B(全市场 top15):** 仅当 `(i - start) % B_SAMPLE_EVERY == 0`;候选 = 全 `buyable`;`get_score` 非 None 且 `risk < 70`;按 `composite` 降序取前 `TOP_SECTORS*PER_SECTOR = 15`。度量 od。
-- **C(热板块随机):** 候选 = `hot_members ∩ buyable`;无 score/risk 过滤;若 >15 用 `np.random.default_rng(0).choice(..., 15, replace=False)` 无放回抽 15,否则全取。度量 od。
+- **C(热板块随机):** 候选 = `sorted(hot_members ∩ buyable)`(定序;探针用 set 交集 `list(...)` 跨运行顺序不确定,模块以 sorted 保证可复现);无 score/risk 过滤;若 >15 用**模块级单个 `rng = np.random.default_rng(0)`** 的 `.choice(..., 15, replace=False)` 无放回抽 15,否则全取。度量 od。`rng` 须为模块级单实例、所有评估日按循环顺序复用,不得每评估日重建(探针 :183 单例、:380 顺序复用)。
 - **D(全市场基准):** 候选 = 全部 `buyable`(无过滤无排序)。等权均值 od。
-- **E(position 分拆):** 复用 A 的 `scored` 列表,按 `-position` 排序;`pos_hi`(低位)= 前 `PER_SECTOR`,`pos_lo`(高位)= 后 `PER_SECTOR`,跨 3 热板块拼接。度量 od。
+- **E(position 分拆):** 用与 A 相同的候选集(每个 `hot` 板块内 `buyable ∩ 有效评分 ∩ risk<70` 的**全部**成员,非 A 已选的 top5),按 `-position` 重排;`pos_hi`(低位)= 前 `PER_SECTOR`,`pos_lo`(高位)= 后 `PER_SECTOR`,跨 3 热板块拼接。度量 od。
 
 `stats(basket, m) = mean([m[c] for c in basket if c in m])`(空篮子 → NaN)。
 
@@ -145,7 +147,7 @@ summ(arr):   a = 数组(剔除 None/NaN)
 summ_year(arr, years):  按 year=all_days[i][:4] 分组,每组同 summ
 ```
 
-**Welch 增强:** 对每个篮子 X(有日级 od 序列),`welch_t(X_od, D_od)` → `{t, p}`(双样本不等方差 t 检验)。记录在报告 `welch` 字段。
+**Welch 增强:** 对 A / B / C / E_hi / E_lo 各篮子(有日级 od 序列),`welch_t(X_od, D_od)` → `{t, p}`(双样本不等方差 t 检验);**不对 D 自身比较**。适用性声明:A/C 是 D 的子集、B 是抽样(n≈30)对 D(n≈400),非配对且样本重叠,独立假设不成立,t/p 偏保守,**仅作定性参考**。记录在报告 `welch` 字段。
 
 ### 5.8 报告行
 
@@ -161,7 +163,7 @@ B 全市场top15  次日od / C 热板块随机  次日od / D 全市场基准  �
 
 ## 6. 反泄露保证(结构与测试双保险)
 
-1. **结构**:评分输入 `d.iloc[:i+1]`(≤T);验证用 `next_returns` 读 i+1 的 open/close;`now` 固定为 AFTER_CLOSE,不用真实日期。
+1. **结构**:评分输入 `d.iloc[:i+1]`(≤T);验证用 `next_returns` 读 i+1 的 open/close;`now` 固定为 AFTER_CLOSE,不用真实日期。`buyable` 的 `i+1 < len` 是**可测性筛选**(无次日价无从测收益),对所有篮子(含 D)一致,非未来数据泄露。
 2. **测试(§11.3 反泄露测试)**:构造小夹具,断言「改动 T+1 行的 open/close,T 日评分逐位不变、篮子逐位不变」。
 
 ## 7. 报告输出与版本戳
@@ -183,13 +185,14 @@ B 全市场top15  次日od / C 热板块随机  次日od / D 全市场基准  �
 }
 ```
 
+- `n_eval` = **实际处理日数**(sector_heat 为空的评估日不计入;探针 :397 逐日累加)。`data_range` / `window` 为 **1200 根截尾后的并集区间**,非原始 pkl 全史(1990-12-19);截尾后 `all_days[0]` ≈ 2019-02-25、`window.start` ≈ 2021-08-25。
 - Markdown:`--out` 同基名 `.md`(默认 `backtest_baseline.md`,提交)。含版本戳、数据区间、n_eval、整体表、按年表、Welch 表、**篮子 A 代理声明**(§8)。
 
 `system_version` = git 短哈希是权威代码标识(可复现);`module_version` = 盲测模块自身 semver。
 
 ## 8. 篮子 A 是「代理管线」——如实声明
 
-因日线 pkl 无 `amount`(成交额),生产 `collect_sector_metrics` 所需 `turnover_ratio`(emotion 25%)与 `activity`(strength 30%)无法历史复现。故基线「篮子 A」与生产 `recommend.py` 管线**存在三处代理差异**,报告须逐条标注:
+因日线 pkl 无 `amount`(成交额),生产 `collect_sector_metrics` 所需 `turnover_ratio`(emotion 25%)与 `activity`(strength 30%)无法历史复现。故基线「篮子 A」与生产 `recommend.py` 管线**存在以下代理差异**,报告须逐条标注:
 
 | 维度 | 生产 recommend.py | 基线篮 A(代理) |
 |---|---|---|
@@ -197,6 +200,11 @@ B 全市场top15  次日od / C 热板块随机  次日od / D 全市场基准  �
 | 个股加成 | `sector_bonus(sector_composite, ...)`(68/60/50,+8/+4/−5) | 个股 composite 分档 `8 if >=68 else 4 if >=60 else 0`(无 −5) |
 | 热权重重算 | `_apply_hot_weights`(composite≥68 时改用 HOT_SIGNAL_WEIGHTS) | 无(恒用 V3_WEIGHTS) |
 | 个股硬过滤 | filter_candidates:ST / 新股 / 停牌 / 涨停 / ≤−7% / amount<1e8 | 仅 buyable:涨停 / ≤−7% / volume*close≥1e8(无 ST/新股/停牌) |
+
+补充两处代理差异(与上表同类):
+
+- **加成×风险折扣位置**:生产 `stock_composite_v3(..., bonus)` = `(quality + bonus) * (1 - risk/100)`,加成在折扣**内**;探针 A `fa = sc["composite"] + bonus` = `quality * (1 - risk/100) + bonus`,加成在折扣**外**。同档内 +8 对生产是 8*(1-risk/100)、对探针是全额 8,高/低风险股相对排序会变。
+- **verdict 过滤**:生产 `rank_candidates` 还剔除 `verdict == "回避"`(<42 分);探针 A 仅过滤 `risk < 70`。薄板块(达标成员 <5)时 <42 分股可占位,属已知微小差异。
 
 结论:基线篮 A 的准确率是「代理管线」的准确率,作为**当前版本可复现的近似基线**;真正的生产口径基线须待 `amount` 数据补齐(后续切片)。
 
@@ -212,10 +220,11 @@ B 全市场top15  次日od / C 热板块随机  次日od / D 全市场基准  �
 
 ```
 python backtest.py [--data-dir _analysis/daily] [--sector-map _analysis/code2sector.json]
-                   [--out backtest_baseline.json] [--year-split]
+                   [--out backtest_baseline.json]
 ```
 
 - `--out` 缺省 `backtest_baseline.json`;markdown 同基名 `.md` 一并写出。
+- 按年切分(by_year)恒输出,无开关参数。
 - 无任何位置参数。退出码 0 成功 / 2 参数错 / 1 运行错。
 
 ## 11. 测试(`tests/test_backtest.py`)
@@ -231,7 +240,7 @@ python backtest.py [--data-dir _analysis/daily] [--sector-map _analysis/code2sec
 - `welch_t`:已知两样本断言 t/p(与 `scipy.stats.ttest_ind(..., equal_var=False)` 一致,或手写公式等值)。
 
 ### 11.3 反泄露测试(核心)
-夹具:≥61 根日线。跑 `score_at(d, i, AFTER_CLOSE)` 得评分 S1;把 `d.iloc[i+1]` 的 open/close 改成极端值,再跑得 S2;**断言 S1 == S2 逐位相等**(证明 T+1 数据不进入评分)。另断言 `next_returns(d, i)` 随之改变(证明验证确实读了 T+1)。
+夹具:≥61 根日线。跑 `score_at(d, i, AFTER_CLOSE)` 得评分 S1;把 `d.iloc[i+1]` 的 open/close 改成**极端正值**(保持 >0,避免 `next_returns` 变 None 使该股退出 buyable),再跑得 S2;**断言 S1 == S2 逐位相等**(证明 T+1 数据不进入评分)。另断言 `next_returns(d, i)` 随之改变(证明验证确实读了 T+1)。
 
 ### 11.4 CLI 与报告
 - `--data-dir` 指向 tmp_path 下自建 pkl 集,跑 `main`,断言 JSON/MD 写出、`system_version`/`data_range`/`rows`/`welch` 字段齐全、GBK sector-map 被正确解码(中文板块名无乱码)。
@@ -242,6 +251,6 @@ python backtest.py [--data-dir _analysis/daily] [--sector-map _analysis/code2sec
 ## 12. 验收标准
 
 1. `python -m pytest tests/ -q` 全绿(129 + 新增)。
-2. `python backtest.py --data-dir _analysis/daily --sector-map _analysis/code2sector.json --out backtest_baseline.json` 在真实缓存上成功产出,`rows` 与 `_analysis/nxday_results.json` 同名行数值一致(逐行核对 A/B/C/D/E 的 mean_pct/win_rate/n),`n_eval` / `step` / `window` 一致。
+2. `python backtest.py --data-dir _analysis/daily --sector-map _analysis/code2sector.json --out backtest_baseline.json` 在真实缓存上成功产出,`rows` 与 `_analysis/nxday_results.json` 同名行数值一致(逐行核对 A/B/D/E 的 mean_pct/win_rate/n),`n_eval` / `step` / `window` 一致。**C 行例外**:探针 C 用 set 交集顺序(跨运行非确定),模块以 `sorted` 定序保证可复现,故 C_od 可能与探针单次结果不同(属预期,报告标注)。整文件 diff 时 `by_year` 比探针少 4 个 P0b 键,属预期。
 3. 报告含 `system_version`(git 短哈希)、`data_range`、篮子 A 代理声明。
 4. 无未来数据泄露(§11.3 测试通过)。
