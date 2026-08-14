@@ -467,7 +467,7 @@ def test_score_at_reconstructs_quote(monkeypatch):
     closes = [10.0 + i * 0.1 for i in range(65)]
     d = make_daily(closes)
     d["change_pct"] = d["close"].pct_change() * 100.0
-    d["change_pct"].iloc[0] = 0.0
+    d.iloc[0, d.columns.get_loc("change_pct")] = 0.0  # CoW 安全
     calls = []
     def fake(df, quote, now):
         calls.append((len(df), dict(quote)))
@@ -491,7 +491,7 @@ def test_score_at_no_future_leak(monkeypatch):
     closes = [10.0 + i * 0.1 for i in range(65)]
     d = make_daily(closes)
     d["change_pct"] = d["close"].pct_change() * 100.0
-    d["change_pct"].iloc[0] = 0.0
+    d.iloc[0, d.columns.get_loc("change_pct")] = 0.0  # CoW 安全
     seen_prices = []
     def fake(df, quote, now):
         seen_prices.append(quote["price"])
