@@ -1,0 +1,116 @@
+# -*- coding: utf-8 -*-
+import numpy as np
+import pandas as pd
+import pytest
+
+import evaluate as ev
+
+
+def mk(closes, opens=None, highs=None, lows=None, amounts=None, code="000001"):
+    n = len(closes)
+    opens = [float(o) for o in opens] if opens is not None else [float(c) for c in closes]
+    highs = [float(h) for h in highs] if highs is not None else [max(o, c) * 1.01 for o, c in zip(opens, closes)]
+    lows = [float(l) for l in lows] if lows is not None else [min(o, c) * 0.99 for o, c in zip(opens, closes)]
+    amounts = [float(a) for a in amounts] if amounts is not None else [1e9] * n
+    dates = pd.date_range("2026-01-01", periods=n, freq="D").strftime("%Y-%m-%d").tolist()
+    closes = [float(c) for c in closes]
+    # change_pct 由 close 计算(与 bt.build_universe 同口径);bt.build_buyable 读该列
+    change_pct = (pd.Series(closes).pct_change().fillna(0.0) * 100.0).tolist()
+    return pd.DataFrame({"date": dates, "open": opens, "high": highs, "low": lows,
+                         "close": closes, "volume": [1e6] * n,
+                         "amount": amounts, "code": [code] * n, "change_pct": change_pct})
+
+
+def test_amount_top_20pct_and_nan():
+    # 5 只股,amount 10/8/6/4/NaN → top20% = max(1, int(4*0.2))=1 → 只有 amount=10 那只
+    d = mk([10.0] * 100)
+    universe = {"a": mk([10.0] * 100, amounts=[10.0] * 100, code="a"),
+                "b": mk([10.0] * 100, amounts=[8.0] * 100, code="b"),
+                "c": mk([10.0] * 100, amounts=[6.0] * 100, code="c"),
+                "d": mk([10.0] * 100, amounts=[4.0] * 100, code="d"),
+                "e": mk([10.0] * 100, amounts=[float("nan")] * 100, code="e")}
+    all_days = sorted(set().union(*[set(v["date"]) for v in universe.values()]))
+    pos_of = {c: {dt: i for i, dt in enumerate(v["date"])} for c, v in universe.items()}
+    top = ev._amount_top(universe, pos_of, all_days, 99, {"a", "b", "c", "d", "e"})
+    assert top == {"a"}
+
+
+def test_hot_members_top3():
+    sm = {"s1": ["a", "b"], "s2": ["c"], "s3": ["d"], "s4": ["e"]}
+    heat = {"s1": 0.05, "s2": 0.03, "s3": 0.01, "s4": -0.02}
+    assert ev._hot_members(sm, heat) == {"a", "b", "c", "d"}
+
+
+def test_leaders_tie_smallest_code():
+    # sector_map 为 code→sectors 映射(与 bt.load_sector_map 输出同向)
+    sector_map = {"a": ["s1"], "b": ["s1"], "c": ["s2"]}
+    comp = {"a": 70.0, "b": 70.0, "c": 50.0}
+    # s1 内 a/b 并列 70 → 取 code 小者 a;c 是 s2 唯一成员 → 龙头
+    assert ev._leaders(sector_map, {"a", "b", "c"}, comp) == {"a", "c"}
+
+
+def test_layer_trend():
+    d = mk(list(range(100, 200)))  # 单调涨 → MA5>MA20>MA60
+    assert ev._layer_trend(d, 99)
+
+
+def test_layer_high():
+    closes = [10.0] * 100
+    closes[99] = 15.0
+    d = mk(closes)
+    assert ev._layer_high(d, 99)
+    closes[99] = 9.0
+    assert not ev._layer_high(mk(closes), 99)
+
+
+def test_layer_oversold_rebound_oscillation():
+    closes = [100.0] * 100
+    closes[80] = 60.0   # ret20 at bar=99 → close[99]/close[79]-1
+    closes[99] = 62.0
+    d = mk(closes)
+    # ret20(99) = 62/100 - 1 = -0.38 < -0.15 → 超跌
+    assert ev._layer_oversold(d, 99)
+    # 反抽:ret20(98)=close[98]/close[78]-1=100/100-1=0 不< -0.15 → False
+    assert not ev._layer_rebound(d, 99)
+    # 震荡:构造窄幅
+    narrow = mk([100.0 + 0.01 * i for i in range(100)],
+                highs=[100.0 + 0.02 * i for i in range(100)],
+                lows=[100.0 + 0.005 * i for i in range(100)])
+    assert ev._layer_oscillation(narrow, 99)
+
+
+def test_layer_high_boundary_097():
+    # max(close[40..99])=100;close[99]=97.0 恰 =0.97*100 → True;96.9 → False
+    closes = [100.0] * 100
+    closes[99] = 97.0
+    assert ev._layer_high(mk(closes), 99)
+    closes[99] = 96.9
+    assert not ev._layer_high(mk(closes), 99)
+
+
+def test_layer_oversold_boundary():
+    # ret20(99)=close[99]/close[79]-1;close[79]=100。恰 -0.15 不满足(< 严格);略低于 -0.15 → True
+    # 注:85.0/100.0-1 在浮点下= -0.15000000000000002(因 0.85 不可二进制精确表示),会误判为 < -0.15,
+    #     故边界侧用 85.000001(≈-0.14999999,严格不 < -0.15)以避开浮点噪声;84.9 → -0.151 → True
+    closes = [100.0] * 100
+    closes[99] = 85.000001
+    assert not ev._layer_oversold(mk(closes), 99)
+    closes[99] = 84.9
+    assert ev._layer_oversold(mk(closes), 99)
+
+
+def test_layer_oscillation_boundary_15():
+    # amp=(max(high)-min(low))/close*100;窗口 80..99。恰 15 → False;14.9 → True
+    closes = [100.0] * 100
+    assert not ev._layer_oscillation(mk(closes, highs=[115.0] * 100, lows=[100.0] * 100), 99)
+    assert ev._layer_oscillation(mk(closes, highs=[114.9] * 100, lows=[100.0] * 100), 99)
+
+
+def test_layer_rebound_true_tm1():
+    # ret20(T-1)=close[98]/close[78]-1=60/100-1=-0.4<-0.15;close[99]=62>close[98]=60 → True
+    closes = [100.0] * 100
+    closes[98] = 60.0
+    closes[99] = 62.0
+    assert ev._layer_rebound(mk(closes), 99)
+    closes[99] = 60.0  # 不高于 T-1 → False
+    assert not ev._layer_rebound(mk(closes), 99)
