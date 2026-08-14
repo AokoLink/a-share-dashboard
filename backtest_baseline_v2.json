@@ -1,0 +1,276 @@
+{
+  "system_version": "0061706",
+  "module_version": "1.0.0",
+  "generated_at": "2026-08-14T13:34:55.846169",
+  "data_range": {
+    "start": "2019-02-25",
+    "end": "2026-08-11"
+  },
+  "n_eval": 400,
+  "step": 3,
+  "window": {
+    "start": "2021-08-25",
+    "end": "2026-08-10"
+  },
+  "sector_heat_note": "median-5-day-gain proxy (daily pkl 无 amount,生产板块 composite 不可复现)",
+  "rows": {
+    "A 实际管线(热板块xtop5)  次日od": {
+      "mean_pct": 0.105,
+      "win_rate": 54.9,
+      "n": 386
+    },
+    "A 隔夜gap": {
+      "mean_pct": -0.097,
+      "win_rate": 36.8,
+      "n": 386
+    },
+    "A close->next close": {
+      "mean_pct": 0.005,
+      "win_rate": 52.8,
+      "n": 386
+    },
+    "E 板块内低位股(pos分top5)次日od": {
+      "mean_pct": 0.135,
+      "win_rate": 54.1,
+      "n": 386
+    },
+    "E 板块内高位股(pos分bot5)次日od": {
+      "mean_pct": 0.283,
+      "win_rate": 58.3,
+      "n": 386
+    },
+    "B 全市场top15  次日od": {
+      "mean_pct": 0.145,
+      "win_rate": 56.4,
+      "n": 39
+    },
+    "C 热板块随机  次日od": {
+      "mean_pct": 0.248,
+      "win_rate": 54.8,
+      "n": 400
+    },
+    "D 全市场基准  次日od": {
+      "mean_pct": 0.162,
+      "win_rate": 59.8,
+      "n": 400
+    }
+  },
+  "by_year": {
+    "A 实际管线": [
+      {
+        "year": "2021",
+        "mean_pct": 0.951,
+        "win_rate": 60.0,
+        "n": 15
+      },
+      {
+        "year": "2022",
+        "mean_pct": 0.269,
+        "win_rate": 61.7,
+        "n": 81
+      },
+      {
+        "year": "2023",
+        "mean_pct": -0.017,
+        "win_rate": 56.2,
+        "n": 80
+      },
+      {
+        "year": "2024",
+        "mean_pct": -0.129,
+        "win_rate": 45.7,
+        "n": 81
+      },
+      {
+        "year": "2025",
+        "mean_pct": 0.204,
+        "win_rate": 58.0,
+        "n": 81
+      },
+      {
+        "year": "2026",
+        "mean_pct": -0.006,
+        "win_rate": 50.0,
+        "n": 48
+      }
+    ],
+    "E 板块内低位股(pos top5)": [
+      {
+        "year": "2021",
+        "mean_pct": 1.001,
+        "win_rate": 60.0,
+        "n": 15
+      },
+      {
+        "year": "2022",
+        "mean_pct": 0.269,
+        "win_rate": 58.0,
+        "n": 81
+      },
+      {
+        "year": "2023",
+        "mean_pct": -0.083,
+        "win_rate": 51.2,
+        "n": 80
+      },
+      {
+        "year": "2024",
+        "mean_pct": -0.007,
+        "win_rate": 49.4,
+        "n": 81
+      },
+      {
+        "year": "2025",
+        "mean_pct": 0.262,
+        "win_rate": 59.3,
+        "n": 81
+      },
+      {
+        "year": "2026",
+        "mean_pct": 0.025,
+        "win_rate": 50.0,
+        "n": 48
+      }
+    ],
+    "E 板块内高位股(pos bot5)": [
+      {
+        "year": "2021",
+        "mean_pct": 0.695,
+        "win_rate": 53.3,
+        "n": 15
+      },
+      {
+        "year": "2022",
+        "mean_pct": 0.474,
+        "win_rate": 63.0,
+        "n": 81
+      },
+      {
+        "year": "2023",
+        "mean_pct": 0.079,
+        "win_rate": 48.8,
+        "n": 80
+      },
+      {
+        "year": "2024",
+        "mean_pct": -0.029,
+        "win_rate": 53.1,
+        "n": 81
+      },
+      {
+        "year": "2025",
+        "mean_pct": 0.435,
+        "win_rate": 64.2,
+        "n": 81
+      },
+      {
+        "year": "2026",
+        "mean_pct": 0.439,
+        "win_rate": 66.7,
+        "n": 48
+      }
+    ],
+    "C 热板块随机": [
+      {
+        "year": "2021",
+        "mean_pct": 0.209,
+        "win_rate": 58.6,
+        "n": 29
+      },
+      {
+        "year": "2022",
+        "mean_pct": 0.425,
+        "win_rate": 60.5,
+        "n": 81
+      },
+      {
+        "year": "2023",
+        "mean_pct": 0.147,
+        "win_rate": 53.8,
+        "n": 80
+      },
+      {
+        "year": "2024",
+        "mean_pct": -0.028,
+        "win_rate": 45.7,
+        "n": 81
+      },
+      {
+        "year": "2025",
+        "mean_pct": 0.459,
+        "win_rate": 56.8,
+        "n": 81
+      },
+      {
+        "year": "2026",
+        "mean_pct": 0.253,
+        "win_rate": 56.2,
+        "n": 48
+      }
+    ],
+    "D 全市场基准": [
+      {
+        "year": "2021",
+        "mean_pct": 0.164,
+        "win_rate": 62.1,
+        "n": 29
+      },
+      {
+        "year": "2022",
+        "mean_pct": 0.224,
+        "win_rate": 63.0,
+        "n": 81
+      },
+      {
+        "year": "2023",
+        "mean_pct": 0.062,
+        "win_rate": 51.2,
+        "n": 80
+      },
+      {
+        "year": "2024",
+        "mean_pct": 0.046,
+        "win_rate": 54.3,
+        "n": 81
+      },
+      {
+        "year": "2025",
+        "mean_pct": 0.389,
+        "win_rate": 72.8,
+        "n": 81
+      },
+      {
+        "year": "2026",
+        "mean_pct": 0.035,
+        "win_rate": 54.2,
+        "n": 48
+      }
+    ]
+  },
+  "welch": {
+    "A 实际管线(热板块xtop5)  次日od": {
+      "t": -0.536404499721454,
+      "p": 0.5918362816503082
+    },
+    "B 全市场top15  次日od": {
+      "t": -0.052690264501083585,
+      "p": 0.9582295407854264
+    },
+    "C 热板块随机  次日od": {
+      "t": 0.8022182049288757,
+      "p": 0.42267344372288096
+    },
+    "E 板块内低位股(pos分top5)次日od": {
+      "t": -0.2471422840470951,
+      "p": 0.8048657718785712
+    },
+    "E 板块内高位股(pos分bot5)次日od": {
+      "t": 0.9865612410668007,
+      "p": 0.3242071741680388
+    }
+  },
+  "diag": {
+    "long_upper_shadow": 3201,
+    "pushed_over_70": 95
+  }
+}
