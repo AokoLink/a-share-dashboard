@@ -333,7 +333,6 @@ def register_routes(app):
             "signal_date": payload["signal_date"],
             "close_date": payload["close_date"],
             "prev_trading_date": payload["prev_trading_date"],
-            "trading_dates": payload.get("trading_dates"),
             "prev_snapshot": prev_snapshot,
         }, stale=stale1 or stale2 or stale_cands,
            extra_meta={"coverage": coverage,

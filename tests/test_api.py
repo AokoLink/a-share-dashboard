@@ -439,18 +439,16 @@ def test_recommend_prev_snapshot_gap_days(monkeypatch, tmp_path):
         "verdict": "建议关注", "composite": 78.0, "consecutive_days": 1,
         "emotion": 80, "strength": 70, "risk": 10})
     c = client_factory(monkeypatch, db_path=db)
-    r1 = c.get("/api/recommend").get_json()["data"]
-    td = r1["trading_dates"]
-    sig = r1["signal_date"]
-    prev_sig = td[-3]                          # 上一期 signal_date 取倒数第 3 个交易日
-    # close_date 故意设最早交易日:若锚点错用 close_date,gap_days 会远大于 signal_date 锚点的计数
-    store.upsert_recommend_snapshot(db, prev_sig, "2026-05-26 17:40:00",
-                                    td[0], td[-4],
+    # make_daily 日期确定性回绕 2026-05-01..28,trading_dates=最近 20 交易日(升序 05-09..05-28)。
+    # prev signal_date=倒数第 3 交易日(05-26),close_date 故意设最早(05-09):
+    #   若锚点错用 close_date,gap_days≈19;signal_date 锚点应数出 05-27/05-28 两个交易日 = 2。
+    store.upsert_recommend_snapshot(db, "2026-05-26", "2026-05-26 17:40:00",
+                                    "2026-05-09", "2026-05-25",
                                     [{"code": "600000", "name": "浦发银行", "signal_close": 10.0}])
     r2 = c.get("/api/recommend").get_json()["data"]
     ps = r2["prev_snapshot"]
     assert ps["is_next_day"] is False
-    assert ps["gap_days"] == sum(1 for d in td if prev_sig < d <= sig)
+    assert ps["gap_days"] == 2
 
 
 def test_recommend_prev_snapshot_bj_prefix(monkeypatch, tmp_path):
