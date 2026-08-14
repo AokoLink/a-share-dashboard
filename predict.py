@@ -218,10 +218,13 @@ def _iter_scored(universe, pos_of, all_days, days):
             sc = bt.score_at(universe[c], bar, AFTER_CLOSE)
             if sc is None:
                 continue
+            composite = float(sc["composite"])
+            if composite != composite:  # NaN: 诚实不预测,与 _fit_calibrator 的 NaN 过滤一致
+                continue
             lbl = _labels(universe[c], bar)
             if lbl is None:
                 continue
-            yield float(sc["composite"]), lbl
+            yield composite, lbl
 
 
 def _collect_samples(universe, pos_of, all_days, days):
