@@ -389,7 +389,7 @@ def test_collect_actionable_leaders_two_tiers_and_dedupe(monkeypatch):
     assert [x["tier"] for x in payload["items"]] == ["可介入", "观察"]
     assert payload["items"][0]["sector_name"] == "半导体"
     assert payload["items"][0]["tag"] == "龙头+强势"
-    assert payload["items"][0]["composite"] == pytest.approx(round(83.5, 2))   # 75.5 + bonus 8(板块 78)
+    assert payload["items"][0]["composite"] == pytest.approx(round(79.0, 2))   # HOT_SIGNAL_WEIGHTS 0.40/0.15/0.10/0.35 → 0.40*90+0.15*60+0.10*50+0.35*60=71,+bonus 8=79
     assert payload["items"][0]["bias_pct"] is not None     # bias 用真实 daily(现价 5.0 vs MA20 64.5)
     assert payload["diagnostics"]["stocks_daily_failed"] == 0
 

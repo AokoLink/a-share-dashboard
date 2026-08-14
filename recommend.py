@@ -131,6 +131,30 @@ def _rel_strengths(base_g5):
     return {code: float(p) for (code, _), p in zip(base_g5, pcts)}
 
 
+def _apply_hot_weights_one(x, sector_composite, rel=None):
+    """单只个股 P0b 权重重算(spec §3.2)。non-hot 或模式 off → 原样返回;
+    rel 非 None 用 HOT_REL_WEIGHTS,signal 模式用 HOT_SIGNAL_WEIGHTS,否则回退 v3 权重(weights=None)。"""
+    hot = sector_composite is not None and sector_composite >= HOT_COMPOSITE_THRESHOLD
+    if not hot or HOT_WEIGHT_MODE == "off":
+        return x
+    if rel is not None:
+        w = an.HOT_REL_WEIGHTS
+    elif HOT_WEIGHT_MODE == "signal":
+        w = an.HOT_SIGNAL_WEIGHTS
+    else:
+        w = None
+    scores = x["scores"]
+    bonus = sector_bonus(sector_composite, scores["composite"])   # 自加成前 composite 重算,无重复加成
+    final = an.stock_composite_v3(scores["position"], scores["volume_price"],
+                                  scores["trend"], scores["signal"], scores["risk"],
+                                  bonus, rel_strength=rel, weights=w)
+    x["composite"] = final
+    x["verdict"] = an.stock_verdict(final)
+    if rel is not None:
+        x["rel_strength"] = round(rel, 2)
+    return x
+
+
 def _apply_hot_weights(ranked, base_g5, sector_composite):
     """热板块内 P0b 权重重算(spec §3.2/§3.3)。non-hot 或模式 off → 原样返回。"""
     hot = sector_composite is not None and sector_composite >= HOT_COMPOSITE_THRESHOLD
@@ -139,21 +163,7 @@ def _apply_hot_weights(ranked, base_g5, sector_composite):
     rel_map = _rel_strengths(base_g5) if HOT_WEIGHT_MODE == "rel_strength" else {}
     for x in ranked:
         rel = rel_map.get(x["code"][-6:]) if rel_map else None   # x["code"] 带 sh/sz 前缀 → 截 6 位
-        if rel is not None:
-            w = an.HOT_REL_WEIGHTS
-        elif HOT_WEIGHT_MODE == "signal":
-            w = an.HOT_SIGNAL_WEIGHTS
-        else:
-            w = None                             # rel 模式 + 基数<3 → 回退 v3(spec §3.3)
-        scores = x["scores"]
-        bonus = sector_bonus(sector_composite, scores["composite"])
-        final = an.stock_composite_v3(scores["position"], scores["volume_price"],
-                                      scores["trend"], scores["signal"], scores["risk"],
-                                      bonus, rel_strength=rel, weights=w)
-        x["composite"] = final
-        x["verdict"] = an.stock_verdict(final)
-        if rel is not None:
-            x["rel_strength"] = round(rel, 2)
+        _apply_hot_weights_one(x, sector_composite, rel=rel)
     return ranked
 
 
@@ -365,6 +375,7 @@ def collect_actionable_leaders(summary_df, spot_df, db, type_key, now, resolve_f
         scored = _score_candidate(row, daily, now, s["composite"])
         if scored is None:
             return None, stale
+        _apply_hot_weights_one(scored, s["composite"], rel=None)   # signal 模式 rel 恒 None
         tier = tier_for_verdict(scored["verdict"])
         if tier is None:
             return None, stale
