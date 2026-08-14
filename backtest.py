@@ -43,8 +43,6 @@ def load_sector_map(path):
 
 
 def build_universe(data_dir, sector_map):
-    if isinstance(sector_map, str):
-        sector_map = load_sector_map(sector_map)
     universe, codes = {}, []
     files = sorted(f for f in os.listdir(data_dir) if f.endswith(".pkl"))
     for fn in files:
