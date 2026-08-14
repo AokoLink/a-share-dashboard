@@ -194,11 +194,31 @@ def test_run_backtest_integration(monkeypatch):
     monkeypatch.setattr(bt, "build_buyable", lambda univ, pos, ad, i: ({"000001"}, {}, {}, {}))
     monkeypatch.setattr(bt, "score_at", lambda dd, i, now: {"composite": 50.0})
     results = pr.run_backtest("/dummy", "/dummy")
-    assert set(results["calibrators"]) == {"direction", "gap", "od", "trend3"}
-    assert set(results["metrics"]) == {"direction", "gap", "od", "trend3", "path"}
+    assert set(results["calibrators"]) == {"direction", "gap", "od", "trend3", "return", "risk"}
+    assert set(results["metrics"]) == {"direction", "gap", "od", "trend3", "return", "risk", "path"}
     assert results["n_train"] + results["n_valid"] == results["n_eval"]
     assert results["n_train"] == int(0.8 * results["n_eval"])
     assert results["data_range"]["start"] == d["date"].iloc[0]
+    assert isinstance(results["valid_records"], list)
+    if results["valid_records"]:
+        rec = results["valid_records"][0]
+        for k in ("code", "date", "bar", "composite", "close1", "expected_return"):
+            assert k in rec
+
+
+def test_collect_samples_risk_label_strict_threshold(monkeypatch):
+    # 风险标签 = 1[close1 < -0.03](单一阈值,无 base-rate 兜底);边界 -0.03 不判不利
+    recs = [
+        {"composite": 50.0, "risk": 30.0, "close1": -0.031,
+         "lbl": {"close1": 0, "gap": 1, "od": 1, "trend3": 1}},
+        {"composite": 50.0, "risk": 30.0, "close1": -0.03,
+         "lbl": {"close1": 0, "gap": 1, "od": 1, "trend3": 1}},
+        {"composite": 50.0, "risk": 30.0, "close1": -0.029,
+         "lbl": {"close1": 0, "gap": 1, "od": 1, "trend3": 1}},
+    ]
+    monkeypatch.setattr(pr, "_iter_scored", lambda u, p, a, d: iter(recs))
+    samples = pr._collect_samples(None, None, None, [0])
+    assert samples["risk"] == [(30.0, 1), (30.0, 0), (30.0, 0)]
 
 
 def test_predict_now_integration(monkeypatch):
@@ -282,7 +302,7 @@ def test_main_end_to_end_gbk(tmp_path, monkeypatch):
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["mode"] == "backtest"
     assert payload["system_version"]
-    assert set(payload["calibrators"]) == {"direction", "gap", "od", "trend3"}
+    assert set(payload["calibrators"]) == {"direction", "gap", "od", "trend3", "return", "risk"}
     assert "ece" in payload["metrics"]["direction"]
     assert out.with_suffix(".md").exists()
 

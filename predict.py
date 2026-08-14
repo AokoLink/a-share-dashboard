@@ -23,6 +23,7 @@ TRAIN_FRAC = 0.8
 N_BINS = 10
 DIRECTION_BAND = 0.05
 AFTER_CLOSE = datetime(2026, 1, 1, 15, 1)
+ADVERSE_THRESHOLD = -0.03
 
 
 def fwd_close(d, i, k):
@@ -210,7 +211,7 @@ def predict_at(d, i, now, cals):
 
 
 def _iter_scored(universe, pos_of, all_days, days):
-    """逐评估日逐 buyable 股 yield (composite, lbl)。"""
+    """逐评估日逐 buyable 股 yield record dict(≤T 特征 + T+1 标签)。"""
     for i in days:
         dt = all_days[i]
         buyable, _, _, _ = bt.build_buyable(universe, pos_of, all_days, i)
@@ -220,27 +221,41 @@ def _iter_scored(universe, pos_of, all_days, days):
             if sc is None:
                 continue
             composite = float(sc["composite"])
-            if composite != composite:  # NaN: 诚实不预测,与 _fit_calibrator 的 NaN 过滤一致
+            if composite != composite:  # NaN: 诚实不预测
+                continue
+            risk = sc.get("risk")
+            risk = float(risk) if risk is not None else None
+            nr = bt.next_returns(universe[c], bar)
+            if nr is None:
                 continue
             lbl = _labels(universe[c], bar)
             if lbl is None:
                 continue
-            yield composite, lbl
+            yield {"code": c, "date": dt, "bar": bar, "composite": composite,
+                   "risk": risk, "close1": nr["close1"], "lbl": lbl}
 
 
 def _collect_samples(universe, pos_of, all_days, days):
-    samples = {"direction": [], "gap": [], "od": [], "trend3": []}
-    for composite, lbl in _iter_scored(universe, pos_of, all_days, days):
-        samples["direction"].append((composite, lbl["close1"]))
-        samples["gap"].append((composite, lbl["gap"]))
-        samples["od"].append((composite, lbl["od"]))
+    samples = {"direction": [], "gap": [], "od": [], "trend3": [], "return": [], "risk": []}
+    for rec in _iter_scored(universe, pos_of, all_days, days):
+        lbl = rec["lbl"]
+        samples["direction"].append((rec["composite"], lbl["close1"]))
+        samples["gap"].append((rec["composite"], lbl["gap"]))
+        samples["od"].append((rec["composite"], lbl["od"]))
         if lbl["trend3"] is not None:
-            samples["trend3"].append((composite, lbl["trend3"]))
+            samples["trend3"].append((rec["composite"], lbl["trend3"]))
+        samples["return"].append((rec["composite"], rec["close1"]))
+        if rec["risk"] is not None:
+            samples["risk"].append((rec["risk"], 1 if rec["close1"] < ADVERSE_THRESHOLD else 0))
     return samples
 
 
 def _fit_all(samples):
-    return {name: _fit_calibrator(samples[name], N_BINS) for name in samples}
+    cals = {}
+    for name in ("direction", "gap", "od", "trend3", "risk"):
+        cals[name] = _fit_calibrator(samples[name], N_BINS)
+    cals["return"] = _fit_calibrator(samples["return"], N_BINS, monotone=False)
+    return cals
 
 
 def _bin_index(cal, composite):
@@ -396,26 +411,35 @@ def _path_label(gap_up, od_up):
 
 
 def _evaluate(universe, pos_of, all_days, days, cals):
-    val = {"direction": [], "gap": [], "od": [], "trend3": []}
-    path_n = 0
-    path_correct = 0
-    for composite, lbl in _iter_scored(universe, pos_of, all_days, days):
+    val = {"direction": [], "gap": [], "od": [], "trend3": [], "path": [], "return": [], "risk": []}
+    records = []
+    for rec in _iter_scored(universe, pos_of, all_days, days):
+        lbl = rec["lbl"]
+        composite = rec["composite"]
         val["direction"].append((composite, lbl["close1"]))
         val["gap"].append((composite, lbl["gap"]))
         val["od"].append((composite, lbl["od"]))
         if lbl["trend3"] is not None:
             val["trend3"].append((composite, lbl["trend3"]))
-        gap_dir = _gap_dir(cals["gap"].p_up(composite))
-        od_dir, _ = _dir_conf(cals["od"].p_up(composite))
-        pred_path = _path(gap_dir, od_dir)
-        if pred_path is not None:
-            actual = _path_label(lbl["gap"], lbl["od"])
-            path_n += 1
-            if pred_path == actual:
-                path_correct += 1
-    metrics = {name: _metric(name, cals[name], val[name]) for name in val}
-    metrics["path"] = {"n": path_n, "acc_path": path_correct / path_n if path_n else None}
-    return metrics
+        val["path"].append((composite, lbl["gap"], lbl["od"]))
+        val["return"].append((composite, rec["close1"]))
+        if rec["risk"] is not None:
+            val["risk"].append((rec["risk"], 1 if rec["close1"] < ADVERSE_THRESHOLD else 0))
+        direction, _ = _dir_conf(cals["direction"].p_up(composite))
+        records.append({
+            "code": rec["code"], "date": rec["date"], "bar": rec["bar"],
+            "composite": composite, "risk": rec["risk"], "close1": rec["close1"],
+            "direction_label": lbl["close1"], "gap": lbl["gap"], "od": lbl["od"],
+            "trend3": lbl["trend3"],
+            "expected_return": cals["return"].p_up(composite),
+            "risk_p": cals["risk"].p_up(rec["risk"]) if rec["risk"] is not None else None,
+            "direction": direction,
+        })
+    metrics = {name: _metric(name, cals[name], val[name]) for name in ("direction", "gap", "od", "trend3")}
+    metrics["return"] = _metric_return(cals["return"], cals["direction"], val["return"])
+    metrics["risk"] = _metric_risk(cals["risk"], val["risk"])
+    metrics["path"] = _metric_path(cals["gap"], cals["od"], val["path"])
+    return metrics, records
 
 
 def run_backtest(data_dir, sector_map_path):
@@ -433,11 +457,12 @@ def run_backtest(data_dir, sector_map_path):
     valid_days = eval_days[n_train:]
     samples = _collect_samples(universe, pos_of, all_days, train_days)
     cals = _fit_all(samples)
-    metrics = _evaluate(universe, pos_of, all_days, valid_days, cals)
+    metrics, valid_records = _evaluate(universe, pos_of, all_days, valid_days, cals)
     return {
         "calibrators": cals,
         "n_samples": {name: len(samples[name]) for name in samples},
         "metrics": metrics,
+        "valid_records": valid_records,
         "data_range": {"start": str(all_days[0]), "end": str(all_days[-1])},
         "train_window": {"start": str(all_days[train_days[0]]), "end": str(all_days[train_days[-1]])},
         "valid_window": {"start": str(all_days[valid_days[0]]), "end": str(all_days[valid_days[-1]])},
@@ -497,6 +522,19 @@ def build_report(results, system_version=None, generated_at=None):
     for name, m in results["metrics"].items():
         if name == "path":
             metrics[name] = {"n": m["n"], "acc_path": _num(m["acc_path"])}
+        elif name == "return":
+            metrics[name] = {
+                "n": m["n"], "mae": _num(m["mae"]), "rmse": _num(m["rmse"]),
+                "sign_agreement": _num(m["sign_agreement"]), "sign_n": m["sign_n"],
+                "mean_residual": _num(m["mean_residual"]),
+                "dir_cond_mae": {k: {"mae": _num(v["mae"]), "n": v["n"]}
+                                 for k, v in m["dir_cond_mae"].items()},
+            }
+        elif name == "risk":
+            metrics[name] = {
+                "n": m["n"], "adverse_rate": _num(m["adverse_rate"]),
+                "ece": _num(m["ece"]), "brier": _num(m["brier"]), "lift": _num(m["lift"]),
+            }
         else:
             metrics[name] = {
                 "n": m["n"], "base_rate": _num(m["base_rate"]), "hit_rate": _num(m["hit_rate"]),
@@ -538,8 +576,18 @@ def render_markdown(payload):
     for name, m in payload["metrics"].items():
         if name == "path":
             L.append(f"| path | {m['n']} | - | acc_path={fmt(m['acc_path'])} | - | - | - |")
+        elif name == "return":
+            L.append(f"| return | {m['n']} | - | mae={fmt(m['mae'])} | rmse={fmt(m['rmse'])} "
+                     f"| sign={fmt(m['sign_agreement'])} (n={m['sign_n']}) | resid={fmt(m['mean_residual'])} |")
+            L.append(f"|  dir_cond_mae | up {fmt(m['dir_cond_mae']['up']['mae'])}/{m['dir_cond_mae']['up']['n']} "
+                     f"| down {fmt(m['dir_cond_mae']['down']['mae'])}/{m['dir_cond_mae']['down']['n']} "
+                     f"| hold {fmt(m['dir_cond_mae']['hold']['mae'])}/{m['dir_cond_mae']['hold']['n']} | - | - | - |")
+        elif name == "risk":
+            L.append(f"| risk | {m['n']} | adverse_rate={fmt(m['adverse_rate'])} "
+                     f"| ece={fmt(m['ece'])} | brier={fmt(m['brier'])} | lift={fmt(m['lift'])} | - |")
         else:
-            L.append(f"| {name} | {m['n']} | {fmt(m['base_rate'])} | {fmt(m['hit_rate'])} | {fmt(m['ece'])} | {fmt(m['brier'])} | {m['n_hold']} |")
+            L.append(f"| {name} | {m['n']} | {fmt(m['base_rate'])} | {fmt(m['hit_rate'])} "
+                     f"| {fmt(m['ece'])} | {fmt(m['brier'])} | {m['n_hold']} |")
     L += ["", "## 诚实声明", ""]
     L.append("1. 校准概率基于「代理管线」评分(日线 pkl 无 amount,生产板块 composite 不可复现)。")
     L.append("2. 回测模式指标仅在 valid 窗口有效(out-of-sample)。")
