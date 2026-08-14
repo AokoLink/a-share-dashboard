@@ -110,3 +110,15 @@ def sector_heat(universe, sector_members, pos_of, all_days, i):
         if len(gains) >= 3:
             heat[s] = float(np.median(list(gains.values())))
     return heat
+
+
+def score_at(d, i, now):
+    df = d.iloc[: i + 1]
+    if len(df) < 61:
+        return None
+    quote = {"price": float(df["close"].iloc[-1]),
+             "change_pct": float(df["change_pct"].iloc[-1]),
+             "volume": float(df["volume"].iloc[-1]),
+             "amount": float(df["volume"].iloc[-1]) * float(df["close"].iloc[-1])}
+    sc = an.score_stock(df, quote, now)
+    return sc if sc["composite"] is not None else None

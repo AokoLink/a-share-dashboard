@@ -144,3 +144,49 @@ def test_sector_heat_under3_dropped():
     all_days, pos_of = bt.build_calendar(universe, ["a", "b"])
     heat = bt.sector_heat(universe, {"S": ["a", "b"]}, pos_of, all_days, 9)
     assert heat == {}
+
+
+def test_score_at_reconstructs_quote(monkeypatch):
+    closes = [10.0 + i * 0.1 for i in range(65)]
+    d = make_daily(closes)
+    d["change_pct"] = d["close"].pct_change() * 100.0
+    d["change_pct"].iloc[0] = 0.0
+    calls = []
+    def fake(df, quote, now):
+        calls.append((len(df), dict(quote)))
+        return {"position": 50, "trend": 50, "volume_price": 50, "signal": 50, "risk": 20, "composite": 40}
+    monkeypatch.setattr(an, "score_stock", fake)
+    i = 63
+    s = bt.score_at(d, i, bt.AFTER_CLOSE)
+    assert s["composite"] == 40
+    assert calls[0][0] == 64                       # df 只含 0..63(<=T)
+    assert calls[0][1]["price"] == float(closes[63])
+    assert calls[0][1]["amount"] == float(d["volume"].iloc[63]) * float(closes[63])
+
+
+def test_score_at_short_history_returns_none(monkeypatch):
+    d = make_daily([10.0 + i * 0.1 for i in range(60)])  # 60 根 < 61
+    d["change_pct"] = 0.0
+    assert bt.score_at(d, 59, bt.AFTER_CLOSE) is None
+
+
+def test_score_at_no_future_leak(monkeypatch):
+    closes = [10.0 + i * 0.1 for i in range(65)]
+    d = make_daily(closes)
+    d["change_pct"] = d["close"].pct_change() * 100.0
+    d["change_pct"].iloc[0] = 0.0
+    seen_prices = []
+    def fake(df, quote, now):
+        seen_prices.append(quote["price"])
+        return {"position": 50, "trend": 50, "volume_price": 50, "signal": 50, "risk": 20, "composite": 40}
+    monkeypatch.setattr(an, "score_stock", fake)
+    i = 63
+    s1 = bt.score_at(d, i, bt.AFTER_CLOSE)
+    # 把 T+1 的 open/close 改成极端正值(保持 >0,使 next_returns 仍有效)
+    d.loc[i + 1, "open"] = 1e9
+    d.loc[i + 1, "close"] = 1e9
+    s2 = bt.score_at(d, i, bt.AFTER_CLOSE)
+    assert s2 == s1                                  # 评分逐位不变
+    assert seen_prices == [float(closes[63])] * 2     # 两次都只读到 T 的 close
+    nr = bt.next_returns(d, i)
+    assert nr is not None and nr["gap"] > 1.0         # 验证 next_returns 确实读了 T+1
