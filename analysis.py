@@ -162,12 +162,18 @@ def sector_risk(index_change, change_3d, turnover_ratio, prev_change, up_ratio):
     return min(100.0, score)
 
 
-def sector_verdict(emotion, strength, risk, consecutive_days, data_complete):
+def _high_flags(emotion, strength, risk):
+    """三高旗标(阈值 70/60/65),供 sector_verdict 与 score_sector 共享。"""
     e_hi = emotion is not None and emotion >= 70
-    e_mid = emotion is not None and emotion >= 45
     s_hi = strength is not None and strength >= 60
-    s_mid = strength is not None and strength >= 35
     r_hi = risk is not None and risk >= 65
+    return e_hi, s_hi, r_hi
+
+
+def sector_verdict(emotion, strength, risk, consecutive_days, data_complete):
+    e_hi, s_hi, r_hi = _high_flags(emotion, strength, risk)
+    e_mid = emotion is not None and emotion >= 45
+    s_mid = strength is not None and strength >= 35
     if strength is not None and strength < 35 and r_hi:
         return "风险提示/回避"                                  # P1
     if r_hi and (e_mid or s_mid):
@@ -199,9 +205,7 @@ def score_sector(metrics):
     composite = composite_score(strength, emotion, risk)
     verdict = sector_verdict(emotion, strength, risk, metrics["consecutive_days"],
                              metrics["data_complete"])
-    e_hi = emotion is not None and emotion >= 70
-    s_hi = strength is not None and strength >= 60
-    r_hi = risk is not None and risk >= 65
+    e_hi, s_hi, r_hi = _high_flags(emotion, strength, risk)
     cd = metrics.get("consecutive_days")
     overheated = (cd is not None and cd >= OVERHEAT_MIN_DAYS and e_hi and s_hi and not r_hi
                   and metrics.get("data_complete", True))
@@ -311,15 +315,22 @@ def max_drawdown_20(daily_df):
     return float((closes - peak).div(peak).min() * 100)
 
 
+def _pos60(daily_df):
+    """60日位置(0..1)。分母≤0 → 0.5。"""
+    lo_min = daily_df["low"].iloc[-60:].min()
+    hi_max = daily_df["high"].iloc[-60:].max()
+    if hi_max - lo_min <= 0:
+        return 0.5
+    return (daily_df["close"].iloc[-1] - lo_min) / (hi_max - lo_min)
+
+
 def compute_position_score(daily_df):
     """位置分(规格 §4.1):低60日位置高分 + 乖离甜区 + 平台。"""
     if len(daily_df) < 61:
         return 0.0
     df = add_ma(daily_df, (20,))
     last_close = df["close"].iloc[-1]
-    lo_min = df["low"].iloc[-60:].min()
-    hi_max = df["high"].iloc[-60:].max()
-    pos60 = 0.5 if hi_max - lo_min <= 0 else (last_close - lo_min) / (hi_max - lo_min)
+    pos60 = _pos60(df)
     pos_factor = 100.0 * (1.0 - pos60)
     ma20 = df["ma20"].iloc[-1]
     bias = 0.0 if _is_missing(ma20) or ma20 <= 0 else (last_close - ma20) / ma20 * 100
@@ -414,15 +425,6 @@ def _macd_branch(dif, dea, prev_dif, prev_dea):
     if dif > dea:                               # 已金叉维持
         return 12 if dif > 0 else 8
     return 0
-
-
-def _pos60(daily_df):
-    """60日位置(0..1)。分母≤0 → 0.5。"""
-    lo_min = daily_df["low"].iloc[-60:].min()
-    hi_max = daily_df["high"].iloc[-60:].max()
-    if hi_max - lo_min <= 0:
-        return 0.5
-    return (daily_df["close"].iloc[-1] - lo_min) / (hi_max - lo_min)
 
 
 def _breakout_score(pos60, last_close, prev_high, vr):
