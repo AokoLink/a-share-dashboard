@@ -144,3 +144,57 @@ def test_build_series_le_sensitive():
     universe["000001"].loc[i, "change_pct"] = -20.0
     s2 = env.build_series(universe, pos_of, all_days)
     assert s2["r1"].iloc[i] != s1["r1"].iloc[i]
+
+
+def _patch_bt(monkeypatch, universe, all_days, pos_of):
+    monkeypatch.setattr(bt, "load_sector_map", lambda p: {})
+    monkeypatch.setattr(bt, "build_universe", lambda dd, sm: (universe, list(universe.keys())))
+    monkeypatch.setattr(bt, "build_calendar", lambda univ, cs: (all_days, pos_of))
+
+
+def test_run_distribution(tmp_path, monkeypatch):
+    universe, all_days, pos_of = _universe(70)
+    _patch_bt(monkeypatch, universe, all_days, pos_of)
+    rep = env.run(str(tmp_path), "x")
+    assert rep["n_days"] == 70
+    assert rep["n_classified"] == 10
+    assert rep["n_insufficient"] == 60
+    assert sum(rep["distribution"].values()) == 10
+    assert rep["distribution"]["牛"] == 10
+    assert set(rep["state_stats"]) == set(env.LABELS)
+    # 规格 §7:count < MIN_STATE_N(含 ==0)即退化;本 fixture 牛=10 < MIN_STATE_N=20,同为退化态
+    # (brief 断言 set(env.LABELS)-{"牛"} 与 spec/代码冲突,按 spec 权威改为全 7 态)
+    assert set(rep["degenerate_states"]) == set(env.LABELS)
+
+
+def test_build_report_render():
+    rep = {
+        "data_range": {"first": "2026-01-01", "last": "2026-08-13"},
+        "n_days": 100, "n_classified": 40, "n_insufficient": 60,
+        "distribution": {L: (10 if L == "牛" else 5) for L in env.LABELS},
+        "state_stats": {L: {"n": 5, "mean_r5": 0.01, "mean_r20": 0.02,
+                            "mean_up_ratio": 0.5, "mean_turnover_ratio": 1.0}
+                        for L in env.LABELS},
+        "degenerate_states": ["恢复"],
+        "series": [],
+    }
+    payload = env.build_report(rep)
+    assert payload["mode"] == "environment"
+    assert payload["distribution"]["牛"] == 10
+    md = env.render_markdown(payload)
+    assert "## 状态分布" in md
+    assert "## 退化态提示" in md
+    assert "恢复" in md
+
+
+def test_main_end_to_end(tmp_path, monkeypatch):
+    import json
+    universe, all_days, pos_of = _universe(70)
+    _patch_bt(monkeypatch, universe, all_days, pos_of)
+    out = tmp_path / "env.json"
+    rc = env.main(["--data-dir", str(tmp_path), "--sector-map", "x", "--out", str(out)])
+    assert rc == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["mode"] == "environment"
+    assert payload["n_days"] == 70
+    assert out.with_suffix(".md").exists()

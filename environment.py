@@ -6,10 +6,18 @@
 分类纯因果:第 i 日标签只依赖 <= i 的数据。
 """
 
+import argparse
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 
 import analysis as an
+import backtest as bt
 
 MODULE_VERSION = "1.0.0"
 MIN_HISTORY = 60
@@ -119,5 +127,146 @@ def build_series(universe, pos_of, all_days):
     df["r5"] = df["M"] / df["M"].shift(5) - 1.0
     df["r20"] = df["M"] / df["M"].shift(20) - 1.0
     df["r60"] = df["M"] / df["M"].shift(60) - 1.0
-    df["environment"] = df.apply(classify, axis=1)
+    # pandas 3.0 会把 apply 结果推断为 Arrow str dtype,把 classify 的 None(不足)转成 NaN;
+    # 规格 §5 要求 environment 列值为「七态字符串或 None(不足)」,故显式 object Series + None。
+    df["environment"] = pd.Series(
+        [None if _miss(v) else v for v in df.apply(classify, axis=1)], dtype=object)
     return df
+
+
+def _git_short_sha():
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, check=True)
+        sha = out.stdout.strip()
+        return sha or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _num(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f
+
+
+def run(data_dir, sector_map_path):
+    sector_map = bt.load_sector_map(sector_map_path)
+    universe, codes = bt.build_universe(data_dir, sector_map)
+    if not universe:
+        raise RuntimeError(f"no usable daily pkl in {data_dir}")
+    all_days, pos_of = bt.build_calendar(universe, codes)
+    series = build_series(universe, pos_of, all_days)
+    dist = {L: 0 for L in LABELS}
+    n_classified = 0
+    n_insufficient = 0
+    for lab in series["environment"]:
+        if lab is None:
+            n_insufficient += 1
+        else:
+            dist[lab] += 1
+            n_classified += 1
+    state_stats = {}
+    for L in LABELS:
+        sub = series[series["environment"] == L]
+        if len(sub) == 0:
+            state_stats[L] = {"n": 0, "mean_r5": None, "mean_r20": None,
+                              "mean_up_ratio": None, "mean_turnover_ratio": None}
+            continue
+        state_stats[L] = {"n": int(len(sub)),
+                          "mean_r5": _num(sub["r5"].mean()),
+                          "mean_r20": _num(sub["r20"].mean()),
+                          "mean_up_ratio": _num(sub["up_ratio"].mean()),
+                          "mean_turnover_ratio": _num(sub["turnover_ratio"].mean())}
+    degenerate = [L for L in LABELS if dist[L] < MIN_STATE_N]
+    series_list = [{"date": str(dt), "environment": lab}
+                   for dt, lab in zip(series["date"], series["environment"])]
+    return {
+        "data_range": {"first": str(all_days[0]), "last": str(all_days[-1])},
+        "n_days": len(all_days),
+        "n_classified": n_classified,
+        "n_insufficient": n_insufficient,
+        "distribution": dist,
+        "state_stats": state_stats,
+        "degenerate_states": degenerate,
+        "series": series_list,
+    }
+
+
+def build_report(report):
+    return {
+        "system_version": _git_short_sha(),
+        "module_version": MODULE_VERSION,
+        "generated_at": datetime.now().isoformat(),
+        "mode": "environment",
+        "data_range": report["data_range"],
+        "n_days": report["n_days"],
+        "n_classified": report["n_classified"],
+        "n_insufficient": report["n_insufficient"],
+        "distribution": report["distribution"],
+        "state_stats": report["state_stats"],
+        "degenerate_states": report["degenerate_states"],
+        "series": report["series"],
+        "notes": ["合成指数为 universe 中位收益复合,非真实指数(口径差异见 spec §3)"],
+    }
+
+
+def render_markdown(payload):
+    def fmt(x, nd=4):
+        return "-" if x is None else f"{x:.{nd}f}"
+
+    L = ["# 市场环境分类报告(七态)", ""]
+    L.append(f"- module_version: {payload['module_version']}")
+    L.append(f"- system_version: `{payload['system_version']}`")
+    L.append(f"- 数据区间: {payload['data_range']['first']} -> {payload['data_range']['last']}")
+    L.append(f"- 总交易日: {payload['n_days']};已分类: {payload['n_classified']};"
+             f"不足: {payload['n_insufficient']}")
+    L += ["", "## 状态分布", "", "| 状态 | 天数 | 占比 |", "|---|---|---|"]
+    n = payload["n_classified"]
+    for lab in LABELS:
+        c = payload["distribution"][lab]
+        pct = f"{c / n * 100:.1f}%" if n else "-"
+        L.append(f"| {lab} | {c} | {pct} |")
+    L += ["", "## 各态特征均值", "", "| 状态 | n | mean_r5 | mean_r20 | mean_up_ratio | mean_turnover_ratio |",
+          "|---|---|---|---|---|---|"]
+    for lab in LABELS:
+        ss = payload["state_stats"][lab]
+        L.append(f"| {lab} | {ss['n']} | {fmt(ss['mean_r5'])} | {fmt(ss['mean_r20'])} "
+                 f"| {fmt(ss['mean_up_ratio'])} | {fmt(ss['mean_turnover_ratio'])} |")
+    if payload["degenerate_states"]:
+        L += ["", "## 退化态提示", "",
+              f"- 以下状态样本数 < {MIN_STATE_N},分布可能不稳定:"
+              f"{', '.join(payload['degenerate_states'])}"]
+    L += ["", "## 诚实声明", ""]
+    L.append("1. 合成市场指数 = universe 中位日收益复合,非真实上证指数(幸存者+大中盘口径)。")
+    L.append("2. 每个交易日恰一标签(优先级决策树,互斥);标签只用 <= 当日数据(纯因果)。")
+    L.append("3. 阈值是初值常量,本报告仅锚定分布、不自动调参;退化态如实标注,不编造。")
+    L.append("")
+    return "\n".join(L)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="市场环境分类(七态)")
+    parser.add_argument("--data-dir", default="_analysis/daily")
+    parser.add_argument("--sector-map", default="_analysis/code2sector.json")
+    parser.add_argument("--out", default="environment_report.json")
+    args = parser.parse_args(argv)
+    try:
+        report = run(args.data_dir, args.sector_map)
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    payload = build_report(report)
+    with open(args.out, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    md_path = os.path.splitext(args.out)[0] + ".md"
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(render_markdown(payload))
+    print(f"wrote {args.out} and {md_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
