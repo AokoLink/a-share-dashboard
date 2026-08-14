@@ -231,3 +231,38 @@ def test_main_missing_snapshot(tmp_path, monkeypatch):
     rc = compare.main(["--snapshot", str(tmp_path / "nope.json"), "--data-dir", "dd",
                        "--sector-map", "sm", "--out", str(tmp_path / "v.json")])
     assert rc == 1
+
+
+def test_verify_return_field_none_excluded(tmp_path, monkeypatch):
+    import json as _json
+    universe = {
+        "000001": _mk_df(D1_CLOSES, D1_OPENS),
+        "000004": _mk_df(D1_CLOSES, D1_OPENS),
+    }
+    codes = ["000001", "000004"]
+    all_days = ["2026-08-11", "2026-08-12", "2026-08-13", "2026-08-14"]
+    pos_of = {"000001": {"2026-08-11": 3}, "000004": {"2026-08-11": 3}}
+    monkeypatch.setattr(bt, "load_sector_map", lambda p: {})
+    monkeypatch.setattr(bt, "build_universe", lambda dd, sm: (universe, codes))
+    monkeypatch.setattr(bt, "build_calendar", lambda univ, cs: (all_days, pos_of))
+    snap = {
+        "mode": "predict", "system_version": "62c60a7", "module_version": "1.1.0",
+        "generated_at": "2026-08-14T20:52:42", "as_of_date": "2026-08-11",
+        "predictions": [
+            {"code": "000001", "date": "2026-08-11", "composite": 50.0,
+             "T+1": {"direction": "up", "confidence": 0.6, "gap": "high", "od": "up", "path": "高开高走"},
+             "T+3": {"direction": "up", "confidence": 0.6},
+             "expected_return": 0.05, "risk_p": 0.2},
+            {"code": "000004", "date": "2026-08-11", "composite": 50.0,
+             "T+1": {"direction": "up", "confidence": 0.6, "gap": "high", "od": "up", "path": "高开高走"},
+             "T+3": {"direction": "up", "confidence": 0.6},
+             "expected_return": None, "risk_p": None},
+        ],
+    }
+    snap_path = tmp_path / "s.json"
+    snap_path.write_text(_json.dumps(snap, ensure_ascii=False), encoding="utf-8")
+    r = compare.verify(str(snap_path), "dd", "sm")
+    assert r["metrics"]["return"]["available"] is True
+    assert r["metrics"]["return"]["n"] == 1
+    assert r["metrics"]["risk"]["available"] is True
+    assert r["metrics"]["risk"]["n"] == 1

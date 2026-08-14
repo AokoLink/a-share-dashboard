@@ -157,7 +157,9 @@ def verify(snapshot_path, data_dir, sector_map_path):
         snap = json.load(f)
     if snap.get("mode") != "predict":
         raise RuntimeError(f"snapshot mode != predict: {snap.get('mode')}")
-    as_of_date = snap["as_of_date"]
+    as_of_date = snap.get("as_of_date")
+    if as_of_date is None:
+        raise RuntimeError("snapshot missing as_of_date")
     predictions = snap.get("predictions", [])
     sector_map = bt.load_sector_map(sector_map_path)
     universe, codes = bt.build_universe(data_dir, sector_map)
@@ -198,17 +200,17 @@ def verify(snapshot_path, data_dir, sector_map_path):
 
         t1 = pred.get("T+1") or {}
         t3 = pred.get("T+3") or {}
-        rows["direction"].append((t1.get("direction"), close1_up))
+        rows["direction"].append((t1.get("direction") or "hold", close1_up))
         gap_pred = {"high": "up", "low": "down"}.get(t1.get("gap"), "hold")
         rows["gap"].append((gap_pred, gap_up))
-        rows["od"].append((t1.get("od"), od_up))
+        rows["od"].append((t1.get("od") or "hold", od_up))
         pred_path = t1.get("path")
         if pred_path is not None:
             rows["path"].append((pred_path, path_actual))
         if oc["trend3"] is not None:
             trend3_up = 1 if oc["trend3"] > 0 else 0
             n_trend3_verified += 1
-            rows["trend3"].append((t3.get("direction"), trend3_up))
+            rows["trend3"].append((t3.get("direction") or "hold", trend3_up))
         er = pred.get("expected_return")
         if er is not None:
             has_expected_return = True
