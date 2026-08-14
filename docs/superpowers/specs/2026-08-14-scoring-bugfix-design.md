@@ -81,7 +81,7 @@ quote = {"price": _num(row["price"]), "change_pct": _num(row["change_pct"]),
 
 真实日线 pkl 列已核:`['date','open','high','low','close','volume']`,三字段齐备。
 
-**诊断计数(§5 要求):** `score_at` 同步产出两个计数供 V2 报告判伪——「高位长上影」触发 stock-day 数、因该 +20 越 risk≥70 的 stock-day 数。关键:high/low/open 对 risk 的边际贡献**只有** +20(其余 risk 分支不需要这三字段),故「越门槛」可廉价推导:长上影谓词命中 且 `risk - 20 < 70 <= risk`。谓词与 analysis.py:498-503 同式(`upper > 2*body 且 amplitude > 5`)。实现细节交给 writing-plans。
+**诊断计数(§5 要求):** `score_at` 同步产出两个计数供 V2 报告判伪——「高位长上影」触发 stock-day 数、因该 +20 越 risk≥70 的 stock-day 数。关键:high/low/open 对 risk 的边际贡献**只有** +20(其余 risk 分支不需要这三字段),故「越门槛」可廉价推导:长上影谓词命中 且 `risk - 20 < 70 <= risk`。谓词与 analysis.py:498-503 同式(`upper > 2*body 且 amplitude > 5`)。**统计范围(分母):** 两个计数覆盖评估循环内**全部** `score_at` 调用(篮 A 成员 + B 采样 + E 池的完整候选总体),而非仅最终篮子成员——否则触发率无法解释、判伪口径存疑。实现细节交给 writing-plans。
 
 ### 4.3 P1-hot-weight(仅生产,signal 模式)
 
@@ -167,12 +167,12 @@ _apply_hot_weights_one(scored, s["composite"], rel=None)   # signal 模式 rel �
 
 - **4.1**:`test_data_source.py` 增一条现货路径 volume×100 用例(mock `_ak.stock_zh_a_spot` 返回「手」量,断言「股」量);现有 `:83` 已锁腾讯路径,不动。
 - **4.2**:`test_recommend.py` 增一条推荐路径用例:quote 带 high/low/open 且满足「高位长上影」形态(high−max(open,close) > 2×body、振幅>5)时,risk 含 +20 且 reach 到 payload/档位。`test_backtest.py` 增 `score_at` 带 high/low/open 的用例(用 `make_daily`,其已提供 high/low/open)。现有 risk 测试(test_analysis_stock.py:145-167)直接传 high/low/open,不受影响。
-- **4.3**:更新 `test_recommend.py:357-394 test_collect_actionable_leaders_two_tiers_and_dedupe` 钉值:composite `83.5 → 79.0`(HOT_SIGNAL_WEIGHTS 0.40/0.15/0.10/0.35 → 0.40×90+0.15×60+0.10×50+0.35×60=71,+bonus 8=79.0;tier 断言不动:79≥67 仍「可介入」,688981 权重和=1 仍 56「观察」);`:595-621 test_hot_sector_rel_strength_applied` 为推荐路径热权重行为的模型,复用其构造。
+- **4.3**:更新 `test_recommend.py:357-394 test_collect_actionable_leaders_two_tiers_and_dedupe` 钉值:composite `83.5 → 79.0`(HOT_SIGNAL_WEIGHTS 0.40/0.15/0.10/0.35 → 0.40×90+0.15×60+0.10×50+0.35×60=71,+bonus 8=79.0;tier 断言不动:79≥67 仍「可介入」,688981 权重和=1 仍 56「观察」);`:595-621 test_hot_sector_rel_strength_applied` 为推荐路径热权重行为的模型,复用其构造。**其余 3 个 leaders 用例**(`:397` resolve_failure_skips / `:418` daily_failure_skips / `:440` stale_aggregation)也走热重权路径(`mock_sector` 默认 composite=78 热,`:60`),但不钉 composite、仅断言 code/total/stale/reasons → 大概率不受影响;唯一隐性风险是重权后 verdict 落 None 档被过滤。**若它们红,属「档位变化」而非回归,按新档重钉即可,别当 bug 排查。**
 
 ## 7. 风险
 
 - **P0-quote-highlowopen 会放大 risk**:+20 可能把边界股推过 risk<70 门槛,收缩可推荐集,连带改变仍在校准中的「可操作率」指标(scoring-v3-calibration-followups 相关)。这是修复的预期效果,但幅度须在 V2 报告里单列。
-- **P0-volume-unit 会激活三个此前恒死的 vr 门控分支**(现货 vr≈0.02,修复后 vr 恢复真实量级,可 >1.2/1.5/2.5):① `_price_volume`(analysis.py:372/376)的 vr>1.2 → 35/5 分支;② `_breakout_score`(:433)的 vr>1.2 → 20 分支;③ `compute_stock_risk`(:491-496)的「放量跌破 +10」「放量滞涨 +25」。与 high/low/open 同一类效应:生产 risk/信号分布移位、可能把边界股推过 70。回测测不出它(§3 对),但变更说明须单列。
+- **P0-volume-unit 会激活三处此前恒死的 vr 门控分支(共 5 个离散分支)**(现货 vr≈0.02,修复后 vr 恢复真实量级,可 >1.2/1.5/2.5):① `_price_volume`(analysis.py:372/376)的 vr>1.2 → 35/5 两个分支;② `_breakout_score`(:433)的 vr>1.2 → 20 一个分支;③ `compute_stock_risk`(:491-496)的「放量跌破 +10」「放量滞涨 +25」两个分支。与 high/low/open 同一类效应:生产 risk/信号分布移位、可能把边界股推过 70。回测测不出它(§3 对),但变更说明须单列。
 - **P1 修后 composite 钉值重算**:`test_collect_actionable_leaders` 的 83.5 → **79.0**(非 ~70,§6 已核公式);若只改代码不改测试会红——必须同 commit 更新钉值,且新值由公式重推、不得「凑数」。
 - **`.get()` vs `[]`**:quote 三字段用 `.get()` 是为兼容缺列测试行;若某生产路径 `row` 是 pandas Series(非 dict),`.get()` 仍可用(`Series.get`),无副作用。
 
