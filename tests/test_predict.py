@@ -348,6 +348,26 @@ def test_metric_return_dir_cond_large_n_reports_mae():
     assert m["dir_cond_mae"]["up"]["mae"] == pytest.approx(0.01)
 
 
+def test_metric_risk_ece_brier_lift():
+    # 两箱:risk 低→P(adverse)=0,risk 高→P(adverse)=1
+    cal = pr._fit_calibrator([(1.0, 0)] * 10 + [(9.0, 1)] * 10, 2)
+    samples = [(1.0, 0)] * 5 + [(9.0, 1)] * 5
+    m = pr._metric_risk(cal, samples)
+    assert m["n"] == 10
+    assert m["adverse_rate"] == pytest.approx(0.5)
+    assert m["ece"] == pytest.approx(0.0)
+    assert m["brier"] == pytest.approx(0.0)
+    assert m["lift"] == pytest.approx(1.0)  # top bin realized=1 - bottom=0
+
+
+def test_metric_risk_empty():
+    cal = pr._fit_calibrator([(1.0, 0)] * 10 + [(9.0, 1)] * 10, 2)
+    m = pr._metric_risk(cal, [])
+    assert m["n"] == 0
+    assert m["ece"] is None
+    assert m["lift"] is None
+
+
 def test_metric_path_four_class():
     gap_cal = pr._fit_calibrator([(5.0, 1)] * 10, 2)   # p=1 → high
     od_cal = pr._fit_calibrator([(5.0, 1)] * 10, 2)    # p=1 → up

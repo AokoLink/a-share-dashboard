@@ -343,6 +343,31 @@ def _metric_return(cal, direction_cal, samples):
             "dir_cond_mae": dir_cond}
 
 
+def _metric_risk(cal, samples):
+    """risk 维度:ECE/Brier/单调 lift/adverse_rate。samples = [(risk, adverse), ...]"""
+    n = len(samples)
+    if n == 0:
+        return {"n": 0, "adverse_rate": None, "ece": None, "brier": None, "lift": None}
+    counts = [0] * len(cal.bins)
+    sums = [0.0] * len(cal.bins)
+    brier_sum = 0.0
+    for risk, adverse in samples:
+        p = cal.p_up(risk)
+        idx = _bin_index(cal, risk)
+        counts[idx] += 1
+        sums[idx] += adverse
+        brier_sum += (p - adverse) ** 2
+    ece = 0.0
+    for idx, (_u, p) in enumerate(cal.bins):
+        if counts[idx]:
+            ece += (counts[idx] / n) * abs(p - sums[idx] / counts[idx])
+    realized = [sums[idx] / counts[idx] if counts[idx] else None for idx in range(len(cal.bins))]
+    nonempty = [r for r in realized if r is not None]
+    lift = (nonempty[-1] - nonempty[0]) if nonempty else None
+    adverse_rate = float(sum(l for _, l in samples)) / n
+    return {"n": n, "adverse_rate": adverse_rate, "ece": ece, "brier": brier_sum / n, "lift": lift}
+
+
 def _metric_path(gap_cal, od_cal, samples):
     """path 维度:gap×od 四分类命中率。samples = [(composite, gap_up, od_up), ...]。"""
     path_n = 0
