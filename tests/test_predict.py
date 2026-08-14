@@ -217,3 +217,71 @@ def test_predict_now_integration(monkeypatch):
     assert pred["code"] == "000001"
     assert pred["date"] == d["date"].iloc[-1]
     assert pred["T+3"]["direction"] is not None
+
+
+def _fake_results():
+    return {
+        "calibrators": {"direction": pr._fit_calibrator([(5.0, 1)] * 10, 2)},
+        "n_samples": {"direction": 10},
+        "metrics": {
+            "direction": {"n": 10, "base_rate": 0.5, "hit_rate": 0.6, "ece": 0.1, "brier": 0.2, "n_hold": 1},
+            "path": {"n": 8, "acc_path": 0.5},
+        },
+        "data_range": {"start": "2026-01-01", "end": "2026-08-13"},
+        "train_window": {"start": "2026-01-01", "end": "2026-06-01"},
+        "valid_window": {"start": "2026-06-02", "end": "2026-08-13"},
+        "n_eval": 300, "step": 3, "n_train": 240, "n_valid": 60,
+    }
+
+
+def test_main_backtest_writes_output(tmp_path, monkeypatch):
+    out = tmp_path / "pb.json"
+    monkeypatch.setattr(pr, "run_backtest", lambda dd, sm: _fake_results())
+    rc = pr.main(["--data-dir", str(tmp_path), "--sector-map", "x", "--out", str(out)])
+    assert rc == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["mode"] == "backtest"
+    assert payload["system_version"]
+    assert "calibrators" in payload and "metrics" in payload
+    assert out.with_suffix(".md").exists()
+
+
+def test_main_predict_writes_snapshot(tmp_path, monkeypatch):
+    out = tmp_path / "snap.json"
+    monkeypatch.setattr(pr, "predict_now",
+                        lambda dd, sm: {"as_of_date": "2026-08-13", "predictions": [{"code": "000001"}]})
+    rc = pr.main(["--predict", "--data-dir", str(tmp_path), "--sector-map", "x", "--out", str(out)])
+    assert rc == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["mode"] == "predict"
+    assert payload["as_of_date"] == "2026-08-13"
+    assert payload["predictions"] == [{"code": "000001"}]
+    assert not out.with_suffix(".md").exists()
+
+
+def test_main_missing_data_dir_exits_nonzero():
+    rc = pr.main(["--data-dir", "/nonexistent/xyz", "--sector-map", "/nope"])
+    assert rc == 1
+
+
+def test_main_end_to_end_gbk(tmp_path, monkeypatch):
+    # 真实全链路:tmp pkl 集 + GBK 板块映射,monkeypatch 仅固定 score_stock 的 composite
+    dailydir = tmp_path / "daily"
+    dailydir.mkdir()
+    closes = [2000.0 + 0.1 * k for k in range(1200)]
+    make_daily(closes, start="2020-01-01", code="000001").to_pickle(dailydir / "000001.pkl")
+    sm = tmp_path / "code2sector.json"
+    with open(sm, "w", encoding="gbk") as f:
+        json.dump({"000001": ["半导体"]}, f, ensure_ascii=False)
+    monkeypatch.setattr(an, "score_stock",
+                        lambda df, quote, now: {"position": 50.0, "trend": 50.0, "volume_price": 50.0,
+                                                "signal": 50.0, "risk": 10.0, "composite": 70.0})
+    out = tmp_path / "pb.json"
+    rc = pr.main(["--data-dir", str(dailydir), "--sector-map", str(sm), "--out", str(out)])
+    assert rc == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["mode"] == "backtest"
+    assert payload["system_version"]
+    assert set(payload["calibrators"]) == {"direction", "gap", "od", "trend3"}
+    assert "ece" in payload["metrics"]["direction"]
+    assert out.with_suffix(".md").exists()

@@ -365,3 +365,131 @@ def predict_now(data_dir, sector_map_path):
         if pred is not None:
             predictions.append(pred)
     return {"as_of_date": all_days[-1], "predictions": predictions}
+
+
+def _git_short_sha():
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, check=True)
+        sha = out.stdout.strip()
+        return sha or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _num(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):
+        return None
+    return f
+
+
+def build_report(results, system_version=None, generated_at=None):
+    system_version = system_version or _git_short_sha()
+    generated_at = generated_at or datetime.now().isoformat()
+    calibrators = {}
+    for name, cal in results["calibrators"].items():
+        bins = [{"upper": None if upper == float("inf") else round(upper, 4), "p": round(p, 4)}
+                for upper, p in cal.bins]
+        calibrators[name] = {"bins": bins, "n": results["n_samples"].get(name), "degraded": cal.degraded}
+    metrics = {}
+    for name, m in results["metrics"].items():
+        if name == "path":
+            metrics[name] = {"n": m["n"], "acc_path": _num(m["acc_path"])}
+        else:
+            metrics[name] = {
+                "n": m["n"], "base_rate": _num(m["base_rate"]), "hit_rate": _num(m["hit_rate"]),
+                "ece": _num(m["ece"]), "brier": _num(m["brier"]), "n_hold": m["n_hold"],
+            }
+    return {
+        "system_version": system_version,
+        "module_version": MODULE_VERSION,
+        "generated_at": generated_at,
+        "mode": "backtest",
+        "data_range": results["data_range"],
+        "train_window": results["train_window"],
+        "valid_window": results["valid_window"],
+        "n_eval": results["n_eval"], "step": results["step"],
+        "n_train": results["n_train"], "n_valid": results["n_valid"],
+        "calibrators": calibrators,
+        "metrics": metrics,
+    }
+
+
+def render_markdown(payload):
+    def fmt(x, nd=4):
+        return "-" if x is None else f"{x:.{nd}f}"
+
+    L = ["# 预测引擎基线报告", ""]
+    L.append(f"- system_version: `{payload['system_version']}`")
+    L.append(f"- module_version: {payload['module_version']}")
+    L.append(f"- generated_at: {payload['generated_at']}")
+    L.append(f"- data_range: {payload['data_range']['start']} -> {payload['data_range']['end']}")
+    L.append(f"- train_window: {payload['train_window']['start']} -> {payload['train_window']['end']} (n_train={payload['n_train']})")
+    L.append(f"- valid_window: {payload['valid_window']['start']} -> {payload['valid_window']['end']} (n_valid={payload['n_valid']})")
+    L.append(f"- n_eval={payload['n_eval']}, step={payload['step']}")
+    L += ["", "## 校准表(composite 分箱 → P(up))", "", "| 校准器 | 箱上界 | P | degraded | 训练样本 n |", "|---|---|---|---|---|"]
+    for name, cal in payload["calibrators"].items():
+        for b in cal["bins"]:
+            upper = "-" if b["upper"] is None else f"{b['upper']:.4f}"
+            L.append(f"| {name} | {upper} | {b['p']:.4f} | {cal['degraded']} | {cal['n']} |")
+    L += ["", "## 指标(valid 段,out-of-sample)", "", "| 校准器 | n | base_rate | hit_rate | ece | brier | n_hold |", "|---|---|---|---|---|---|---|"]
+    for name, m in payload["metrics"].items():
+        if name == "path":
+            L.append(f"| path | {m['n']} | - | acc_path={fmt(m['acc_path'])} | - | - | - |")
+        else:
+            L.append(f"| {name} | {m['n']} | {fmt(m['base_rate'])} | {fmt(m['hit_rate'])} | {fmt(m['ece'])} | {fmt(m['brier'])} | {m['n_hold']} |")
+    L += ["", "## 诚实声明", ""]
+    L.append("1. 校准概率基于「代理管线」评分(日线 pkl 无 amount,生产板块 composite 不可复现)。")
+    L.append("2. 回测模式指标仅在 valid 窗口有效(out-of-sample)。")
+    L.append("3. 分钟级路径未做(数据缺口);path 为日线 OHLC 的 gap×od 四分类。")
+    L.append("4. 样本按「股票×时间」聚集、非 i.i.d.,n 为样本数而非独立观测数,ece/brier 不可按 n 直接推置信区间。")
+    L.append("5. n_eval 为完整评估日 range,与基线 backtest(跳无热板块日)的 n_eval 可能不同,非同日口径。")
+    L.append("")
+    return "\n".join(L)
+
+
+def build_snapshot(results):
+    return {
+        "system_version": _git_short_sha(),
+        "module_version": MODULE_VERSION,
+        "generated_at": datetime.now().isoformat(),
+        "mode": "predict",
+        "as_of_date": results["as_of_date"],
+        "predictions": results["predictions"],
+    }
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="预测引擎(校准概率 + 多维 horizon)")
+    parser.add_argument("--data-dir", default="_analysis/daily")
+    parser.add_argument("--sector-map", default="_analysis/code2sector.json")
+    parser.add_argument("--predict", action="store_true", help="前向模式(默认回测)")
+    parser.add_argument("--out", default=None)
+    args = parser.parse_args(argv)
+    out = args.out or ("prediction_snapshot.json" if args.predict else "prediction_baseline.json")
+    try:
+        if args.predict:
+            payload = build_snapshot(predict_now(args.data_dir, args.sector_map))
+        else:
+            payload = build_report(run_backtest(args.data_dir, args.sector_map))
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    if args.predict:
+        print(f"wrote {out}")
+    else:
+        md_path = os.path.splitext(out)[0] + ".md"
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(render_markdown(payload))
+        print(f"wrote {out} and {md_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
