@@ -101,7 +101,7 @@ def _score_candidate(row, daily_df, now, sector_composite=None):
     scores = an.score_stock(daily_df, quote, now)
     if scores["composite"] is None:            # 数据不足(历史<61根)→ 跳过
         return None
-    bonus = sector_bonus(sector_composite, scores["composite"])
+    bonus = sector_bonus(sector_composite)
     final = an.stock_composite_v3(scores["position"], scores["volume_price"],
                                   scores["trend"], scores["signal"], scores["risk"], bonus)
     return {"code": ds.with_prefix(str(row["code"])), "name": str(row["name"]),
@@ -143,7 +143,7 @@ def _apply_hot_weights_one(x, sector_composite, rel=None):
     else:
         w = None
     scores = x["scores"]
-    bonus = sector_bonus(sector_composite, scores["composite"])   # 自加成前 composite 重算,无重复加成
+    bonus = sector_bonus(sector_composite)   # 自加成前 composite 重算,无重复加成
     final = an.stock_composite_v3(scores["position"], scores["volume_price"],
                                   scores["trend"], scores["signal"], scores["risk"],
                                   bonus, rel_strength=rel, weights=w)
