@@ -150,3 +150,104 @@ def _risk_metric(rows):
         ece += (len(chunk) / n) * abs(mean_p - realized_bin)
     lift = (realized[-1] - realized[0]) if len(realized) >= 2 else None
     return {"n": n, "adverse_rate": adverse_rate, "ece": ece, "brier": brier, "lift": lift}
+
+
+def verify(snapshot_path, data_dir, sector_map_path):
+    with open(snapshot_path, "r", encoding="utf-8") as f:
+        snap = json.load(f)
+    if snap.get("mode") != "predict":
+        raise RuntimeError(f"snapshot mode != predict: {snap.get('mode')}")
+    as_of_date = snap["as_of_date"]
+    predictions = snap.get("predictions", [])
+    sector_map = bt.load_sector_map(sector_map_path)
+    universe, codes = bt.build_universe(data_dir, sector_map)
+    if not universe:
+        raise RuntimeError(f"no usable daily pkl in {data_dir}")
+    all_days, pos_of = bt.build_calendar(universe, codes)
+
+    unverified = {"not_in_universe": 0, "no_next_bar": 0, "non_positive_close": 0}
+    n_verified = 0
+    n_trend3_verified = 0
+    rows = {"direction": [], "gap": [], "od": [], "trend3": [], "path": [], "return": [], "risk": []}
+    has_expected_return = False
+    has_risk_p = False
+
+    for pred in predictions:
+        code = str(pred["code"])
+        date = str(pred.get("date") or as_of_date)
+        bar = pos_of.get(code, {}).get(date)
+        if bar is None:
+            unverified["not_in_universe"] += 1
+            continue
+        d = universe[code]
+        if bar + 1 >= len(d):
+            unverified["no_next_bar"] += 1
+            continue
+        close0 = float(d["close"].iloc[bar])
+        open1 = float(d["open"].iloc[bar + 1])
+        close1 = float(d["close"].iloc[bar + 1])
+        if close0 <= 0 or open1 <= 0 or close1 <= 0:
+            unverified["non_positive_close"] += 1
+            continue
+        oc = _actual_outcomes(d, bar)
+        n_verified += 1
+        close1_up = 1 if oc["close1"] > 0 else 0
+        gap_up = 1 if oc["gap"] > 0 else 0
+        od_up = 1 if oc["od"] > 0 else 0
+        path_actual = _path_label(gap_up, od_up)
+
+        t1 = pred.get("T+1") or {}
+        t3 = pred.get("T+3") or {}
+        rows["direction"].append((t1.get("direction"), close1_up))
+        gap_pred = {"high": "up", "low": "down"}.get(t1.get("gap"), "hold")
+        rows["gap"].append((gap_pred, gap_up))
+        rows["od"].append((t1.get("od"), od_up))
+        pred_path = t1.get("path")
+        if pred_path is not None:
+            rows["path"].append((pred_path, path_actual))
+        if oc["trend3"] is not None:
+            trend3_up = 1 if oc["trend3"] > 0 else 0
+            n_trend3_verified += 1
+            rows["trend3"].append((t3.get("direction"), trend3_up))
+        er = pred.get("expected_return")
+        if er is not None:
+            has_expected_return = True
+            rows["return"].append((float(er), oc["close1"]))
+        rp = pred.get("risk_p")
+        if rp is not None:
+            has_risk_p = True
+            rows["risk"].append((float(rp), 1 if oc["close1"] < pr.ADVERSE_THRESHOLD else 0))
+
+    metrics = {}
+    for name in ("direction", "gap", "od", "trend3"):
+        metrics[name] = _class_metric(rows[name])
+    metrics["path"] = _path_metric(rows["path"])
+    if has_expected_return:
+        metrics["return"] = _return_metric(rows["return"])
+        metrics["return"]["available"] = True
+    else:
+        metrics["return"] = {"available": False, "reason": "快照无 expected_return 字段(1.0.0 引擎生成)"}
+    if has_risk_p:
+        metrics["risk"] = _risk_metric(rows["risk"])
+        metrics["risk"]["available"] = True
+    else:
+        metrics["risk"] = {"available": False, "reason": "快照无 risk_p 字段(1.0.0 引擎生成)"}
+
+    return {
+        "snapshot": {
+            "path": snapshot_path,
+            "system_version": snap.get("system_version"),
+            "module_version": snap.get("module_version"),
+            "generated_at": snap.get("generated_at"),
+            "as_of_date": as_of_date,
+        },
+        "data_range": {"start": str(all_days[0]), "end": str(all_days[-1])},
+        "verification": {
+            "n_predictions": len(predictions),
+            "n_verified": n_verified,
+            "n_trend3_verified": n_trend3_verified,
+            "n_unverified": sum(unverified.values()),
+            "unverified_reasons": unverified,
+        },
+        "metrics": metrics,
+    }

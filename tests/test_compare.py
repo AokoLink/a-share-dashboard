@@ -88,3 +88,122 @@ def test_risk_metric():
     assert m["brier"] == pytest.approx((0.01 + 0.04 + 0.49 + 0.36) / 4.0)
     assert m["ece"] == pytest.approx(abs(0.25 - 0.5))
     assert m["lift"] is None  # n=4 < N_BINS=10 降单箱
+
+
+import backtest as bt
+
+D1_CLOSES = [90.0, 92.0, 95.0, 100.0, 110.0, 121.0, 108.9, 108.9]
+D1_OPENS = [90.0, 90.0, 93.0, 97.0, 105.0, 115.0, 105.0, 105.0]
+# as_of bar=3(close0=100),open1=105,close1=110,close3=108.9
+
+
+def _fixture(monkeypatch):
+    universe = {
+        "000001": _mk_df(D1_CLOSES, D1_OPENS),
+        "000002": _mk_df([50.0, 55.0, 60.0, 65.0], [50.0, 55.0, 60.0, 65.0]),
+    }
+    codes = ["000001", "000002"]
+    all_days = ["2026-08-11", "2026-08-12", "2026-08-13", "2026-08-14"]
+    pos_of = {
+        "000001": {"2026-08-11": 3},
+        "000002": {"2026-08-11": 3},  # d2 末根,bar+1 越界
+    }
+    monkeypatch.setattr(bt, "load_sector_map", lambda p: {})
+    monkeypatch.setattr(bt, "build_universe", lambda dd, sm: (universe, codes))
+    monkeypatch.setattr(bt, "build_calendar", lambda univ, cs: (all_days, pos_of))
+    return universe
+
+
+def _snapshot():
+    return {
+        "mode": "predict", "system_version": "62c60a7", "module_version": "1.0.0",
+        "generated_at": "2026-08-14T20:52:42", "as_of_date": "2026-08-11",
+        "predictions": [
+            {"code": "000001", "date": "2026-08-11", "composite": 50.0,
+             "T+1": {"direction": "up", "confidence": 0.6, "gap": "high", "od": "up", "path": "高开高走"},
+             "T+3": {"direction": "up", "confidence": 0.6}},
+            {"code": "000002", "date": "2026-08-11", "composite": 50.0,
+             "T+1": {"direction": "down", "confidence": 0.6, "gap": "low", "od": "down", "path": "低开低走"},
+             "T+3": {"direction": "down", "confidence": 0.6}},
+            {"code": "000003", "date": "2026-08-11", "composite": 50.0,
+             "T+1": {"direction": "hold", "confidence": 0.5, "gap": "hold", "od": "hold", "path": None},
+             "T+3": {"direction": "hold", "confidence": 0.5}},
+        ],
+    }
+
+
+def test_verify_core(tmp_path, monkeypatch):
+    _fixture(monkeypatch)
+    snap = tmp_path / "s.json"
+    import json as _json
+    snap.write_text(_json.dumps(_snapshot(), ensure_ascii=False), encoding="utf-8")
+    r = compare.verify(str(snap), "dd", "sm")
+    v = r["verification"]
+    assert v["n_predictions"] == 3
+    assert v["n_verified"] == 1
+    assert v["n_trend3_verified"] == 1
+    assert v["n_unverified"] == 2
+    assert v["unverified_reasons"] == {"not_in_universe": 1, "no_next_bar": 1, "non_positive_close": 0}
+    m = r["metrics"]
+    for name in ("direction", "gap", "od", "trend3"):
+        assert m[name]["n"] == 1 and m[name]["hit_rate"] == pytest.approx(1.0)
+    assert m["path"]["n"] == 1 and m["path"]["acc_path"] == pytest.approx(1.0)
+    assert m["return"]["available"] is False
+    assert m["risk"]["available"] is False
+
+
+def test_verify_field_missing(tmp_path, monkeypatch):
+    _fixture(monkeypatch)
+    import json as _json
+    snap = tmp_path / "s.json"
+    snap.write_text(_json.dumps(_snapshot(), ensure_ascii=False), encoding="utf-8")
+    r = compare.verify(str(snap), "dd", "sm")
+    assert r["metrics"]["return"]["available"] is False
+    assert "reason" in r["metrics"]["return"]
+    assert r["metrics"]["risk"]["available"] is False
+
+
+def test_verify_anti_leak_snapshot(tmp_path, monkeypatch):
+    _fixture(monkeypatch)
+    import json as _json
+    snap = tmp_path / "s.json"
+    snap.write_text(_json.dumps(_snapshot(), ensure_ascii=False), encoding="utf-8")
+    r1 = compare.verify(str(snap), "dd", "sm")
+    snap2 = _snapshot()
+    snap2["predictions"][0]["T+1"]["direction"] = "down"
+    snap.write_text(_json.dumps(snap2, ensure_ascii=False), encoding="utf-8")
+    r2 = compare.verify(str(snap), "dd", "sm")
+    assert r1["metrics"]["direction"]["hit_rate"] != r2["metrics"]["direction"]["hit_rate"]
+
+
+def test_verify_anti_leak_past(tmp_path, monkeypatch):
+    universe = _fixture(monkeypatch)
+    import json as _json
+    snap = tmp_path / "s.json"
+    snap.write_text(_json.dumps(_snapshot(), ensure_ascii=False), encoding="utf-8")
+    r1 = compare.verify(str(snap), "dd", "sm")
+    universe["000001"].loc[2, "close"] = 9999.0  # close[bar-1], <= as_of
+    r2 = compare.verify(str(snap), "dd", "sm")
+    assert r2["metrics"] == r1["metrics"]
+
+
+def test_verify_anti_leak_anchor(tmp_path, monkeypatch):
+    universe = _fixture(monkeypatch)
+    import json as _json
+    snap = tmp_path / "s.json"
+    snap.write_text(_json.dumps(_snapshot(), ensure_ascii=False), encoding="utf-8")
+    r1 = compare.verify(str(snap), "dd", "sm")
+    universe["000001"].loc[3, "close"] = 120.0  # close[bar] 锚点分母,翻转 close1 符号
+    r2 = compare.verify(str(snap), "dd", "sm")
+    assert r2["metrics"]["direction"]["hit_rate"] != r1["metrics"]["direction"]["hit_rate"]
+
+
+def test_verify_anti_leak_future(tmp_path, monkeypatch):
+    universe = _fixture(monkeypatch)
+    import json as _json
+    snap = tmp_path / "s.json"
+    snap.write_text(_json.dumps(_snapshot(), ensure_ascii=False), encoding="utf-8")
+    r1 = compare.verify(str(snap), "dd", "sm")
+    universe["000001"].loc[4, "close"] = 5.0  # close1, > as_of
+    r2 = compare.verify(str(snap), "dd", "sm")
+    assert r2["metrics"]["direction"]["hit_rate"] != r1["metrics"]["direction"]["hit_rate"]
