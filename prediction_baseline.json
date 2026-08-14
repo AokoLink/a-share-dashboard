@@ -1,0 +1,130 @@
+{
+  "system_version": "62c60a7",
+  "module_version": "1.0.0",
+  "generated_at": "2026-08-14T20:21:31.599087",
+  "mode": "backtest",
+  "data_range": {
+    "start": "2019-02-25",
+    "end": "2026-08-11"
+  },
+  "train_window": {
+    "start": "2021-08-25",
+    "end": "2025-08-08"
+  },
+  "valid_window": {
+    "start": "2025-08-13",
+    "end": "2026-08-06"
+  },
+  "n_eval": 400,
+  "step": 3,
+  "n_train": 320,
+  "n_valid": 80,
+  "calibrators": {
+    "direction": {
+      "bins": [
+        {
+          "upper": 29.6162,
+          "p": 0.4608
+        },
+        {
+          "upper": null,
+          "p": 0.4656
+        }
+      ],
+      "n": 232472,
+      "degraded": false
+    },
+    "gap": {
+      "bins": [
+        {
+          "upper": 29.6162,
+          "p": 0.3273
+        },
+        {
+          "upper": 38.4106,
+          "p": 0.3323
+        },
+        {
+          "upper": 41.3654,
+          "p": 0.3352
+        },
+        {
+          "upper": null,
+          "p": 0.3373
+        }
+      ],
+      "n": 232472,
+      "degraded": false
+    },
+    "od": {
+      "bins": [
+        {
+          "upper": 29.6162,
+          "p": 0.4716
+        },
+        {
+          "upper": null,
+          "p": 0.4893
+        }
+      ],
+      "n": 232472,
+      "degraded": false
+    },
+    "trend3": {
+      "bins": [
+        {
+          "upper": 29.6162,
+          "p": 0.4189
+        },
+        {
+          "upper": 41.3654,
+          "p": 0.4611
+        },
+        {
+          "upper": null,
+          "p": 0.4621
+        }
+      ],
+      "n": 232472,
+      "degraded": false
+    }
+  },
+  "metrics": {
+    "direction": {
+      "n": 85492,
+      "base_rate": 0.45289617742010946,
+      "hit_rate": null,
+      "ece": 0.012279963136883022,
+      "brier": null,
+      "n_hold": 85492
+    },
+    "gap": {
+      "n": 85492,
+      "base_rate": 0.37086511018574836,
+      "hit_rate": 0.6291348898142516,
+      "ece": 0.03551174481557004,
+      "brier": 0.23466431607045024,
+      "n_hold": 0
+    },
+    "od": {
+      "n": 85492,
+      "base_rate": 0.4663711224442053,
+      "hit_rate": null,
+      "ece": 0.02309391473484082,
+      "brier": null,
+      "n_hold": 85492
+    },
+    "trend3": {
+      "n": 85491,
+      "base_rate": 0.4676632627995929,
+      "hit_rate": 0.5552685248130523,
+      "ece": 0.009505065445707993,
+      "brier": 0.24761080822752599,
+      "n_hold": 78136
+    },
+    "path": {
+      "n": 0,
+      "acc_path": null
+    }
+  }
+}
