@@ -207,3 +207,27 @@ def test_verify_anti_leak_future(tmp_path, monkeypatch):
     universe["000001"].loc[4, "close"] = 5.0  # close1, > as_of
     r2 = compare.verify(str(snap), "dd", "sm")
     assert r2["metrics"]["direction"]["hit_rate"] != r1["metrics"]["direction"]["hit_rate"]
+
+
+def test_main_end_to_end(tmp_path, monkeypatch):
+    _fixture(monkeypatch)
+    import json as _json
+    snap = tmp_path / "s.json"
+    snap.write_text(_json.dumps(_snapshot(), ensure_ascii=False), encoding="utf-8")
+    out = tmp_path / "v.json"
+    rc = compare.main(["--snapshot", str(snap), "--data-dir", "dd",
+                       "--sector-map", "sm", "--out", str(out)])
+    assert rc == 0
+    payload = _json.loads(out.read_text(encoding="utf-8"))
+    assert payload["mode"] == "compare"
+    assert payload["snapshot"]["system_version"] == "62c60a7"
+    assert set(payload["metrics"]) == {"direction", "gap", "od", "trend3", "path", "return", "risk"}
+    assert payload["metrics"]["return"]["available"] is False
+    assert out.with_suffix(".md").exists()
+
+
+def test_main_missing_snapshot(tmp_path, monkeypatch):
+    _fixture(monkeypatch)
+    rc = compare.main(["--snapshot", str(tmp_path / "nope.json"), "--data-dir", "dd",
+                       "--sector-map", "sm", "--out", str(tmp_path / "v.json")])
+    assert rc == 1

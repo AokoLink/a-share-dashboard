@@ -251,3 +251,129 @@ def verify(snapshot_path, data_dir, sector_map_path):
         },
         "metrics": metrics,
     }
+
+
+def _git_short_sha():
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, check=True)
+        sha = out.stdout.strip()
+        return sha or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _num(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):
+        return None
+    return f
+
+
+def build_report(results):
+    payload = {
+        "system_version": _git_short_sha(),
+        "module_version": MODULE_VERSION,
+        "generated_at": datetime.now().isoformat(),
+        "mode": "compare",
+        "snapshot": results["snapshot"],
+        "data_range": results["data_range"],
+        "verification": results["verification"],
+        "metrics": {},
+    }
+    for name, m in results["metrics"].items():
+        if name in ("return", "risk") and m.get("available") is False:
+            payload["metrics"][name] = {"available": False, "reason": m["reason"]}
+            continue
+        if name in ("direction", "gap", "od", "trend3"):
+            payload["metrics"][name] = {"n": m["n"], "base_rate": _num(m["base_rate"]),
+                                        "hit_rate": _num(m["hit_rate"]), "n_hold": m["n_hold"],
+                                        "n_bet": m["n_bet"]}
+        elif name == "path":
+            payload["metrics"][name] = {"n": m["n"], "acc_path": _num(m["acc_path"])}
+        elif name == "return":
+            payload["metrics"][name] = {"available": True, "n": m["n"], "mae": _num(m["mae"]),
+                                        "rmse": _num(m["rmse"]),
+                                        "sign_agreement": _num(m["sign_agreement"]),
+                                        "sign_n": m["sign_n"], "mean_residual": _num(m["mean_residual"])}
+        else:
+            payload["metrics"][name] = {"available": True, "n": m["n"],
+                                        "adverse_rate": _num(m["adverse_rate"]),
+                                        "ece": _num(m["ece"]), "brier": _num(m["brier"]),
+                                        "lift": _num(m["lift"])}
+    return payload
+
+
+def render_markdown(payload):
+    def fmt(x, nd=4):
+        return "-" if x is None else f"{x:.{nd}f}"
+
+    snap = payload["snapshot"]
+    L = ["# 快照对比报告(预测 vs 真实结果)", ""]
+    L.append(f"- 快照 as_of_date: {snap['as_of_date']}")
+    L.append(f"- 快照引擎 system_version: `{snap['system_version']}` (module {snap['module_version']})")
+    L.append(f"- 快照生成时间: {snap['generated_at']}")
+    L.append(f"- comparator system_version: `{payload['system_version']}` (module {payload['module_version']})")
+    L.append(f"- 数据区间: {payload['data_range']['start']} -> {payload['data_range']['end']}")
+    v = payload["verification"]
+    L += ["", "## 验证计数", ""]
+    L.append(f"- 预测数: {v['n_predictions']}")
+    L.append(f"- T+1 可验证: {v['n_verified']} / 不可验证: {v['n_unverified']}"
+             f"(无下日 bar {v['unverified_reasons']['no_next_bar']} / 不在宇宙 {v['unverified_reasons']['not_in_universe']}"
+             f" / 非正价 {v['unverified_reasons']['non_positive_close']})")
+    L.append(f"- T+3 可验证: {v['n_trend3_verified']}")
+    L += ["", "## 六维指标", "", "| 维度 | n | 主指标 | 备注 |", "|---|---|---|---|"]
+    m = payload["metrics"]
+    for name, label in (("direction", "方向"), ("gap", "开盘"), ("od", "盘中"), ("trend3", "T+3趋势")):
+        mm = m[name]
+        L.append(f"| {label} | {mm['n']} | hit_rate={fmt(mm['hit_rate'])} (base={fmt(mm['base_rate'])})"
+                 f" | n_hold={mm['n_hold']} n_bet={mm['n_bet']} |")
+    pm = m["path"]
+    L.append(f"| 路径 | {pm['n']} | acc_path={fmt(pm['acc_path'])} | - |")
+    for name, label in (("return", "涨跌幅"), ("risk", "风险")):
+        mm = m[name]
+        if not mm.get("available"):
+            L.append(f"| {label} | - | 不可验证 | {mm['reason']} |")
+        elif name == "return":
+            L.append(f"| {label} | {mm['n']} | mae={fmt(mm['mae'])} rmse={fmt(mm['rmse'])}"
+                     f" sign={fmt(mm['sign_agreement'])} (n={mm['sign_n']}) | resid={fmt(mm['mean_residual'])} |")
+        else:
+            L.append(f"| {label} | {mm['n']} | adverse_rate={fmt(mm['adverse_rate'])}"
+                     f" ece={fmt(mm['ece'])} brier={fmt(mm['brier'])} | lift={fmt(mm['lift'])} |")
+    L += ["", "## 诚实声明", ""]
+    L.append("1. 验证读两类行情:<=as_of 锚点 close(分母)+ >as_of 的 open1/close1/close3;预测字段是快照里冻结的,comparator 不重跑评分/校准。")
+    L.append("2. 快照不可变:快照引擎代码 / comparator 代码 / 验证数据区间三者独立,互不冒充。")
+    L.append("3. 样本按「股票x时间」聚集、非 i.i.d.,n 为样本数;单份前向快照 n 较小,准确率波动大,只作单次前向验证。")
+    L.append("4. return/risk 维若快照无对应字段,如实标「不可验证」,不回退、不编造。")
+    L.append("5. risk 维 ECE 按已存 risk_p 直接分箱(非原始 risk 经校准器)。")
+    L.append("")
+    return "\n".join(L)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="快照对比器(预测快照 vs 真实结果)")
+    parser.add_argument("--snapshot", default="prediction_snapshot.json")
+    parser.add_argument("--data-dir", default="_analysis/daily")
+    parser.add_argument("--sector-map", default="_analysis/code2sector.json")
+    parser.add_argument("--out", default="snapshot_verification.json")
+    args = parser.parse_args(argv)
+    try:
+        results = verify(args.snapshot, args.data_dir, args.sector_map)
+    except (FileNotFoundError, RuntimeError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    payload = build_report(results)
+    with open(args.out, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    md_path = os.path.splitext(args.out)[0] + ".md"
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(render_markdown(payload))
+    print(f"wrote {args.out} and {md_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
