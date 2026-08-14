@@ -844,7 +844,7 @@ git commit -m "feat(predict): predict_now 前向模式快照(as_of_date + predic
 
 **Files:**
 - Modify: `predict.py`(追加 `_git_short_sha`/`_num`/`build_report`/`render_markdown`/`build_snapshot`/`main`)
-- Test: `tests/test_predict.py`(追加 3 个测试)
+- Test: `tests/test_predict.py`(追加 4 个测试)
 
 **Interfaces:**
 - Produces:
