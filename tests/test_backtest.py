@@ -109,3 +109,38 @@ def test_next_returns_nonpositive():
     assert bt.next_returns(d, 0) is None  # close[T] <= 0
     d2 = make_daily([100.0, 0.0], opens=[100.0, 0.0])
     assert bt.next_returns(d2, 0) is None  # close[T+1] <= 0
+
+
+def test_win_gain():
+    d = make_daily([10.0, 10.5, 11.0, 11.5, 12.0, 13.0], start="2026-01-01")
+    all_days, pos_of = bt.build_calendar({"a": d}, ["a"])
+    # i=5(w=5): end=all_days[5], start=all_days[1] -> close[5]/close[1]-1
+    g = bt._win_gain({"a": d}, pos_of, all_days, "a", 5, 5)
+    assert g == pytest.approx(13.0 / 10.5 - 1)
+
+
+def test_win_gain_missing_day():
+    d1 = make_daily([10.0, 11.0], start="2026-01-01")             # 01-01, 01-02
+    d2 = make_daily([20.0, 21.0, 22.0, 23.0], start="2026-01-01")  # 01-01..01-04
+    universe = {"a": d1, "b": d2}
+    all_days, pos_of = bt.build_calendar(universe, ["a", "b"])
+    # all_days[2]=01-03,a 无此 bar -> None
+    assert bt._win_gain(universe, pos_of, all_days, "a", 2, 5) is None
+
+
+def test_sector_heat_median_and_min3():
+    d = make_daily([10.0 + i * 0.5 for i in range(10)], start="2026-01-01")
+    universe = {c: d for c in ["a", "b", "c"]}
+    all_days, pos_of = bt.build_calendar(universe, ["a", "b", "c"])
+    heat = bt.sector_heat(universe, {"S": ["a", "b", "c"]}, pos_of, all_days, 9)
+    assert set(heat) == {"S"}
+    expected = d["close"].iloc[9] / d["close"].iloc[5] - 1  # 三只同序列 -> median = 该涨幅
+    assert heat["S"] == pytest.approx(expected)
+
+
+def test_sector_heat_under3_dropped():
+    d = make_daily([10.0 + i * 0.5 for i in range(10)], start="2026-01-01")
+    universe = {c: d for c in ["a", "b"]}
+    all_days, pos_of = bt.build_calendar(universe, ["a", "b"])
+    heat = bt.sector_heat(universe, {"S": ["a", "b"]}, pos_of, all_days, 9)
+    assert heat == {}

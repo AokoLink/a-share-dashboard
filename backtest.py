@@ -83,3 +83,30 @@ def next_returns(d, i):
     if c0 <= 0 or o1 <= 0 or c1 <= 0:
         return None
     return {"gap": o1 / c0 - 1, "close1": c1 / c0 - 1, "od": c1 / o1 - 1}
+
+
+def _win_gain(universe, pos_of, all_days, code, i, w):
+    j_hi = pos_of[code].get(all_days[i])
+    if j_hi is None:
+        return None
+    j_lo = pos_of[code].get(all_days[max(0, i - (w - 1))])
+    if j_lo is None or j_hi <= j_lo:
+        return None
+    c0 = float(universe[code]["close"].iloc[j_lo])
+    c1 = float(universe[code]["close"].iloc[j_hi])
+    if c0 <= 0:
+        return None
+    return c1 / c0 - 1
+
+
+def sector_heat(universe, sector_members, pos_of, all_days, i):
+    heat = {}
+    for s, members in sector_members.items():
+        gains = {}
+        for c in members:
+            g = _win_gain(universe, pos_of, all_days, c, i, 5)
+            if g is not None:
+                gains[c] = g
+        if len(gains) >= 3:
+            heat[s] = float(np.median(list(gains.values())))
+    return heat
