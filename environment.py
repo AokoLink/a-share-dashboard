@@ -79,6 +79,7 @@ def classify(row):
 def build_series(universe, pos_of, all_days):
     """合成市场序列:行 = all_days 位置,列见 spec §5;末列 environment。"""
     codes = list(universe.keys())
+    th_of = {c: an.limit_threshold(c) for c in codes}
     rows = []
     for dt in all_days:
         rets = []
@@ -100,7 +101,7 @@ def build_series(universe, pos_of, all_days):
             n += 1
             if chg > 0:
                 up += 1
-            th = an.limit_threshold(c)
+            th = th_of[c]
             if chg >= th:
                 lu += 1
             elif chg <= -th:
@@ -114,7 +115,10 @@ def build_series(universe, pos_of, all_days):
                      "limit_up": lu, "limit_down": ld,
                      "turnover": turnover})
     df = pd.DataFrame(rows)
-    df["turnover_ratio"] = df["turnover"] / df["turnover"].shift(1).rolling(5).mean()
+    # 规格 §5:turnover_ratio = turnover / mean(turnover[i-5..i-1]);i<5 或分母 0 → None。
+    # 分母 0 直接除会得 inf(inf >= CLIMAX_TURNOVER 误触发高潮),故 0 替换为 NaN(规格 §72 NaN/None 同义)。
+    denom = df["turnover"].shift(1).rolling(5).mean().replace(0.0, np.nan)
+    df["turnover_ratio"] = df["turnover"] / denom
     r1 = df["r1"].fillna(0.0).to_numpy()
     M = np.empty(len(df))
     if len(df) > 0:
