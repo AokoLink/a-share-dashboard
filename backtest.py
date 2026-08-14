@@ -119,9 +119,22 @@ def score_at(d, i, now):
     quote = {"price": float(df["close"].iloc[-1]),
              "change_pct": float(df["change_pct"].iloc[-1]),
              "volume": float(df["volume"].iloc[-1]),
-             "amount": float(df["volume"].iloc[-1]) * float(df["close"].iloc[-1])}
+             "amount": float(df["volume"].iloc[-1]) * float(df["close"].iloc[-1]),
+             "high": float(df["high"].iloc[-1]),
+             "low": float(df["low"].iloc[-1]),
+             "open": float(df["open"].iloc[-1])}
     sc = an.score_stock(df, quote, now)
     return sc if sc["composite"] is not None else None
+
+
+def _long_upper_shadow(high, low, open_, close):
+    """「高位长上影」谓词,与 analysis.py:498-503 同式;输入取自时点 bar(≤T)。"""
+    if None in (high, low, open_, close) or close <= 0:
+        return False
+    body = max(open_, close) - min(open_, close)
+    upper = high - max(open_, close)
+    amplitude = (high - low) / max(open_, close) * 100 if max(open_, close) > 0 else 0
+    return body > 0 and upper > 2 * body and amplitude > 5
 
 
 def build_buyable(universe, pos_of, all_days, i):
@@ -304,10 +317,22 @@ def run(data_dir, sector_map_path):
     step = max(1, (len(all_days) - 2 - start) // 300)
 
     score_cache = {}
+    diag = {"long_upper_shadow": 0, "pushed_over_70": 0}
     def get_score(code, bar):
         key = (code, bar)
         if key not in score_cache:
-            score_cache[key] = score_at(universe[code], bar, AFTER_CLOSE)
+            sc = score_at(universe[code], bar, AFTER_CLOSE)
+            score_cache[key] = sc
+            if sc is not None:
+                d = universe[code]
+                hi = float(d["high"].iloc[bar])
+                lo = float(d["low"].iloc[bar])
+                op = float(d["open"].iloc[bar])
+                cl = float(d["close"].iloc[bar])
+                if _long_upper_shadow(hi, lo, op, cl):
+                    diag["long_upper_shadow"] += 1
+                    if sc["risk"] >= 70 and sc["risk"] - 20 < 70:
+                        diag["pushed_over_70"] += 1
         return score_cache[key]
 
     A_od, A_gap, A_c1 = [], [], []
@@ -362,7 +387,7 @@ def run(data_dir, sector_map_path):
     }
     data_range = {"start": str(all_days[0]), "end": str(all_days[-1])}
     window = {"start": str(all_days[start]), "end": str(all_days[len(all_days) - 2])}
-    return {"rows": rows, "by_year": by_year, "welch": welch,
+    return {"rows": rows, "by_year": by_year, "welch": welch, "diag": diag,
             "n_eval": n_eval, "step": step, "window": window, "data_range": data_range}
 
 
@@ -403,6 +428,7 @@ def build_report(results, system_version=None, generated_at=None):
         "rows": rows,
         "by_year": by_year,
         "welch": results["welch"],
+        "diag": results.get("diag", {}),
     }
 
 
@@ -439,6 +465,12 @@ def render_markdown(payload):
               "| verdict 过滤 | rank_candidates 剔 verdict==回避(<42) | 仅 risk<70 |",
               ""]
     lines.append("结论:基线篮 A 的准确率是「代理管线」的准确率,作为当前版本可复现的近似基线;真正的生产口径基线须待 amount 数据补齐(后续切片)。")
+    diag = payload.get("diag", {})
+    if diag:
+        lines += ["", "## 诊断(P0-quote-highlowopen 生效计数)", ""]
+        lines.append(f"- 高位长上影触发 stock-day: {diag.get('long_upper_shadow', 0)}")
+        lines.append(f"- 因 +20 越 risk>=70 门槛 stock-day: {diag.get('pushed_over_70', 0)}")
+        lines.append("")
     lines.append("")
     return "\n".join(lines)
 

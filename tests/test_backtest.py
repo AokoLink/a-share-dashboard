@@ -162,6 +162,16 @@ def test_score_at_reconstructs_quote(monkeypatch):
     assert calls[0][0] == 64                       # df 只含 0..63(<=T)
     assert calls[0][1]["price"] == float(closes[63])
     assert calls[0][1]["amount"] == float(d["volume"].iloc[63]) * float(closes[63])
+    assert calls[0][1]["high"] == float(d["high"].iloc[63])
+    assert calls[0][1]["low"] == float(d["low"].iloc[63])
+    assert calls[0][1]["open"] == float(d["open"].iloc[63])
+
+
+def test_long_upper_shadow_detection():
+    assert bt._long_upper_shadow(10.5, 9.5, 10.0, 10.1) is True    # upper=0.4>0.2, amp≈9.9>5
+    assert bt._long_upper_shadow(10.15, 9.5, 10.0, 10.1) is False  # upper=0.05 < 2*body
+    assert bt._long_upper_shadow(10.5, 9.5, 10.1, 10.1) is False   # body=0(开=收)
+    assert bt._long_upper_shadow(None, 9.5, 10.0, 10.1) is False   # high 缺失
 
 
 def test_score_at_short_history_returns_none(monkeypatch):
