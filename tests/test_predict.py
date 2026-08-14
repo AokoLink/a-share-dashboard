@@ -285,3 +285,18 @@ def test_main_end_to_end_gbk(tmp_path, monkeypatch):
     assert set(payload["calibrators"]) == {"direction", "gap", "od", "trend3"}
     assert "ece" in payload["metrics"]["direction"]
     assert out.with_suffix(".md").exists()
+
+
+def test_fit_calibrator_monotone_false_keeps_nonmonotone():
+    # 非单调输入:PAV 会把它压平为单调,monotone=False 应保留原始非单调箱序
+    pairs = [(1.0, 0)] * 4 + [(2.0, 1)] * 4 + [(3.0, 0)] * 4
+    cal = pr._fit_calibrator(pairs, 3, monotone=False)
+    ps = [p for _, p in cal.bins]
+    assert ps != sorted(ps)  # 非单调(1.0→p≈0, 2.0→p≈1, 3.0→p≈0)
+
+
+def test_fit_calibrator_default_still_pav():
+    pairs = [(1.0, 0)] * 4 + [(2.0, 1)] * 4 + [(3.0, 0)] * 4
+    cal = pr._fit_calibrator(pairs, 3)
+    ps = [p for _, p in cal.bins]
+    assert ps == sorted(ps)  # 默认 PAV 单调不减
