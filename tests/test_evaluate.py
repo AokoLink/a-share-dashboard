@@ -114,3 +114,40 @@ def test_layer_rebound_true_tm1():
     assert ev._layer_rebound(mk(closes), 99)
     closes[99] = 60.0  # 不高于 T-1 → False
     assert not ev._layer_rebound(mk(closes), 99)
+
+
+def _mk_records(n=200):
+    # 全部落在「趋势」层:单调涨;composite 恒定 50,close1 交替 ±
+    recs = []
+    for k in range(n):
+        recs.append({"code": "000001", "date": "2026-04-01", "bar": 99,
+                     "composite": 50.0, "risk": 10.0,
+                     "close1": 0.01 if k % 2 == 0 else -0.01,
+                     "direction_label": 1 if k % 2 == 0 else 0,
+                     "gap": 1, "od": 1, "trend3": 1})
+    return recs
+
+
+def test_evaluate_cores_and_undifferentiated_flag():
+    import backtest as bt
+    import predict as pr
+    d = mk(list(range(100, 200)))  # 单调涨 → 趋势层 True
+    universe = {"000001": d}
+    all_days = list(d["date"])
+    pos_of = {"000001": {dt: i for i, dt in enumerate(d["date"])}}
+    sector_members = {}
+    sector_map = {"000001": []}
+    cals = {"direction": pr._fit_calibrator([(50.0, 0)] * 10 + [(50.0, 1)] * 10, 2),
+            "gap": pr._fit_calibrator([(50.0, 1)] * 10, 2),
+            "od": pr._fit_calibrator([(50.0, 1)] * 10, 2),
+            "trend3": pr._fit_calibrator([(50.0, 1)] * 10, 2),
+            "return": pr._fit_calibrator([(50.0, 0.0)] * 10, 2, monotone=False),
+            "risk": pr._fit_calibrator([(10.0, 0)] * 10, 2)}
+    rep = ev.evaluate(_mk_records(), universe, pos_of, all_days, sector_members, sector_map, cals)
+    assert set(rep["layers"]) == set(ev.LAYERS)
+    assert rep["layer_n"]["趋势"] == 200
+    assert "direction" in rep["overall"] and "return" in rep["overall"] and "risk" in rep["overall"]
+    # 大盘/趋势/高位/震荡四层均含全部 200 记录(单调涨 + 窄幅),与总体逐样本一致
+    # → 各层指标 == 总体指标,|差| 恒 0,永不超过 2σ → 无显著分化
+    assert rep["all_undifferentiated"] is True
+    assert rep["significant"] == []

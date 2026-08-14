@@ -16,6 +16,135 @@ AMP_THRESHOLD = 15.0
 MIN_LAYER_N = 30
 LAYERS = ("大盘", "热门", "龙头", "趋势", "高位", "超跌", "反抽", "震荡")
 
+DIMS = ("direction", "gap", "path", "trend3", "return", "risk")
+PRIMARY = {"direction": "hit_rate", "gap": "hit_rate", "path": "acc_path",
+           "trend3": "hit_rate", "return": "sign_agreement", "risk": "adverse_rate"}
+
+
+def _binom_diff_se(p_l, n_l, p_o, n_o):
+    if p_l is None or p_o is None or not n_l or not n_o:
+        return None
+    sl = (p_l * (1.0 - p_l) / n_l) ** 0.5
+    so = (p_o * (1.0 - p_o) / n_o) ** 0.5
+    return (sl * sl + so * so) ** 0.5
+
+
+def _mean_diff_se(std_l, n_l, std_o, n_o):
+    if std_l is None or std_o is None or not n_l or not n_o:
+        return None
+    return ((std_l * std_l) / n_l + (std_o * std_o) / n_o) ** 0.5
+
+
+def _dim_metrics(cals, dim, records):
+    """对一组记录算某维指标,复用 predict 的指标函数(单一真相源)。"""
+    if dim == "path":
+        samples = [(r["composite"], r["gap"], r["od"]) for r in records]
+        return pr._metric_path(cals["gap"], cals["od"], samples)
+    if dim == "return":
+        samples = [(r["composite"], r["close1"]) for r in records]
+        return pr._metric_return(cals["return"], cals["direction"], samples)
+    if dim == "risk":
+        samples = [(r["risk"], 1 if r["close1"] < pr.ADVERSE_THRESHOLD else 0)
+                   for r in records if r["risk"] is not None]
+        return pr._metric_risk(cals["risk"], samples)
+    samples = []
+    for r in records:
+        if dim == "trend3" and r["trend3"] is None:
+            continue
+        label = r["direction_label"] if dim == "direction" else r[dim]
+        samples.append((r["composite"], label))
+    return pr._metric(dim, cals[dim], samples)
+
+
+def _significance(overall, per_layer):
+    """逐 (层, 维, 指标) 做 ±2σ 显著性;n<30 或值 None 跳过。
+    返回 (significant, se_bounds, all_undifferentiated);se_bounds[(L, dim)] = 2*se(主指标)。
+    """
+    significant = []
+    se_bounds = {}
+    for dim, metric, kind in (
+        ("direction", "hit_rate", "binom"),
+        ("gap", "hit_rate", "binom"),
+        ("path", "acc_path", "binom"),
+        ("trend3", "hit_rate", "binom"),
+        ("return", "sign_agreement", "binom"),
+        ("return", "mae", "mean"),
+        ("return", "rmse", "mean"),
+        ("return", "mean_residual", "mean"),
+        ("risk", "adverse_rate", "binom"),
+    ):
+        o = overall[dim]
+        for L in LAYERS:
+            m = per_layer[L][dim]
+            if kind == "binom":
+                if metric == "hit_rate":
+                    n_l, n_o = m["n"] - m["n_hold"], o["n"] - o["n_hold"]
+                elif metric == "sign_agreement":
+                    n_l, n_o = m["sign_n"], o["sign_n"]
+                else:  # adverse_rate / acc_path
+                    n_l, n_o = m["n"], o["n"]
+                v_l, v_o = m[metric], o[metric]
+                if v_l is None or v_o is None or n_l < MIN_LAYER_N or n_o <= 0:
+                    continue
+                se = _binom_diff_se(v_l, n_l, v_o, n_o)
+            else:  # mean
+                std_key = {"mae": "mae_std", "rmse": "rmse_std",
+                           "mean_residual": "residual_std"}[metric]
+                v_l, v_o = m[metric], o[metric]
+                n_l, n_o = m["n"], o["n"]
+                if v_l is None or v_o is None or n_l < MIN_LAYER_N or n_o <= 0:
+                    continue
+                se = _mean_diff_se(m[std_key], n_l, o[std_key], n_o)
+            if se is None:
+                continue
+            if metric == PRIMARY[dim]:
+                se_bounds[(L, dim)] = 2.0 * se
+            if abs(v_l - v_o) > 2.0 * se:
+                significant.append((L, dim, metric, v_l, v_o, se))
+    return significant, se_bounds, (len(significant) == 0)
+
+
+def evaluate(records, universe, pos_of, all_days, sector_members, sector_map, cals):
+    day_to_i = {dt: i for i, dt in enumerate(all_days)}
+    by_date = {}
+    for r in records:
+        by_date.setdefault(r["date"], []).append(r)
+
+    layer_records = {L: [] for L in LAYERS}
+    for date, recs in by_date.items():
+        i = day_to_i[date]
+        buyable, _, _, _ = bt.build_buyable(universe, pos_of, all_days, i)
+        heat = bt.sector_heat(universe, sector_members, pos_of, all_days, i)
+        amount_top = _amount_top(universe, pos_of, all_days, i, buyable)
+        hot_members = _hot_members(sector_members, heat)
+        composite_of = {r["code"]: r["composite"] for r in recs}
+        leaders = _leaders(sector_map, buyable, composite_of)
+        for r in recs:
+            c, bar = r["code"], r["bar"]
+            d = universe[c]
+            tags = {
+                "大盘": c in amount_top,
+                "热门": c in hot_members,
+                "龙头": c in leaders,
+                "趋势": _layer_trend(d, bar),
+                "高位": _layer_high(d, bar),
+                "超跌": _layer_oversold(d, bar),
+                "反抽": _layer_rebound(d, bar),
+                "震荡": _layer_oscillation(d, bar),
+            }
+            for L, ok in tags.items():
+                if ok:
+                    layer_records[L].append(r)
+
+    overall = {dim: _dim_metrics(cals, dim, records) for dim in DIMS}
+    per_layer = {L: {dim: _dim_metrics(cals, dim, layer_records[L]) for dim in DIMS}
+                 for L in LAYERS}
+    significant, se_bounds, all_undifferentiated = _significance(overall, per_layer)
+    return {"overall": overall, "layers": per_layer,
+            "layer_n": {L: len(layer_records[L]) for L in LAYERS},
+            "significant": significant, "se_bounds": se_bounds,
+            "all_undifferentiated": all_undifferentiated}
+
 
 def _amount_top(universe, pos_of, all_days, i, buyable):
     """当日 buyable 中 amount 前 top20%(NaN 排名前 dropna,不参与也不计分母)。"""
