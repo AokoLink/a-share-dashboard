@@ -3,6 +3,14 @@
 
 只读 _analysis/daily/*.pkl 与 _analysis/code2sector.json(GBK),不 fetch。
 """
+import argparse
+import json
+import os
+import sys
+from datetime import datetime
+
+import numpy as np
+
 import analysis as an
 import backtest as bt
 import predict as pr
@@ -229,3 +237,155 @@ def _layer_oscillation(d, bar):
         return False
     amp = (float(window["high"].max()) - float(window["low"].min())) / close * 100.0
     return amp < AMP_THRESHOLD
+
+
+def run(data_dir, sector_map_path):
+    results = pr.run_backtest(data_dir, sector_map_path)
+    cals = results["calibrators"]
+    valid_records = results["valid_records"]
+    sector_map = bt.load_sector_map(sector_map_path)
+    universe, codes = bt.build_universe(data_dir, sector_map)
+    if not universe:
+        raise RuntimeError(f"no usable daily pkl in {data_dir}")
+    for code, df in universe.items():
+        if "amount" not in df.columns:
+            raise RuntimeError(
+                f"pkl {code} 缺 amount 列(实际 {list(df.columns)});请重拉 _analysis/daily 为 9 列")
+    all_days, pos_of = bt.build_calendar(universe, codes)
+    sector_members = bt.build_sector_members(sector_map, universe)
+    report = evaluate(valid_records, universe, pos_of, all_days, sector_members, sector_map, cals)
+    report["data_range"] = results["data_range"]
+    report["valid_window"] = results["valid_window"]
+    report["n_valid_records"] = len(valid_records)
+    return report
+
+
+def _num(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f
+
+
+def build_report(report):
+    def dim_payload(m):
+        if "acc_path" in m:  # path
+            return {"n": m["n"], "acc_path": _num(m["acc_path"])}
+        if "hit_rate" in m:  # direction/gap/trend3
+            return {"n": m["n"], "hit_rate": _num(m["hit_rate"]),
+                    "base_rate": _num(m["base_rate"]), "n_hold": m["n_hold"]}
+        if "mae" in m:  # return
+            return {"n": m["n"], "mae": _num(m["mae"]), "rmse": _num(m["rmse"]),
+                    "sign_agreement": _num(m["sign_agreement"]), "sign_n": m["sign_n"],
+                    "mean_residual": _num(m["mean_residual"]),
+                    "dir_cond_mae": {k: {"mae": _num(v["mae"]), "n": v["n"]}
+                                     for k, v in m["dir_cond_mae"].items()}}
+        return {"n": m["n"], "adverse_rate": _num(m["adverse_rate"]),
+                "ece": _num(m["ece"]), "brier": _num(m["brier"]), "lift": _num(m["lift"])}
+
+    def layer_dim_payload(m):
+        p = dim_payload(m)
+        if m["n"] < MIN_LAYER_N:  # §5 薄层小 n:只报样本量
+            return {"n": m["n"], "_suppressed": True}
+        return p
+
+    overall = {dim: dim_payload(report["overall"][dim]) for dim in DIMS}
+    layers = {L: {dim: layer_dim_payload(report["layers"][L][dim]) for dim in DIMS}
+              for L in LAYERS}
+    return {
+        "system_version": pr._git_short_sha(),
+        "module_version": MODULE_VERSION,
+        "generated_at": datetime.now().isoformat(),
+        "mode": "evaluate",
+        "data_range": report["data_range"],
+        "valid_window": report["valid_window"],
+        "n_valid_records": report["n_valid_records"],
+        "overall": overall,
+        "layers": layers,
+        "layer_n": report["layer_n"],
+        "significant": [list(s) for s in report["significant"]],
+        "se_bounds": [[L, dim, se] for (L, dim), se in sorted(report["se_bounds"].items())],
+        "all_undifferentiated": report["all_undifferentiated"],
+    }
+
+
+def render_markdown(payload):
+    def fmt(x, nd=4):
+        return "-" if x is None else f"{x:.{nd}f}"
+
+    L = ["# 评分系统分层报告(六维 × 八层)", ""]
+    L.append(f"- module_version: {payload['module_version']}")
+    L.append(f"- system_version: `{payload['system_version']}`")
+    L.append(f"- valid_window: {payload['valid_window']['start']} -> {payload['valid_window']['end']}")
+    L.append(f"- n_valid_records: {payload['n_valid_records']}")
+    L += ["", "## 总体(valid 段,out-of-sample)", "", "| 维度 | n | 主指标 |", "|---|---|---|"]
+    for dim in DIMS:
+        o = payload["overall"][dim]
+        if dim == "path":
+            L.append(f"| path | {o['n']} | acc_path={fmt(o['acc_path'])} |")
+        elif dim in ("direction", "gap", "trend3"):
+            L.append(f"| {dim} | {o['n']} | hit_rate={fmt(o['hit_rate'])} (base={fmt(o['base_rate'])}) |")
+        elif dim == "return":
+            L.append(f"| return | {o['n']} | mae={fmt(o['mae'])} rmse={fmt(o['rmse'])} "
+                     f"sign={fmt(o['sign_agreement'])} resid={fmt(o['mean_residual'])} |")
+        else:
+            L.append(f"| risk | {o['n']} | adverse_rate={fmt(o['adverse_rate'])} "
+                     f"ece={fmt(o['ece'])} lift={fmt(o['lift'])} |")
+    se_map = {(L, dim): se for L, dim, se in payload["se_bounds"]}
+    L += ["", "## 分层 × 维度(层值 vs 总体;n<30 只报样本量)", "", "| 层 | 维度 | n | 层值 | 总体值 | 2σ界 | 显著 |", "|---|---|---|---|---|---|---|"]
+    for Ln in LAYERS:
+        for dim in DIMS:
+            cell = payload["layers"][Ln][dim]
+            if cell.get("_suppressed"):
+                L.append(f"| {Ln} | {dim} | {cell['n']} | (n<30) | - | - | - |")
+                continue
+            o = payload["overall"][dim]
+            lv = cell.get(PRIMARY[dim])
+            ov = o.get(PRIMARY[dim])
+            bound = se_map.get((Ln, dim))
+            sig = any(s[0] == Ln and s[1] == dim for s in payload["significant"])
+            L.append(f"| {Ln} | {dim} | {cell['n']} | {fmt(lv)} | {fmt(ov)} "
+                     f"| {fmt(bound)} | {'是' if sig else '否'} |")
+    L += ["", "## 无分化判定", ""]
+    if payload["all_undifferentiated"]:
+        L.append("**八层无显著分化**:所有层与总体差异均在 ±2σ 噪声界内 → 触发分层定义重审(合并/换规则)。")
+    else:
+        L.append("存在显著分化层(见上表「显著」列),分层有区分度。")
+    L += ["", "## 诚实声明", ""]
+    L.append("1. expected_return 是 composite 分箱的阶梯函数(全宇宙当天 <=10 个取值),不是个股级回归预测。")
+    L.append("2. expected_return 与 risk_p 分别是 composite/risk 的单特征边际,不是联合条件。")
+    L.append("3. 样本按「股票×时间」聚集、非 i.i.d.,n 为样本数而非独立观测数。")
+    L.append("4. 大盘层用原始成交额(不复权)横截面排名;amount 取自 stock_zh_a_daily(adjust=qfq) 的 amount 列。")
+    L.append("")
+    return "\n".join(L)
+
+
+def json_load(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="评分系统分层报告(六维 × 八层)")
+    parser.add_argument("--data-dir", default="_analysis/daily")
+    parser.add_argument("--sector-map", default="_analysis/code2sector.json")
+    parser.add_argument("--out", default="evaluate_report.json")
+    args = parser.parse_args(argv)
+    try:
+        report = run(args.data_dir, args.sector_map)
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    payload = build_report(report)
+    with open(args.out, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    md_path = os.path.splitext(args.out)[0] + ".md"
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(render_markdown(payload))
+    print(f"wrote {args.out} and {md_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

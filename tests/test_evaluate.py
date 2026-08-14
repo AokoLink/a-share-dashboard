@@ -151,3 +151,39 @@ def test_evaluate_cores_and_undifferentiated_flag():
     # → 各层指标 == 总体指标,|差| 恒 0,永不超过 2σ → 无显著分化
     assert rep["all_undifferentiated"] is True
     assert rep["significant"] == []
+
+
+def _fake_run_backtest():
+    import predict as pr
+    return {
+        "calibrators": {"direction": pr._fit_calibrator([(50.0, 0)] * 10 + [(50.0, 1)] * 10, 2),
+                        "gap": pr._fit_calibrator([(50.0, 1)] * 10, 2),
+                        "od": pr._fit_calibrator([(50.0, 1)] * 10, 2),
+                        "trend3": pr._fit_calibrator([(50.0, 1)] * 10, 2),
+                        "return": pr._fit_calibrator([(50.0, 0.0)] * 10, 2, monotone=False),
+                        "risk": pr._fit_calibrator([(10.0, 0)] * 10, 2)},
+        "valid_records": _mk_records(),
+        "metrics": {},
+        "data_range": {"start": "2026-01-01", "end": "2026-08-13"},
+        "valid_window": {"start": "2026-01-01", "end": "2026-08-13"},
+    }
+
+
+def test_run_build_report_and_main(tmp_path, monkeypatch):
+    import backtest as bt
+    import predict as pr
+    d = mk(list(range(100, 200)))
+    monkeypatch.setattr(pr, "run_backtest", lambda dd, sm: _fake_run_backtest())
+    monkeypatch.setattr(bt, "load_sector_map", lambda p: {"000001": []})
+    monkeypatch.setattr(bt, "build_universe", lambda dd, sm: ({"000001": d}, ["000001"]))
+    monkeypatch.setattr(bt, "build_calendar",
+                        lambda univ, codes: (list(d["date"]),
+                                             {"000001": {dt: i for i, dt in enumerate(d["date"])}}))
+    monkeypatch.setattr(bt, "build_sector_members", lambda sm, univ: {})
+    out = tmp_path / "ev.json"
+    rc = ev.main(["--data-dir", str(tmp_path), "--sector-map", "x", "--out", str(out)])
+    assert rc == 0
+    payload = ev.json_load(out)
+    assert payload["module_version"] == "1.0.0"
+    assert "overall" in payload and "layers" in payload
+    assert out.with_suffix(".md").exists()
