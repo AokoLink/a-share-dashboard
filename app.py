@@ -253,8 +253,8 @@ def register_routes(app):
         kline = [{"date": str(x["date"]), "open": float(x["open"]), "high": float(x["high"]),
                   "low": float(x["low"]), "close": float(x["close"]), "volume": float(x["volume"])}
                  for x in daily.tail(250).to_dict("records")]
-        intraday = [{"time": str(x["time"]), "price": float(x["price"]),
-                     "avg": float(x["avg"]), "volume": float(x["volume"])}
+        intraday = [{"time": str(x["time"]), "price": _num(x["price"]),
+                     "avg": _num(x["avg"]), "volume": _num(x["volume"])}
                     for x in minute.to_dict("records")]
         return ok({"code": ds.with_prefix(code6), "name": quote["name"], "quote": quote,
                    "scores": scores, "position": scores["position"],

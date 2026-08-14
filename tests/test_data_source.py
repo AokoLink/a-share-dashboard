@@ -149,6 +149,24 @@ def test_stock_minute_normalized(monkeypatch):
     assert list(df["avg"]) == pytest.approx([1.6e7 / 12000, 2.27e7 / 17000])
 
 
+def test_stock_minute_nan_to_none(monkeypatch):
+    # Fix:累计量为 0 处 avg 产 NaN → 归一为 None(避免 Flask 序列化出非法 NaN JSON)
+    # 用 sh600518(非 test_stock_minute_normalized 的 sh600519):两者同 symbol 会互相命中缓存,
+    # 使本任务定向测试命令(nan_to_none 先于 normalized)与全量套件均无法同时通过。
+    ds.cache._data.clear()  # 隔离:清模块级缓存,避免被其他用例的 stock_minute:* 命中
+    raw = pd.DataFrame({
+        "day": ["2026-08-11 10:00:00", "2026-08-11 10:01:00"],
+        "open": [1347.0, 1348.5], "high": [1350.0, 1351.0],
+        "low": [1346.0, 1347.0], "close": [1348.0, 1349.0],
+        "volume": [0, 5000], "amount": [0.0, 6.7e6],   # 首根累计量为 0 → avg NaN
+    })
+    monkeypatch.setattr(ds._ak, "stock_zh_a_minute",
+                        lambda symbol, period, adjust: raw)
+    df, _ = ds.get_stock_minute("sh600518")
+    assert df["avg"].iloc[0] is None          # NaN 归一为 None
+    assert df["avg"].iloc[1] == pytest.approx(6.7e6 / 5000)
+
+
 def test_new_stocks_english_column(monkeypatch):
     ds.cache._data.clear()  # 避免被其他用例缓存污染
     # akshare 1.18.84 的 stock_zh_a_new() 返回英文列(无“代码”列),须能经 code 列归一化

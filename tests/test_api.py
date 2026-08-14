@@ -370,6 +370,17 @@ def test_stock_detail_sector_unresolved(monkeypatch):
     assert d["composite"] is not None and d["verdict"] is not None
 
 
+def test_stock_intraday_none_safe(monkeypatch):
+    # Fix:get_stock_minute 归一后 avg 可为 None,intraday 须 None 安全(不 float(None) 抛 TypeError)
+    app = client_factory(monkeypatch)
+    minute = pd.DataFrame({"time": ["10:00"], "price": [1348.0],
+                           "avg": [None], "volume": [12000.0]})
+    monkeypatch.setattr(ds, "get_stock_minute", lambda c: (minute, False))
+    r = app.get("/api/stock?code=600519")
+    d = r.get_json()["data"]
+    assert d["intraday"][0]["avg"] is None    # 序列化为 null,非 NaN/无 500
+
+
 def test_stock_short_history_all_null(monkeypatch):
     app = client_factory(monkeypatch)
     monkeypatch.setattr(ds, "get_stock_daily", lambda c: (make_daily(30), False))  # 30 根 <61,须在 factory 之后覆盖(其缺省 65 根)

@@ -289,7 +289,7 @@ def get_stock_minute(code):
             "avg": avg,
             "volume": volume,
         })
-        return out
+        return out.astype(object).where(pd.notna(out), None)  # NaN → None,避免 NaN 污染 JSON/排序
 
     return _cached(_key("stock_minute", symbol), 60, lambda: _fetch_with_retry(fetch))
 
