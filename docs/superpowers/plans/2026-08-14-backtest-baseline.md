@@ -196,7 +196,7 @@ def test_build_universe_filters_and_truncates(tmp_path):
     short_df = make_daily([10.0, 10.1])  # len < 1200 -> 剔除
     stocks = {"600000": long_df, "600001": short_df}  # 999999 无文件
     dailydir, sm = _write_universe(tmp_path, sector_map, stocks)
-    universe, codes = bt.build_universe(dailydir, sm)
+    universe, codes = bt.build_universe(dailydir, bt.load_sector_map(sm))
     assert codes == ["600000"]
     assert len(universe["600000"]) == 1200
     assert "change_pct" in universe["600000"].columns
@@ -245,7 +245,7 @@ def build_universe(data_dir, sector_map):
         d = d.reset_index(drop=True).tail(1200).copy()
         d["code"] = code
         d["change_pct"] = d["close"].pct_change() * 100.0
-        d["change_pct"].iloc[0] = 0.0
+        d.iloc[0, d.columns.get_loc("change_pct")] = 0.0  # CoW 安全(避免链式赋值)
         universe[code] = d
         codes.append(code)
     return universe, codes
