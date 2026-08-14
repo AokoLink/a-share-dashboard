@@ -266,3 +266,22 @@ def test_verify_return_field_none_excluded(tmp_path, monkeypatch):
     assert r["metrics"]["return"]["n"] == 1
     assert r["metrics"]["risk"]["available"] is True
     assert r["metrics"]["risk"]["n"] == 1
+
+
+def test_verify_missing_direction_is_hold(tmp_path, monkeypatch):
+    # F2 回归:缺失 direction/od/T+3.direction → 作 hold(n_hold),非输注(n_bet)
+    _fixture(monkeypatch)
+    import json as _json
+    snap = _snapshot()
+    snap["predictions"][0]["T+1"] = {"confidence": 0.5, "gap": "hold", "path": None}
+    snap["predictions"][0]["T+3"] = {"confidence": 0.5}
+    snap_path = tmp_path / "s.json"
+    snap_path.write_text(_json.dumps(snap, ensure_ascii=False), encoding="utf-8")
+    r = compare.verify(str(snap_path), "dd", "sm")
+    assert r["metrics"]["direction"]["n_bet"] == 0
+    assert r["metrics"]["direction"]["n_hold"] == 1
+    assert r["metrics"]["direction"]["hit_rate"] is None
+    assert r["metrics"]["od"]["n_bet"] == 0
+    assert r["metrics"]["od"]["n_hold"] == 1
+    assert r["metrics"]["trend3"]["n_bet"] == 0
+    assert r["metrics"]["trend3"]["n_hold"] == 1
