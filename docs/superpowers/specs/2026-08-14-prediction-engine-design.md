@@ -65,7 +65,7 @@
 | `_labels(d, i)` | 四 horizon 二分类标签 `{close1, gap, od, trend3}`(0/1/None,§6.1) | bt.next_returns、fwd_close |
 | `Calibrator` | composite → 单调经验概率(§6) | 无 |
 | `_fit_calibrator(pairs, n_bins)` | 分箱 + PAV 单调池化(§6) | 无 |
-| `forward_universe(universe, pos_of, all_days)` | 前向宇宙 `{code: bar}`(as_of_date 当日可交易股,§8.2) | 无 |
+| `forward_universe(universe, pos_of, all_days)` | 前向宇宙 `{code: bar}`(as_of_date 当日可交易股,§8.2) | an.limit_threshold、bt.MIN_AMOUNT |
 | `predict_at(d, i, now, cals)` | 单股 ≤T → 结构化预测(§7) | bt.score_at |
 | `run_backtest(data_dir, sector_map_path)` | 回测模式:逐日预测 + valid 窗口评估(§8) | 复用 bt.* |
 | `predict_now(data_dir, sector_map_path)` | 前向模式:最新日 → 快照(§8) | 复用 bt.* |
@@ -84,7 +84,7 @@ DIRECTION_BAND = 0.05    # |P-0.5| <= band → 观望
 AFTER_CLOSE    = datetime(2026, 1, 1, 15, 1)
 ```
 
-buyable 过滤复用 `bt.build_buyable`(涨停 `chg >= an.limit_threshold(c)` 或跌超 7% `chg <= -7.0`、`volume*close < 1e8` 剔除),不另设常量。
+buyable 过滤复用 `bt.build_buyable`(涨停 `chg >= an.limit_threshold(c)` 或跌超 7% `chg <= -7.0`、`volume*close < 1e8` 剔除),不另设常量。前向宇宙 `forward_universe` 内联同一过滤,但引用公开常量 `bt.MIN_AMOUNT`(=1e8,backtest.py:28)与 `an.limit_threshold`;`-7.0` 沿用 backtest.py:155 的字面语义(无命名常量),杜绝双份魔数漂移。
 
 评估日采样**公式**与 backtest.py 一致;但 predict 不建模板块热、不跳「无热板块」日(backtest.py:346-347 `if not heat: continue`),实际评估日集为完整 range,`n_eval` 与基线可能有微小差异(报告 §9 注明,不做「同日可比」误导):
 
@@ -183,7 +183,7 @@ confidence = max(P, 1 - P)      # 预测方向成立的概率,恒 >= 0.5
    - `n`、`base_rate`(valid 内 label=1 占比)、`hit_rate`(二分类预测方向正确占比,观望计为「未下注」不计入 hit_rate 但计入 `n_hold`)。
    - **`ece`**(expected calibration error)= 按箱 `mean(|预测 P(箱) − 箱内真实 label 频率|)`,加权箱样本数。
    - **`brier`** = `mean((P − label)^2)`(对非观望样本)。
-   - `trend3` 的 `n` 略小于 `direction`/`gap`/`od`(末尾 2 个评估日无 T+3 真实值,`fwd_close` None 样本不参与 trend3 指标)。
+   - `trend3` 的 `n` 略小于 `direction`/`gap`/`od`(末尾若干评估日无 T+3 真实值,数量由数据/step 决定,非固定;`fwd_close` None 样本不参与 trend3 指标)。
    - path:四分类准确率(`acc_path`)。
 5. 输出 `results` dict(供 build_report 消费)。
 
