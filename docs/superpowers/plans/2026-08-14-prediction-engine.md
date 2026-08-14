@@ -315,7 +315,9 @@ def _fit_calibrator(pairs, n_bins):
         bins = out
         if not merged:
             break
-    return Calibrator([(u, p) for u, p, _ in bins], degraded=False)
+    finite = [(u, p) for u, p, _ in bins]
+    finite[-1] = (float("inf"), finite[-1][1])
+    return Calibrator(finite, degraded=False)
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
@@ -891,6 +893,29 @@ def test_main_predict_writes_snapshot(tmp_path, monkeypatch):
 def test_main_missing_data_dir_exits_nonzero():
     rc = pr.main(["--data-dir", "/nonexistent/xyz", "--sector-map", "/nope"])
     assert rc == 1
+
+
+def test_main_end_to_end_gbk(tmp_path, monkeypatch):
+    # 真实全链路:tmp pkl 集 + GBK 板块映射,monkeypatch 仅固定 score_stock 的 composite
+    dailydir = tmp_path / "daily"
+    dailydir.mkdir()
+    closes = [2000.0 + 0.1 * k for k in range(1200)]
+    make_daily(closes, start="2020-01-01", code="000001").to_pickle(dailydir / "000001.pkl")
+    sm = tmp_path / "code2sector.json"
+    with open(sm, "w", encoding="gbk") as f:
+        json.dump({"000001": ["半导体"]}, f, ensure_ascii=False)
+    monkeypatch.setattr(an, "score_stock",
+                        lambda df, quote, now: {"position": 50.0, "trend": 50.0, "volume_price": 50.0,
+                                                "signal": 50.0, "risk": 10.0, "composite": 70.0})
+    out = tmp_path / "pb.json"
+    rc = pr.main(["--data-dir", str(dailydir), "--sector-map", str(sm), "--out", str(out)])
+    assert rc == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["mode"] == "backtest"
+    assert payload["system_version"]
+    assert set(payload["calibrators"]) == {"direction", "gap", "od", "trend3"}
+    assert "ece" in payload["metrics"]["direction"]
+    assert out.with_suffix(".md").exists()
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -1032,12 +1057,12 @@ if __name__ == "__main__":
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `python -m pytest tests/test_predict.py -q`
-Expected: 21 passed
+Expected: 22 passed
 
 - [ ] **Step 5: 全量回归 + Commit**
 
 Run: `python -m pytest tests/ -q`
-Expected: 176 + 21 = 197 passed
+Expected: 176 + 22 = 198 passed
 
 ```bash
 git add predict.py tests/test_predict.py
@@ -1048,7 +1073,7 @@ git commit -m "feat(predict): 报告/版本戳/CLI 主入口(build_report/render
 
 ## 收尾(所有任务完成后)
 
-- [ ] 全量 `python -m pytest tests/ -q` 全绿(197 passed)。
+- [ ] 全量 `python -m pytest tests/ -q` 全绿(198 passed)。
 - [ ] controller 驱动最终全分支 review(子代理驱动开发的 final review),裁定残余 finding 并记 ledger。
 - [ ] 验收(真实缓存,controller 执行):`python predict.py --data-dir _analysis/daily --sector-map _analysis/code2sector.json --out prediction_baseline.json` 产出含 system_version/train/valid 窗口/四校准器箱表/valid 段 metrics 的报告;`python predict.py --predict ... --out prediction_snapshot.json` 产出带 system_version 的非空前向快照。生成的 `prediction_baseline.json`/`.md`/`prediction_snapshot.json` 作为 S1 基线产物提交 main。
 - [ ] 更新 memory 文件 `queued-audit-backtest-optimization.md`(S1 完成态)。
