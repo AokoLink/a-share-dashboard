@@ -288,10 +288,10 @@ def register_routes(app):
                     payload["close_date"], payload["prev_trading_date"],
                     [{"code": x["code"], "name": x["name"], "signal_close": x["signal_close"]}
                      for sec in payload["sectors"] for x in sec["stocks"]])
-            if prev and prev["close_date"] is not None:
-                is_next_day = (prev["close_date"] == payload["prev_trading_date"])
+            if prev and prev["signal_date"] is not None:
+                is_next_day = (prev["signal_date"] == payload["prev_trading_date"])
                 td = payload.get("trading_dates") or []
-                gap_days = sum(1 for d in td if prev["close_date"] < d <= payload["signal_date"])
+                gap_days = sum(1 for d in td if prev["signal_date"] < d <= payload["signal_date"])
                 spot_open = {}
                 for _, r in spot.iterrows():
                     code = str(r["code"])
@@ -333,6 +333,7 @@ def register_routes(app):
             "signal_date": payload["signal_date"],
             "close_date": payload["close_date"],
             "prev_trading_date": payload["prev_trading_date"],
+            "trading_dates": payload.get("trading_dates"),
             "prev_snapshot": prev_snapshot,
         }, stale=stale1 or stale2 or stale_cands,
            extra_meta={"coverage": coverage,
