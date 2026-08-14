@@ -144,3 +144,65 @@ def forward_universe(universe, pos_of, all_days):
             continue
         out[c] = bar
     return out
+
+
+def _dir_conf(p):
+    """二分类校准概率 → (direction, confidence);direction ∈ {up, down, hold}。"""
+    if p is None:
+        return None, None
+    if p > 0.5 + DIRECTION_BAND:
+        return "up", p
+    if p < 0.5 - DIRECTION_BAND:
+        return "down", 1.0 - p
+    return "hold", max(p, 1.0 - p)
+
+
+def _gap_dir(p):
+    d, _ = _dir_conf(p)
+    if d == "up":
+        return "high"
+    if d == "down":
+        return "low"
+    return "hold"
+
+
+def _path(gap_dir, od_dir):
+    """gap×od → 四分类路径;任一方观望返回 None。"""
+    if gap_dir == "hold" or od_dir == "hold":
+        return None
+    if gap_dir == "high" and od_dir == "up":
+        return "高开高走"
+    if gap_dir == "high" and od_dir == "down":
+        return "高开低走"
+    if gap_dir == "low" and od_dir == "up":
+        return "低开高走"
+    return "低开低走"
+
+
+def predict_at(d, i, now, cals):
+    """单股 ≤T → 结构化预测 dict;composite 不可得返回 None。"""
+    sc = bt.score_at(d, i, now)
+    if sc is None:
+        return None
+    composite = float(sc["composite"])
+    p_dir = cals["direction"].p_up(composite)
+    p_gap = cals["gap"].p_up(composite)
+    p_od = cals["od"].p_up(composite)
+    p_t3 = cals["trend3"].p_up(composite)
+    direction, confidence = _dir_conf(p_dir)
+    gap_dir = _gap_dir(p_gap)
+    od_dir, _ = _dir_conf(p_od)
+    t3_dir, t3_conf = _dir_conf(p_t3)
+    return {
+        "code": str(d["code"].iloc[i]),
+        "date": str(d["date"].iloc[i]),
+        "composite": composite,
+        "T+1": {
+            "direction": direction,
+            "confidence": confidence,
+            "gap": gap_dir,
+            "od": od_dir,
+            "path": _path(gap_dir, od_dir),
+        },
+        "T+3": {"direction": t3_dir, "confidence": t3_conf},
+    }

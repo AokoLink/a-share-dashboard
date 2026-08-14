@@ -119,3 +119,54 @@ def test_forward_universe_filters():
     fwd = pr.forward_universe(universe, pos_of, all_days)
     assert set(fwd.keys()) == {"000001"}
     assert fwd["000001"] == 2  # 最后一天 index
+
+
+def _fake_cals():
+    up = pr._fit_calibrator([(5.0, 1)] * 10, 2)    # p=1
+    down = pr._fit_calibrator([(5.0, 0)] * 10, 2)  # p=0
+    return {"direction": up, "gap": down, "od": up, "trend3": up}
+
+
+def test_predict_at_full_schema(monkeypatch):
+    d = make_daily([10.0] * 70)
+    monkeypatch.setattr(bt, "score_at", lambda d, i, now: {"composite": 61.4})
+    pred = pr.predict_at(d, 10, pr.AFTER_CLOSE, _fake_cals())
+    assert pred["code"] == "000001"
+    assert pred["date"] == d["date"].iloc[10]
+    assert pred["composite"] == pytest.approx(61.4)
+    t1 = pred["T+1"]
+    assert t1["direction"] == "up"
+    assert t1["confidence"] == pytest.approx(1.0)
+    assert t1["gap"] == "low"
+    assert t1["od"] == "up"
+    assert t1["path"] == "低开高走"
+    assert pred["T+3"]["direction"] == "up"
+    assert pred["T+3"]["confidence"] == pytest.approx(1.0)
+
+
+def test_predict_at_t3_no_future_bars(monkeypatch):
+    # B2 修复:T+3 只由 calibrator 决定,不读 fwd_close;锚定最后一根仍产出
+    d = make_daily([10.0] * 5)
+    monkeypatch.setattr(bt, "score_at", lambda d, i, now: {"composite": 50.0})
+    pred = pr.predict_at(d, 4, pr.AFTER_CLOSE, _fake_cals())  # i=4 最后一根
+    assert pred["T+3"]["direction"] == "up"
+    assert pred["T+3"]["confidence"] == pytest.approx(1.0)
+
+
+def test_predict_at_composite_none_returns_none(monkeypatch):
+    d = make_daily([10.0] * 70)
+    monkeypatch.setattr(bt, "score_at", lambda d, i, now: None)
+    assert pr.predict_at(d, 10, pr.AFTER_CLOSE, _fake_cals()) is None
+
+
+def test_predict_at_no_future_leak(monkeypatch):
+    d = make_daily([10.0] * 70)
+    monkeypatch.setattr(bt, "score_at", lambda d, i, now: {"composite": 61.4})
+    before = pr.fwd_close(d, 10, 3)
+    p1 = pr.predict_at(d, 10, pr.AFTER_CLOSE, _fake_cals())
+    for col in ("open", "close"):
+        d.iloc[11:14, d.columns.get_loc(col)] = 999.0
+    after = pr.fwd_close(d, 10, 3)
+    assert after != before  # 未来确实被改动
+    p2 = pr.predict_at(d, 10, pr.AFTER_CLOSE, _fake_cals())
+    assert p1 == p2  # 但预测逐位不变(不读未来)
