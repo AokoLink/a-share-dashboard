@@ -300,3 +300,67 @@ def test_fit_calibrator_default_still_pav():
     cal = pr._fit_calibrator(pairs, 3)
     ps = [p for _, p in cal.bins]
     assert ps == sorted(ps)  # 默认 PAV 单调不减
+
+
+def test_metric_return_mae_rmse_sign_residual():
+    ret = pr._fit_calibrator([(5.0, 0.02)] * 10, 2, monotone=False)  # 单箱 mean=0.02
+    dircal = pr._fit_calibrator([(5.0, 1)] * 10, 2)  # p=1 → up
+    samples = [(5.0, 0.0), (5.0, 0.04), (5.0, -0.02)]
+    m = pr._metric_return(ret, dircal, samples)
+    # er=0.02 恒定:abs err = |0.02-close1| = [0.02, 0.02, 0.04];
+    # residual = close1-er = [-0.02, 0.02, -0.04]
+    assert m["n"] == 3
+    assert m["mae"] == pytest.approx((0.02 + 0.02 + 0.04) / 3)
+    assert m["rmse"] == pytest.approx(((0.02 ** 2 + 0.02 ** 2 + 0.04 ** 2) / 3) ** 0.5)
+    assert m["mean_residual"] == pytest.approx((-0.02 + 0.02 - 0.04) / 3)
+    # sign_agreement:close1==0 样本剔除(不计分子分母);非零样本 0.04、-0.02 中
+    # er>0 且 close1>0 的只有 0.04 → 1/2
+    assert m["sign_n"] == 2
+    assert m["sign_agreement"] == pytest.approx(1 / 2)
+    # 全部 up,但 n=3 < 30 → dir_cond_mae["up"] 只报 n 不报值
+    assert m["dir_cond_mae"]["up"]["n"] == 3
+    assert m["dir_cond_mae"]["up"]["mae"] is None
+    assert m["dir_cond_mae"]["down"]["n"] == 0
+    assert m["dir_cond_mae"]["down"]["mae"] is None
+
+
+def test_metric_return_zero_close1_excluded_from_sign():
+    ret = pr._fit_calibrator([(5.0, 0.0)] * 10, 2, monotone=False)
+    dircal = pr._fit_calibrator([(5.0, 1)] * 10, 2)
+    m = pr._metric_return(ret, dircal, [(5.0, 0.0)])
+    assert m["sign_n"] == 0
+    assert m["sign_agreement"] is None
+
+
+def test_metric_return_empty():
+    ret = pr._fit_calibrator([(5.0, 0.02)] * 10, 2, monotone=False)
+    dircal = pr._fit_calibrator([(5.0, 1)] * 10, 2)
+    m = pr._metric_return(ret, dircal, [])
+    assert m["n"] == 0
+    assert m["mae"] is None
+
+
+def test_metric_return_dir_cond_large_n_reports_mae():
+    ret = pr._fit_calibrator([(5.0, 0.02)] * 10, 2, monotone=False)
+    dircal = pr._fit_calibrator([(5.0, 1)] * 10, 2)  # p=1 → up
+    m = pr._metric_return(ret, dircal, [(5.0, 0.03)] * 30)
+    assert m["dir_cond_mae"]["up"]["n"] == 30
+    assert m["dir_cond_mae"]["up"]["mae"] == pytest.approx(0.01)
+
+
+def test_metric_path_four_class():
+    gap_cal = pr._fit_calibrator([(5.0, 1)] * 10, 2)   # p=1 → high
+    od_cal = pr._fit_calibrator([(5.0, 1)] * 10, 2)    # p=1 → up
+    # 预测恒「高开高走」;4 样本各命中其一 → 1/4
+    samples = [(5.0, 1, 1), (5.0, 1, 0), (5.0, 0, 1), (5.0, 0, 0)]
+    m = pr._metric_path(gap_cal, od_cal, samples)
+    assert m["n"] == 4
+    assert m["acc_path"] == pytest.approx(0.25)
+
+
+def test_metric_path_hold_yields_none():
+    gap_cal = pr._fit_calibrator([(5.0, 0)] * 5 + [(5.0, 1)] * 5, 1)  # p=0.5 → hold
+    od_cal = pr._fit_calibrator([(5.0, 1)] * 10, 2)  # p=1 → up
+    m = pr._metric_path(gap_cal, od_cal, [(5.0, 1, 1)])
+    assert m["n"] == 0
+    assert m["acc_path"] is None

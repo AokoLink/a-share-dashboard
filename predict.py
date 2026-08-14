@@ -291,6 +291,75 @@ def _metric(name, cal, samples):
     }
 
 
+def _metric_return(cal, direction_cal, samples):
+    """return 维度:MAE/RMSE/符号一致率/平均残差/方向条件 MAE。
+
+    samples = [(composite, close1), ...];cal=return 校准器(composite→mean close1);
+    direction_cal 用于 dir_cond 分组(经 _dir_conf 得 up/down/hold)。
+    符号一致率:close1==0 样本剔除(不计分子分母);residual = close1 - expected。
+    方向条件 MAE:按预测方向分组各报 MAE,小 n(<30)只报 n 不报值。
+    """
+    n = len(samples)
+    if n == 0:
+        return {"n": 0, "mae": None, "mae_std": None, "rmse": None, "rmse_std": None,
+                "sign_agreement": None, "sign_n": 0, "mean_residual": None,
+                "residual_std": None,
+                "dir_cond_mae": {"up": {"mae": None, "n": 0},
+                                 "down": {"mae": None, "n": 0},
+                                 "hold": {"mae": None, "n": 0}}}
+    abs_errs = []
+    sq_errs = []
+    residuals = []
+    sign_num = 0
+    sign_den = 0
+    by_dir = {"up": [], "down": [], "hold": []}
+    for composite, close1 in samples:
+        er = cal.p_up(composite)
+        e = er - close1
+        abs_errs.append(abs(e))
+        sq_errs.append(e * e)
+        residuals.append(close1 - er)
+        if close1 != 0:
+            sign_den += 1
+            if (er > 0 and close1 > 0) or (er < 0 and close1 < 0):
+                sign_num += 1
+        d, _ = _dir_conf(direction_cal.p_up(composite))
+        by_dir[d].append(abs(e))
+    mae = float(np.mean(abs_errs))
+    mae_std = float(np.std(abs_errs, ddof=1)) if n > 1 else 0.0
+    rmse = float(np.sqrt(np.mean(sq_errs)))
+    rmse_std = float(np.std(sq_errs, ddof=1)) if n > 1 else 0.0
+    mean_residual = float(np.mean(residuals))
+    residual_std = float(np.std(residuals, ddof=1)) if n > 1 else 0.0
+    sign_agreement = sign_num / sign_den if sign_den else None
+    dir_cond = {}
+    for d in ("up", "down", "hold"):
+        arr = by_dir[d]
+        n_d = len(arr)
+        dir_cond[d] = {"mae": float(np.mean(arr)) if n_d >= 30 else None, "n": n_d}
+    return {"n": n, "mae": mae, "mae_std": mae_std, "rmse": rmse, "rmse_std": rmse_std,
+            "sign_agreement": sign_agreement, "sign_n": sign_den,
+            "mean_residual": mean_residual, "residual_std": residual_std,
+            "dir_cond_mae": dir_cond}
+
+
+def _metric_path(gap_cal, od_cal, samples):
+    """path 维度:gap×od 四分类命中率。samples = [(composite, gap_up, od_up), ...]。"""
+    path_n = 0
+    path_correct = 0
+    for composite, gap_up, od_up in samples:
+        gap_dir = _gap_dir(gap_cal.p_up(composite))
+        od_dir, _ = _dir_conf(od_cal.p_up(composite))
+        pred_path = _path(gap_dir, od_dir)
+        if pred_path is None:
+            continue
+        actual = _path_label(gap_up, od_up)
+        path_n += 1
+        if pred_path == actual:
+            path_correct += 1
+    return {"n": path_n, "acc_path": path_correct / path_n if path_n else None}
+
+
 def _path_label(gap_up, od_up):
     if gap_up and od_up:
         return "高开高走"
