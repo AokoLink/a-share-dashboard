@@ -89,3 +89,23 @@ def test_build_sector_members_file_order_and_filter():
     sm = bt.build_sector_members(sector_map, universe)
     assert sm["S2"] == ["a"]
     assert sm["S1"] == ["a", "c"]
+
+
+def test_next_returns_exact():
+    d = make_daily([100.0, 110.0], opens=[100.0, 105.0])
+    r = bt.next_returns(d, 0)
+    assert r["gap"] == pytest.approx(105.0 / 100.0 - 1)
+    assert r["od"] == pytest.approx(110.0 / 105.0 - 1)
+    assert r["close1"] == pytest.approx(110.0 / 100.0 - 1)
+
+
+def test_next_returns_out_of_range():
+    d = make_daily([100.0, 110.0])
+    assert bt.next_returns(d, 1) is None
+
+
+def test_next_returns_nonpositive():
+    d = make_daily([0.0, 110.0], opens=[0.0, 105.0])
+    assert bt.next_returns(d, 0) is None  # close[T] <= 0
+    d2 = make_daily([100.0, 0.0], opens=[100.0, 0.0])
+    assert bt.next_returns(d2, 0) is None  # close[T+1] <= 0

@@ -74,3 +74,12 @@ def build_sector_members(sector_map, universe):
             for s in secs:
                 sector_members.setdefault(s, []).append(c)
     return sector_members
+
+
+def next_returns(d, i):
+    if i + 1 >= len(d):
+        return None
+    c0 = float(d["close"].iloc[i]); o1 = float(d["open"].iloc[i + 1]); c1 = float(d["close"].iloc[i + 1])
+    if c0 <= 0 or o1 <= 0 or c1 <= 0:
+        return None
+    return {"gap": o1 / c0 - 1, "close1": c1 / c0 - 1, "od": c1 / o1 - 1}
