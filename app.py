@@ -232,8 +232,10 @@ def register_routes(app):
                 if names:
                     summary, _ = ds.get_sector_summary("industry")
                     spot, _ = ds.get_market_spot()
+                    need = set(names)
+                    summary_f = summary[summary["name"].astype(str).isin(need)]
                     scored_sectors = recommend.score_all_sectors(
-                        summary, app.config["DB"], "industry", store,
+                        summary_f, app.config["DB"], "industry", store,
                         float(spot["amount"].sum()) if len(spot) else 0.0, now)
                     by_name = {s["name"]: s["composite"] for s in scored_sectors}
                     comps = [by_name[n] for n in names if n in by_name and by_name[n] is not None]

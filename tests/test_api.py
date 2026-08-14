@@ -346,6 +346,20 @@ def test_stock_detail_sector_resolution(monkeypatch):
                                     sc["signal"], sc["risk"], 8), 2), abs=0.01)
 
 
+def test_stock_sector_scores_only_resolved(monkeypatch):
+    # Fix:个股接口只对所属板块打分(预过滤 summary),不重算全 ~90 板块
+    captured = {}
+    def fake_score(summary, *a, **k):
+        captured["names"] = list(summary["name"])
+        return [{"name": n, "composite": 80.0} for n in summary["name"]]
+    monkeypatch.setattr(ds, "resolve_code_sectors", lambda c: ["白酒"])
+    monkeypatch.setattr(recommend, "score_all_sectors", fake_score)
+    app = client_factory(monkeypatch)
+    r = app.get("/api/stock?code=600519")
+    assert captured["names"] == ["白酒"]           # 预过滤后只含白酒一行(非全量 2 行)
+    assert r.get_json()["data"]["sector_resolved"] is True
+
+
 def test_stock_detail_sector_unresolved(monkeypatch):
     # 解析失败(未映射)→ sector_resolved=false、加成 0、不 500
     monkeypatch.setattr(ds, "resolve_code_sectors", lambda c: [])
