@@ -649,3 +649,37 @@ def test_rel_strengths_ties_and_small_base():
     assert recommend._rel_strengths([]) == {}
     assert recommend._rel_strengths([("a", 0.01)]) == {}
     assert recommend._rel_strengths([("a", 0.01), ("b", 0.02)]) == {}
+
+
+def test_score_candidate_passes_high_low_open(monkeypatch):
+    captured = {}
+    def fake_score_stock(daily_df, quote, now):
+        captured.update(quote)
+        return {"position": 50, "trend": 50, "volume_price": 50, "signal": 50, "risk": 20, "composite": 40}
+    monkeypatch.setattr(an, "score_stock", fake_score_stock)
+    row = {"code": "600050", "name": "中国联通", "price": 5.0, "change_pct": 3.0,
+           "volume": 100000, "amount": 2e8, "high": 5.5, "low": 4.5, "open": 5.1}
+    daily = make_daily([10 + i for i in range(65)])
+    out = recommend._score_candidate(row, daily, datetime.datetime(2026, 8, 11, 15, 0),
+                                     sector_composite=78.0)
+    assert out is not None
+    assert captured["high"] == pytest.approx(5.5)
+    assert captured["low"] == pytest.approx(4.5)
+    assert captured["open"] == pytest.approx(5.1)
+
+
+def test_score_candidate_missing_high_low_open_ok(monkeypatch):
+    captured = {}
+    def fake_score_stock(daily_df, quote, now):
+        captured.update(quote)
+        return {"position": 50, "trend": 50, "volume_price": 50, "signal": 50, "risk": 20, "composite": 40}
+    monkeypatch.setattr(an, "score_stock", fake_score_stock)
+    row = {"code": "600050", "name": "中国联通", "price": 5.0, "change_pct": 3.0,
+           "volume": 100000, "amount": 2e8}              # 无 high/low/open
+    daily = make_daily([10 + i for i in range(65)])
+    out = recommend._score_candidate(row, daily, datetime.datetime(2026, 8, 11, 15, 0),
+                                     sector_composite=78.0)
+    assert out is not None
+    assert captured["high"] is None
+    assert captured["low"] is None
+    assert captured["open"] is None

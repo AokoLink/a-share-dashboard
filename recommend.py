@@ -95,7 +95,9 @@ def rank_candidates(scored, per_sector):
 
 def _score_candidate(row, daily_df, now, sector_composite=None):
     quote = {"price": _num(row["price"]), "change_pct": _num(row["change_pct"]),
-             "volume": _num(row["volume"]), "amount": _num(row["amount"])}
+             "volume": _num(row["volume"]), "amount": _num(row["amount"]),
+             "high": _num(row.get("high")), "low": _num(row.get("low")),
+             "open": _num(row.get("open"))}
     scores = an.score_stock(daily_df, quote, now)
     if scores["composite"] is None:            # 数据不足(历史<61根)→ 跳过
         return None
