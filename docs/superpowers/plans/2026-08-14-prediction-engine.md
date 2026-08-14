@@ -80,7 +80,10 @@ def make_daily(closes, opens=None, volumes=None, start="2026-01-01", code="00000
     highs = [max(o, c) * 1.01 for o, c in zip(opens, closes)]
     lows = [min(o, c) * 0.99 for o, c in zip(opens, closes)]
     closes = [float(c) for c in closes]
-    change = [0.0] + [round((closes[i] / closes[i - 1] - 1) * 100, 6) for i in range(1, n)]
+    change = [0.0] + [
+        round((closes[i] / closes[i - 1] - 1) * 100, 6) if closes[i - 1] != 0 else 0.0
+        for i in range(1, n)
+    ]
     return pd.DataFrame({
         "date": dates, "open": opens, "high": highs, "low": lows,
         "close": closes, "volume": vols, "code": [code] * n, "change_pct": change,
@@ -93,7 +96,7 @@ def make_daily(closes, opens=None, volumes=None, start="2026-01-01", code="00000
 
 **Files:**
 - Create: `predict.py`(导入块 + 常量 + 两个函数)
-- Test: `tests/test_predict.py`(make_daily + 5 个测试)
+- Test: `tests/test_predict.py`(make_daily + 6 个测试)
 
 **Interfaces:**
 - Produces:
