@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import analysis as an
 import data_source as ds
 import store
+import pandas as pd
 
 MAX_WORKERS = 8
 MIN_AMOUNT = 1e8            # 流动性下限:1 亿元
@@ -15,7 +16,6 @@ HOT_WEIGHT_MODE = "signal"          # P0b 权重模式(decisions.md 定稿):"sig
 BONUS_GE75 = False           # P3: +8 门槛提到 ≥75;decisions.md 定稿
 BONUS_QUALITY_GATE = False   # P3: quality<50 不给加成;decisions.md 定稿
 PRICE_FLOOR = None           # P4: 低于此价的候选排除(None=关);decisions.md 定稿
-PRICE_REL_MIN = False        # P4: 低价股需更高 rel_strength 分位;decisions.md 定稿
 
 
 def _num(v):
@@ -126,7 +126,6 @@ def _rel_strengths(base_g5):
     """板块内 5 日涨幅分位(spec §3.3):均值秩 ×100。base_g5=[(code, g5), ...];基数<3 → {}。"""
     if len(base_g5) < 3:
         return {}
-    import pandas as pd
     pcts = pd.Series([g for _, g in base_g5]).rank(pct=True, method="average") * 100.0
     return {code: float(p) for (code, _), p in zip(base_g5, pcts)}
 

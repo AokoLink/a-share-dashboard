@@ -257,7 +257,6 @@ def test_filter_candidates_hard_filters():
 
 def test_price_floor_excludes_low_price(monkeypatch):
     monkeypatch.setattr(recommend, "PRICE_FLOOR", 3.0)
-    monkeypatch.setattr(recommend, "PRICE_REL_MIN", False)
     spot = make_spot().copy()
     spot.loc[spot["code"] == "600050", "price"] = 2.5          # 压到 <3
     # 600100 在 make_spot 中 volume=0(停牌)→ 恒被停牌过滤剔除;用 300750 验证价格护栏独立排除
