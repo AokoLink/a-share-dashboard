@@ -128,11 +128,11 @@ T+1 = **同一只股票自身序列的下一行**(停牌股 i+1 可能跳过日�
 
 **每日可买集合 `buyable`(评分前预过滤,逐字):** 对每只 c(在 `pos_of` 中有当日 bar i 且 `i+1 < len`):`next_returns` 非 None;`change_pct < an.limit_threshold(code)` 且 `change_pct > -7.0`(剔除涨停与近跌停);`volume[i]*close[i] >= MIN_AMOUNT`。
 
-- **A(实际管线代理):** 对每个 `hot` 板块,取 `成员 ∩ buyable` → `get_score` 非 None 且 `risk < 70` → `bonus = 8 if composite>=68 else 4 if composite>=60 else 0` → `fa = composite + bonus` → 按 `-fa` 排序取前 `PER_SECTOR`。跨 3 个热板块拼接(至多 15 只)。度量 A 的 od / gap / close1。`scored` 条目按 `(fa, code, position)` 记录(第 1/2 位为 code/position,供 E 分拆用;不含探针的 fb/fc/fc10/fc20 与 composite 残留,它们属 P0b/P3 子分析)。
+- **A(实际管线代理):** 对每个 `hot` 板块,取 `成员 ∩ buyable` → `get_score` 非 None 且 `risk < 70` → `bonus = 8 if composite>=68 else 4 if composite>=60 else 0` → `fa = composite + bonus` → 按 `-fa` 排序取前 `PER_SECTOR`。跨 3 个热板块拼接(至多 15 只)。度量 A 的 od / gap / close1。`scored` 条目按 `(fa, code, position)` 记录(第 2/3 位为 code/position,供 E 分拆用;不含探针的 fb/fc/fc10/fc20 与 composite 残留,它们属 P0b/P3 子分析)。
 - **B(全市场 top15):** 仅当 `(i - start) % B_SAMPLE_EVERY == 0`;候选 = 全 `buyable`;`get_score` 非 None 且 `risk < 70`;按 `composite` 降序取前 `TOP_SECTORS*PER_SECTOR = 15`。度量 od。
 - **C(热板块随机):** 候选 = `sorted(hot_members ∩ buyable)`(定序;探针用 set 交集 `list(...)` 跨运行顺序不确定,模块以 sorted 保证可复现);无 score/risk 过滤;若 >15 用**模块级单个 `rng = np.random.default_rng(0)`** 的 `.choice(..., 15, replace=False)` 无放回抽 15,否则全取。度量 od。`rng` 须为模块级单实例、所有评估日按循环顺序复用,不得每评估日重建(探针 :183 单例、:380 顺序复用)。
 - **D(全市场基准):** 候选 = 全部 `buyable`(无过滤无排序)。等权均值 od。
-- **E(position 分拆):** 用与 A 相同的候选集(每个 `hot` 板块内 `buyable ∩ 有效评分 ∩ risk<70` 的**全部**成员,非 A 已选的 top5),按 `-position` 重排;`pos_hi`(低位)= 前 `PER_SECTOR`,`pos_lo`(高位)= 后 `PER_SECTOR`,跨 3 热板块拼接。度量 od。
+- **E(position 分拆):** 用与 A 相同的候选集(每个 `hot` 板块内 `buyable ∩ 有效评分 ∩ risk<70` 的**全部**成员,非 A 已选的 top5)。排序须两段式稳定排序:**先对同一 `scored` 列表按 `-fa` 排序(探针 :287),再对同一列表稳定重排 `-position`(:293)**——position 并列处按前一轮的 fa 降序定序,非文件插入序;不得对原始列表(文件序)直接按 position 排一次。`pos_hi`(低位)= 前 `PER_SECTOR`,`pos_lo`(高位)= 后 `PER_SECTOR`,跨 3 热板块拼接。度量 od。
 
 `stats(basket, m) = mean([m[c] for c in basket if c in m])`(空篮子 → NaN)。
 
@@ -251,6 +251,6 @@ python backtest.py [--data-dir _analysis/daily] [--sector-map _analysis/code2sec
 ## 12. 验收标准
 
 1. `python -m pytest tests/ -q` 全绿(129 + 新增)。
-2. `python backtest.py --data-dir _analysis/daily --sector-map _analysis/code2sector.json --out backtest_baseline.json` 在真实缓存上成功产出,`rows` 与 `_analysis/nxday_results.json` 同名行数值一致(逐行核对 A/B/D/E 的 mean_pct/win_rate/n),`n_eval` / `step` / `window` 一致。**C 行例外**:探针 C 用 set 交集顺序(跨运行非确定),模块以 `sorted` 定序保证可复现,故 C_od 可能与探针单次结果不同(属预期,报告标注)。整文件 diff 时 `by_year` 比探针少 4 个 P0b 键,属预期。
+2. `python backtest.py --data-dir _analysis/daily --sector-map _analysis/code2sector.json --out backtest_baseline.json` 在真实缓存上成功产出,`rows` 与 `_analysis/nxday_results.json` 同名行数值一致(逐行核对全部 8 行同名(A 的 od/gap/close1 + E 低位/高位两行 + B/C/D 的 mean_pct/win_rate/n)),`n_eval` / `step` / `window` 一致。**C 行例外**:探针 C 用 set 交集顺序(跨运行非确定),模块以 `sorted` 定序保证可复现,故 C_od 可能与探针单次结果不同(属预期,报告标注)。整文件 diff 时 `by_year` 比探针少 4 个 P0b 键,属预期。
 3. 报告含 `system_version`(git 短哈希)、`data_range`、篮子 A 代理声明。
 4. 无未来数据泄露(§11.3 测试通过)。
