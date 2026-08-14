@@ -169,6 +169,62 @@ def _fake_run_backtest():
     }
 
 
+def _default_metric(dim):
+    if dim == "path":
+        return {"n": 100, "acc_path": 0.6}
+    if dim in ("direction", "gap", "trend3"):
+        return {"n": 100, "hit_rate": 0.6, "base_rate": 0.5, "n_hold": 0}
+    if dim == "return":
+        return {"n": 100, "mae": 0.1, "rmse": 0.2, "sign_agreement": 0.6,
+                "sign_n": 100, "mean_residual": 0.01, "dir_cond_mae": {}}
+    return {"n": 100, "adverse_rate": 0.05, "ece": 0.1, "brier": 0.2, "lift": 1.0}
+
+
+def _fake_report():
+    return {
+        "overall": {dim: _default_metric(dim) for dim in ev.DIMS},
+        "layers": {L: {dim: _default_metric(dim) for dim in ev.DIMS} for L in ev.LAYERS},
+        "layer_n": {L: 100 for L in ev.LAYERS},
+        "significant": [],
+        "se_bounds": {},
+        "all_undifferentiated": True,
+        "data_range": {"start": "2026-01-01", "end": "2026-08-13"},
+        "valid_window": {"start": "2026-01-01", "end": "2026-08-13"},
+        "n_valid_records": 100,
+    }
+
+
+def test_layer_suppression_uses_effective_n():
+    # direction 层维:n=35,n_hold=30 → 有效 n=5 < 30 → 抑制(总 n≥30 但主指标有效 n 不足)
+    rep = _fake_report()
+    rep["layers"]["趋势"]["direction"] = {"n": 35, "base_rate": 0.5, "hit_rate": 0.6,
+                                          "ece": 0.1, "brier": 0.2, "n_hold": 30}
+    payload = ev.build_report(rep)
+    assert payload["layers"]["趋势"]["direction"] == {"n": 35, "_suppressed": True}
+    # direction 层维:n=35,n_hold=3 → 有效 n=32 ≥ 30 → 不抑制(有 hit_rate 层值)
+    rep2 = _fake_report()
+    rep2["layers"]["趋势"]["direction"] = {"n": 35, "base_rate": 0.5, "hit_rate": 0.6,
+                                           "ece": 0.1, "brier": 0.2, "n_hold": 3}
+    payload2 = ev.build_report(rep2)
+    assert "hit_rate" in payload2["layers"]["趋势"]["direction"]
+
+
+def test_significant_flag_respects_primary():
+    # return 维:mae 显著但 PRIMARY=sign_agreement 不显著 → 表显「否」
+    rep = _fake_report()
+    rep["significant"] = [["趋势", "return", "mae", 0.05, 0.02, 0.01]]
+    payload = ev.build_report(rep)
+    md = ev.render_markdown(payload)
+    line = next(l for l in md.splitlines() if l.startswith("| 趋势 | return |"))
+    assert line.endswith("| 否 |")
+    # 切到 PRIMARY 指标 sign_agreement 显著 → 表显「是」
+    rep["significant"] = [["趋势", "return", "sign_agreement", 0.05, 0.02, 0.01]]
+    payload = ev.build_report(rep)
+    md = ev.render_markdown(payload)
+    line = next(l for l in md.splitlines() if l.startswith("| 趋势 | return |"))
+    assert line.endswith("| 是 |")
+
+
 def test_run_build_report_and_main(tmp_path, monkeypatch):
     import backtest as bt
     import predict as pr

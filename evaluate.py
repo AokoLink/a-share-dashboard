@@ -162,7 +162,13 @@ def _amount_top(universe, pos_of, all_days, i, buyable):
         bar = pos_of[c].get(dt)
         if bar is None:
             continue
-        amt = float(universe[c]["amount"].iloc[bar])
+        raw = universe[c]["amount"].iloc[bar]
+        if raw is None:
+            continue
+        try:
+            amt = float(raw)
+        except (TypeError, ValueError):
+            continue
         if amt != amt:
             continue
         pairs.append((c, amt))
@@ -284,14 +290,21 @@ def build_report(report):
         return {"n": m["n"], "adverse_rate": _num(m["adverse_rate"]),
                 "ece": _num(m["ece"]), "brier": _num(m["brier"]), "lift": _num(m["lift"])}
 
-    def layer_dim_payload(m):
-        p = dim_payload(m)
-        if m["n"] < MIN_LAYER_N:  # §5 薄层小 n:只报样本量
+    def _effective_n(dim, m):
+        metric = PRIMARY[dim]
+        if metric == "hit_rate":
+            return m["n"] - m["n_hold"]
+        if metric == "sign_agreement":
+            return m["sign_n"]
+        return m["n"]  # acc_path (path) / adverse_rate (risk)
+
+    def layer_dim_payload(dim, m):
+        if _effective_n(dim, m) < MIN_LAYER_N:  # §5 薄层小 n:只报样本量
             return {"n": m["n"], "_suppressed": True}
-        return p
+        return dim_payload(m)
 
     overall = {dim: dim_payload(report["overall"][dim]) for dim in DIMS}
-    layers = {L: {dim: layer_dim_payload(report["layers"][L][dim]) for dim in DIMS}
+    layers = {L: {dim: layer_dim_payload(dim, report["layers"][L][dim]) for dim in DIMS}
               for L in LAYERS}
     return {
         "system_version": pr._git_short_sha(),
@@ -344,7 +357,7 @@ def render_markdown(payload):
             lv = cell.get(PRIMARY[dim])
             ov = o.get(PRIMARY[dim])
             bound = se_map.get((Ln, dim))
-            sig = any(s[0] == Ln and s[1] == dim for s in payload["significant"])
+            sig = any(s[0] == Ln and s[1] == dim and s[2] == PRIMARY[dim] for s in payload["significant"])
             L.append(f"| {Ln} | {dim} | {cell['n']} | {fmt(lv)} | {fmt(ov)} "
                      f"| {fmt(bound)} | {'是' if sig else '否'} |")
     L += ["", "## 无分化判定", ""]
