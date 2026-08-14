@@ -124,3 +124,23 @@ def _fit_calibrator(pairs, n_bins):
     finite = [(u, p) for u, p, _ in bins]
     finite[-1] = (float("inf"), finite[-1][1])
     return Calibrator(finite, degraded=False)
+
+
+def forward_universe(universe, pos_of, all_days):
+    """前向宇宙 {code: bar}:as_of_date 当日可交易股,不要求 T+1 bar 存在。"""
+    dt = all_days[-1]
+    out = {}
+    for c in universe:
+        bar = pos_of[c].get(dt)
+        if bar is None:
+            continue
+        d = universe[c]
+        chg = float(d["change_pct"].iloc[bar])
+        close = float(d["close"].iloc[bar])
+        th = an.limit_threshold(c)
+        if chg >= th or chg <= -7.0:
+            continue
+        if float(d["volume"].iloc[bar]) * close < bt.MIN_AMOUNT:
+            continue
+        out[c] = bar
+    return out

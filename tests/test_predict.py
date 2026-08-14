@@ -101,3 +101,21 @@ def test_fit_calibrator_degraded_single_bin():
     assert cal.degraded
     assert len(cal.bins) == 1
     assert cal.p_up(1.0) == pytest.approx(0.5)
+
+
+def test_forward_universe_filters():
+    def mk(code, closes, vols):
+        return make_daily(closes, volumes=vols, code=code)
+
+    universe = {
+        "000001": mk("000001", [10.0, 10.2, 10.4], [1e7] * 3),   # 正常(末 bar 无 T+1,仍保留)
+        "000002": mk("000002", [5.0, 5.1], [1e7] * 2),          # 停牌:无 as_of_date bar
+        "000003": mk("000003", [10.0, 11.0], [1e7] * 2),        # 涨停:chg ≈ 10% >= 9.9
+        "000004": mk("000004", [10.0, 9.0], [1e7] * 2),         # 跌超 7%:-10%
+        "000005": mk("000005", [10.0, 10.1], [1e3] * 2),        # 低换手:vol*close < 1e8
+    }
+    pos_of = {c: {dt: i for i, dt in enumerate(d["date"])} for c, d in universe.items()}
+    all_days = sorted(set().union(*[set(d["date"]) for d in universe.values()]))
+    fwd = pr.forward_universe(universe, pos_of, all_days)
+    assert set(fwd.keys()) == {"000001"}
+    assert fwd["000001"] == 2  # 最后一天 index
