@@ -184,6 +184,8 @@ def _fake_report():
     return {
         "overall": {dim: _default_metric(dim) for dim in ev.DIMS},
         "layers": {L: {dim: _default_metric(dim) for dim in ev.DIMS} for L in ev.LAYERS},
+        "environments": {L: {dim: _default_metric(dim) for dim in ev.DIMS} for L in ev.env.LABELS},
+        "env_n": {L: 100 for L in ev.env.LABELS},
         "layer_n": {L: 100 for L in ev.LAYERS},
         "significant": [],
         "se_bounds": {},
@@ -243,3 +245,25 @@ def test_run_build_report_and_main(tmp_path, monkeypatch):
     assert payload["module_version"] == "1.0.0"
     assert "overall" in payload and "layers" in payload
     assert out.with_suffix(".md").exists()
+
+
+def test_evaluate_environments_slicing():
+    import backtest as bt
+    import predict as pr
+    d = mk(list(range(100, 200)))  # 100 日单调涨
+    universe = {"000001": d}
+    all_days = list(d["date"])
+    pos_of = {"000001": {dt: i for i, dt in enumerate(d["date"])}}
+    sector_members = {}
+    sector_map = {"000001": []}
+    cals = {"direction": pr._fit_calibrator([(50.0, 0)] * 10 + [(50.0, 1)] * 10, 2),
+            "gap": pr._fit_calibrator([(50.0, 1)] * 10, 2),
+            "od": pr._fit_calibrator([(50.0, 1)] * 10, 2),
+            "trend3": pr._fit_calibrator([(50.0, 1)] * 10, 2),
+            "return": pr._fit_calibrator([(50.0, 0.0)] * 10, 2, monotone=False),
+            "risk": pr._fit_calibrator([(10.0, 0)] * 10, 2)}
+    rep = ev.evaluate(_mk_records(), universe, pos_of, all_days, sector_members, sector_map, cals)
+    assert set(rep["environments"]) == set(ev.env.LABELS)
+    assert sum(rep["env_n"].values()) == 200
+    # 200 记录全在 date "2026-04-01"(索引 90);单调涨 100 日 → 该日环境「牛」
+    assert rep["env_n"]["牛"] == 200

@@ -14,6 +14,7 @@ import numpy as np
 import analysis as an
 import backtest as bt
 import predict as pr
+import environment as env
 
 MODULE_VERSION = "1.0.0"
 TOP_SECTORS = 3
@@ -147,9 +148,21 @@ def evaluate(records, universe, pos_of, all_days, sector_members, sector_map, ca
     overall = {dim: _dim_metrics(cals, dim, records) for dim in DIMS}
     per_layer = {L: {dim: _dim_metrics(cals, dim, layer_records[L]) for dim in DIMS}
                  for L in LAYERS}
+    series = env.build_series(universe, pos_of, all_days)
+    env_records = {L: [] for L in env.LABELS}
+    for date, recs in by_date.items():
+        i = day_to_i[date]
+        state = series["environment"].iloc[i]
+        if state is None:
+            continue
+        env_records[state].extend(recs)
+    env_metrics = {L: {dim: _dim_metrics(cals, dim, env_records[L]) for dim in DIMS}
+                   for L in env.LABELS}
+    env_n = {L: len(env_records[L]) for L in env.LABELS}
     significant, se_bounds, all_undifferentiated = _significance(overall, per_layer)
     return {"overall": overall, "layers": per_layer,
             "layer_n": {L: len(layer_records[L]) for L in LAYERS},
+            "environments": env_metrics, "env_n": env_n,
             "significant": significant, "se_bounds": se_bounds,
             "all_undifferentiated": all_undifferentiated}
 
@@ -306,6 +319,8 @@ def build_report(report):
     overall = {dim: dim_payload(report["overall"][dim]) for dim in DIMS}
     layers = {L: {dim: layer_dim_payload(dim, report["layers"][L][dim]) for dim in DIMS}
               for L in LAYERS}
+    environments = {L: {dim: layer_dim_payload(dim, report["environments"][L][dim])
+                        for dim in DIMS} for L in env.LABELS}
     return {
         "system_version": pr._git_short_sha(),
         "module_version": MODULE_VERSION,
@@ -316,6 +331,8 @@ def build_report(report):
         "n_valid_records": report["n_valid_records"],
         "overall": overall,
         "layers": layers,
+        "environments": environments,
+        "env_n": report["env_n"],
         "layer_n": report["layer_n"],
         "significant": [list(s) for s in report["significant"]],
         "se_bounds": [[L, dim, se] for (L, dim), se in sorted(report["se_bounds"].items())],
@@ -360,6 +377,15 @@ def render_markdown(payload):
             sig = any(s[0] == Ln and s[1] == dim and s[2] == PRIMARY[dim] for s in payload["significant"])
             L.append(f"| {Ln} | {dim} | {cell['n']} | {fmt(lv)} | {fmt(ov)} "
                      f"| {fmt(bound)} | {'是' if sig else '否'} |")
+    L += ["", "## 各环境准确率(按日期环境切片)", "",
+          "| 环境 | 维度 | n | 主指标 |", "|---|---|---|---|"]
+    for envname in env.LABELS:
+        for dim in DIMS:
+            cell = payload["environments"][envname][dim]
+            if cell.get("_suppressed"):
+                L.append(f"| {envname} | {dim} | {cell['n']} | (样本不足) |")
+                continue
+            L.append(f"| {envname} | {dim} | {cell['n']} | {fmt(cell.get(PRIMARY[dim]))} |")
     L += ["", "## 无分化判定", ""]
     if payload["all_undifferentiated"]:
         L.append("**八层无显著分化**:所有层与总体差异均在 ±2σ 噪声界内 → 触发分层定义重审(合并/换规则)。")
