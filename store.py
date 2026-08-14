@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import threading
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS market_daily (
@@ -22,21 +23,48 @@ CREATE TABLE IF NOT EXISTS recommend_snapshot (
 );
 """
 
+_conns = threading.local()
+
+
+def _conn_cache():
+    cache = getattr(_conns, "cache", None)
+    if cache is None:
+        cache = {}
+        _conns.cache = cache
+    return cache
+
 
 def init_db(db):
     os.makedirs(os.path.dirname(os.path.abspath(db)), exist_ok=True)
     conn = _connect(db)
     conn.executescript(SCHEMA)
     conn.commit()
-    conn.close()
+    # 连接留在线程本地缓存中复用(由 close_all() 统一关闭)
 
 
 def _connect(db):
-    conn = sqlite3.connect(db, timeout=30)
-    conn.row_factory = sqlite3.Row  # 使 dict(row) 按列名映射
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=30000")
+    key = os.path.abspath(db)
+    cache = _conn_cache()
+    conn = cache.get(key)
+    if conn is None:
+        conn = sqlite3.connect(db, timeout=30)
+        conn.row_factory = sqlite3.Row  # 使 dict(row) 按列名映射
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        cache[key] = conn
     return conn
+
+
+def close_all():
+    """关闭线程本地缓存中的所有连接(应用关闭 / 测试 teardown)。"""
+    cache = getattr(_conns, "cache", None)
+    if cache:
+        for conn in cache.values():
+            try:
+                conn.close()
+            except Exception:
+                pass
+        _conns.cache = {}
 
 
 def _row_to_dict(row):
@@ -58,7 +86,6 @@ def upsert_market_daily(db, date, up_count, down_count, flat_count, limit_up, li
         (date, up_count, down_count, flat_count, limit_up, limit_down,
          total_turnover, index_close, snapshot_time))
     conn.commit()
-    conn.close()
 
 
 def get_market_daily_prev(db, date):
@@ -66,7 +93,6 @@ def get_market_daily_prev(db, date):
     cur = conn.execute(
         "SELECT * FROM market_daily WHERE date < ? ORDER BY date DESC LIMIT 1", (date,))
     row = cur.fetchone()
-    conn.close()
     return _row_to_dict(row)
 
 
@@ -80,7 +106,6 @@ def upsert_sector_daily(db, date, type, code, name, change_pct, up_ratio, turnov
              turnover=excluded.turnover, rank=excluded.rank""",
         (date, type, code, name, change_pct, up_ratio, turnover, rank))
     conn.commit()
-    conn.close()
 
 
 def get_sector_turnover_avg(db, type, code, date, days=5):
@@ -92,7 +117,6 @@ def get_sector_turnover_avg(db, type, code, date, days=5):
              ORDER BY date DESC LIMIT ?)""",
         (type, code, date, days))
     val = cur.fetchone()[0]
-    conn.close()
     return val if val is not None else None
 
 
@@ -102,7 +126,6 @@ def get_sector_prev_change(db, type, code, date):
         "SELECT change_pct FROM sector_daily WHERE type=? AND code=? AND date < ? "
         "ORDER BY date DESC LIMIT 1", (type, code, date))
     row = cur.fetchone()
-    conn.close()
     return row[0] if row else None
 
 
@@ -112,7 +135,6 @@ def get_sector_change_3d(db, type, code, date):
         "SELECT change_pct FROM sector_daily WHERE type=? AND code=? AND date < ? "
         "ORDER BY date DESC LIMIT 3", (type, code, date))
     rows = cur.fetchall()
-    conn.close()
     if len(rows) < 2:
         return None
     prod = 1.0
@@ -132,7 +154,6 @@ def get_consecutive_days(db, type, code, date, top_n=20):
             days += 1
         else:
             break
-    conn.close()
     return days
 
 
@@ -147,7 +168,6 @@ def upsert_recommend_snapshot(db, signal_date, generated_at, close_date, prev_tr
         (signal_date, generated_at, close_date, prev_trading_date,
          json.dumps(stocks, ensure_ascii=False)))
     conn.commit()
-    conn.close()
 
 
 def get_recommend_snapshot_before(db, signal_date):
@@ -156,7 +176,6 @@ def get_recommend_snapshot_before(db, signal_date):
         "SELECT * FROM recommend_snapshot WHERE signal_date < ? ORDER BY signal_date DESC LIMIT 1",
         (signal_date,))
     row = cur.fetchone()
-    conn.close()
     d = _row_to_dict(row)
     if d and d.get("payload"):
         d["stocks"] = json.loads(d["payload"])

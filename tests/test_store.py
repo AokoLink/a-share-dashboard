@@ -80,3 +80,28 @@ def test_recommend_snapshot_upsert_and_get_before(tmp_path):
     assert row["close_date"] == "2026-08-12"
     assert row["stocks"][0]["signal_close"] == 5.02     # 同日重建覆盖生效
     assert store.get_recommend_snapshot_before(db, "2026-08-12") is None   # 无更早
+
+
+def test_connection_reuse_within_thread(tmp_path):
+    db = str(tmp_path / "reuse.db")
+    store.init_db(db)
+    c1 = store._connect(db)
+    c2 = store._connect(db)
+    assert c1 is c2                      # 同线程同路径复用同一连接
+
+
+def test_write_visible_without_close(tmp_path):
+    db = str(tmp_path / "vis.db")
+    store.init_db(db)
+    store.upsert_market_daily(db, "2026-08-10", 100, 50, 5, 3, 1, 1e9, 3400.0, "15:00")
+    row = store.get_market_daily_prev(db, "2026-08-11")
+    assert row["date"] == "2026-08-10"   # 无显式 close 仍已 commit 且可读
+
+
+def test_close_all_reopens(tmp_path):
+    db = str(tmp_path / "close.db")
+    store.init_db(db)
+    c1 = store._connect(db)
+    store.close_all()
+    c2 = store._connect(db)
+    assert c1 is not c2
