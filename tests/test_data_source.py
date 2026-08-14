@@ -167,6 +167,26 @@ def test_stock_minute_nan_to_none(monkeypatch):
     assert df["avg"].iloc[1] == pytest.approx(6.7e6 / 5000)
 
 
+def test_get_stock_daily_preserves_amount_turnover(monkeypatch):
+    # 回归:get_stock_daily 曾只选 6 列,丢掉 akshare 已返回的 amount/outstanding_share/turnover,
+    # 使板块级 composite(turnover/amount)退化为代理、预测层无方向优势。须全列保留。
+    ds.cache._data.clear()  # 隔离模块级缓存
+    raw = pd.DataFrame({
+        "date": ["2026-01-02", "2026-01-03"],
+        "open": [10.0, 10.1], "high": [10.2, 10.3], "low": [9.9, 10.0],
+        "close": [10.1, 10.2], "volume": [1e6, 1.1e6],
+        "amount": [1.0e8, 1.1e8], "outstanding_share": [5.0e8, 5.0e8], "turnover": [0.20, 0.22],
+    })
+    monkeypatch.setattr(ds._ak, "stock_zh_a_daily", lambda symbol, adjust: raw)
+    df, stale = ds.get_stock_daily("000002")
+    assert stale is False
+    assert list(df.columns) == ["date", "open", "high", "low", "close", "volume",
+                                "amount", "outstanding_share", "turnover"]
+    assert df["amount"].iloc[0] == pytest.approx(1.0e8)
+    assert df["turnover"].iloc[1] == pytest.approx(0.22)
+    assert df["outstanding_share"].iloc[1] == pytest.approx(5.0e8)
+
+
 def test_new_stocks_english_column(monkeypatch):
     ds.cache._data.clear()  # 避免被其他用例缓存污染
     # akshare 1.18.84 的 stock_zh_a_new() 返回英文列(无“代码”列),须能经 code 列归一化

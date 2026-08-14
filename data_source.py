@@ -265,7 +265,8 @@ def get_stock_daily(code):
 
     def fetch():
         raw = _ak.stock_zh_a_daily(symbol=symbol, adjust="qfq")
-        out = raw[["date", "open", "high", "low", "close", "volume"]].copy()
+        out = raw[["date", "open", "high", "low", "close", "volume",
+                   "amount", "outstanding_share", "turnover"]].copy()
         out["date"] = out["date"].astype(str)
         return out
 
