@@ -42,10 +42,10 @@ def classify(row):
     tr = row["turnover_ratio"]; ma5 = row["ma5"]; ma20 = row["ma20"]; ma60 = row["ma60"]
     if (not _miss(r5) and r5 <= PANIC_R5) \
             or (not _miss(r1) and not _miss(up) and r1 <= PANIC_R1 and up <= PANIC_UP_RATIO) \
-            or ld >= PANIC_LIMIT_DOWN:
+            or (not _miss(ld) and ld >= PANIC_LIMIT_DOWN):
         return "恐慌"
     if not _miss(r5) and r5 >= CLIMAX_R5 and (
-            (not _miss(up) and up >= CLIMAX_UP_RATIO) or lu >= CLIMAX_LIMIT_UP
+            (not _miss(up) and up >= CLIMAX_UP_RATIO) or (not _miss(lu) and lu >= CLIMAX_LIMIT_UP)
             or (not _miss(tr) and tr >= CLIMAX_TURNOVER)):
         return "高潮"
     if not _miss(r20) and r20 <= BEAR_R20 and not _miss(ma5) and not _miss(ma20) \

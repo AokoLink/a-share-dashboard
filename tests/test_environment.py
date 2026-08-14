@@ -63,3 +63,9 @@ def test_priority_panic_over_bear():
 
 def test_priority_climax_over_bull():
     assert env.classify(_row(r5=0.08, up=0.85, r20=0.08, ma5=1.1, ma20=1.0, ma60=0.9)) == "高潮"
+
+
+def test_classify_none_limit_counts_do_not_crash():
+    # 规格 §6:任一判定字段为 NaN/None → 该条不命中;limit_down/limit_up=None 不得 TypeError
+    assert env.classify(_row(ld=None)) == "震荡"
+    assert env.classify(_row(r5=0.08, up=None, lu=None, tr=None)) == "震荡"
