@@ -6,6 +6,11 @@
 分类纯因果:第 i 日标签只依赖 <= i 的数据。
 """
 
+import numpy as np
+import pandas as pd
+
+import analysis as an
+
 MODULE_VERSION = "1.0.0"
 MIN_HISTORY = 60
 MIN_STATE_N = 20
@@ -61,3 +66,58 @@ def classify(row):
             and r20 >= 0 and r5 <= RECEDE_R5 and up <= RECEDE_UP_RATIO:
         return "退潮"
     return "震荡"
+
+
+def build_series(universe, pos_of, all_days):
+    """合成市场序列:行 = all_days 位置,列见 spec §5;末列 environment。"""
+    codes = list(universe.keys())
+    rows = []
+    for dt in all_days:
+        rets = []
+        up = 0
+        lu = 0
+        ld = 0
+        turnover = 0.0
+        n = 0
+        for c in codes:
+            bar = pos_of[c].get(dt)
+            if bar is None:
+                continue
+            d = universe[c]
+            chg = d["change_pct"].iloc[bar]
+            if _miss(chg):
+                continue
+            chg = float(chg)
+            rets.append(chg / 100.0)
+            n += 1
+            if chg > 0:
+                up += 1
+            th = an.limit_threshold(c)
+            if chg >= th:
+                lu += 1
+            elif chg <= -th:
+                ld += 1
+            amt = d["amount"].iloc[bar]
+            if not _miss(amt):
+                turnover += float(amt)
+        rows.append({"date": dt,
+                     "r1": float(np.median(rets)) if rets else None,
+                     "up_ratio": (up / n) if n else None,
+                     "limit_up": lu, "limit_down": ld,
+                     "turnover": turnover})
+    df = pd.DataFrame(rows)
+    df["turnover_ratio"] = df["turnover"] / df["turnover"].shift(1).rolling(5).mean()
+    r1 = df["r1"].fillna(0.0).to_numpy()
+    M = np.empty(len(df))
+    if len(df) > 0:
+        M[0] = 1.0
+        M[1:] = np.cumprod(1.0 + r1[1:])
+    df["M"] = M
+    df["ma5"] = df["M"].rolling(5).mean()
+    df["ma20"] = df["M"].rolling(20).mean()
+    df["ma60"] = df["M"].rolling(60).mean()
+    df["r5"] = df["M"] / df["M"].shift(5) - 1.0
+    df["r20"] = df["M"] / df["M"].shift(20) - 1.0
+    df["r60"] = df["M"] / df["M"].shift(60) - 1.0
+    df["environment"] = df.apply(classify, axis=1)
+    return df
