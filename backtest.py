@@ -40,3 +40,39 @@ def load_sector_map(path):
         raise FileNotFoundError(f"missing sector map: {path}")
     with open(path, "r", encoding="gbk") as f:
         return json.load(f)
+
+
+def build_universe(data_dir, sector_map):
+    if isinstance(sector_map, str):
+        sector_map = load_sector_map(sector_map)
+    universe, codes = {}, []
+    files = sorted(f for f in os.listdir(data_dir) if f.endswith(".pkl"))
+    for fn in files:
+        code = fn[:-4]
+        if code not in sector_map:
+            continue
+        d = load_daily(data_dir, code)
+        if len(d) < 1200:
+            continue
+        d = d.reset_index(drop=True).tail(1200).copy()
+        d["code"] = code
+        d["change_pct"] = d["close"].pct_change() * 100.0
+        d.iloc[0, d.columns.get_loc("change_pct")] = 0.0
+        universe[code] = d
+        codes.append(code)
+    return universe, codes
+
+
+def build_calendar(universe, codes):
+    all_days = sorted(set().union(*[set(universe[c]["date"].values) for c in codes]))
+    pos_of = {c: {dt: int(idx) for idx, dt in enumerate(universe[c]["date"].values)} for c in codes}
+    return all_days, pos_of
+
+
+def build_sector_members(sector_map, universe):
+    sector_members = {}
+    for c, secs in sector_map.items():
+        if c in universe:
+            for s in secs:
+                sector_members.setdefault(s, []).append(c)
+    return sector_members

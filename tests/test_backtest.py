@@ -46,3 +46,46 @@ def test_load_daily_roundtrip(tmp_path):
 def test_load_daily_missing_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         bt.load_daily(str(tmp_path), "999999")
+
+
+def _write_universe(tmp_path, sector_map, stocks):
+    dailydir = tmp_path / "daily"
+    dailydir.mkdir()
+    for code, df in stocks.items():
+        df.to_pickle(dailydir / f"{code}.pkl")
+    sm = tmp_path / "code2sector.json"
+    with open(sm, "w", encoding="gbk") as f:
+        json.dump(sector_map, f, ensure_ascii=False)
+    return str(dailydir), str(sm)
+
+
+def test_build_universe_filters_and_truncates(tmp_path):
+    sector_map = {"600000": ["半导体"], "600001": ["半导体"], "999999": ["半导体"]}
+    long_df = make_daily([10.0 + i * 0.01 for i in range(1300)])
+    short_df = make_daily([10.0, 10.1])  # len < 1200 -> 剔除
+    stocks = {"600000": long_df, "600001": short_df}  # 999999 无文件
+    dailydir, sm = _write_universe(tmp_path, sector_map, stocks)
+    universe, codes = bt.build_universe(dailydir, sm)
+    assert codes == ["600000"]
+    assert len(universe["600000"]) == 1200
+    assert "change_pct" in universe["600000"].columns
+    assert universe["600000"]["change_pct"].iloc[0] == 0.0
+
+
+def test_build_calendar_sorted_union_and_pos():
+    d1 = make_daily([10.0, 10.1], start="2026-01-01")          # 01-01, 01-02
+    d2 = make_daily([20.0, 20.1, 20.2], start="2026-01-02")    # 01-02, 01-03, 01-04
+    all_days, pos_of = bt.build_calendar({"a": d1, "b": d2}, ["a", "b"])
+    assert all_days == ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"]
+    assert pos_of["a"]["2026-01-01"] == 0
+    assert pos_of["a"]["2026-01-02"] == 1
+    assert pos_of["b"]["2026-01-02"] == 0
+    assert pos_of["b"]["2026-01-04"] == 2
+
+
+def test_build_sector_members_file_order_and_filter():
+    sector_map = {"a": ["S2", "S1"], "b": ["S1"], "c": ["S1"]}
+    universe = {"a": None, "c": None}  # b 不在 universe -> 剔除
+    sm = bt.build_sector_members(sector_map, universe)
+    assert sm["S2"] == ["a"]
+    assert sm["S1"] == ["a", "c"]
