@@ -283,3 +283,59 @@ def test_select_baskets_C_rng_sampling_deterministic():
     assert len(b1["C"]) == 15
     assert b1["C"] == b2["C"]
     assert set(b1["C"]) <= buyable
+
+
+def test_stats_mean_and_empty():
+    m = {"a": 0.1, "b": 0.2, "c": 0.3}
+    assert bt.stats(["a", "b", "c"], m) == pytest.approx(0.2)
+    assert bt.stats(["a", "zz"], m) == pytest.approx(0.1)
+    assert np.isnan(bt.stats([], m))
+
+
+def test_summ():
+    arr = [0.01, 0.02, -0.01, 0.03, 0.0]
+    m, w, n = bt.summ(arr)
+    assert m == pytest.approx((0.01 + 0.02 - 0.01 + 0.03 + 0.0) / 5 * 100)
+    assert w == pytest.approx(60.0)  # 0.01/0.02/0.03 正 -> 3/5
+    assert n == 5
+
+
+def test_summ_nan_and_none_filtered():
+    m, w, n = bt.summ([0.01, float("nan"), None, -0.02])
+    assert n == 2
+    assert m == pytest.approx((0.01 - 0.02) / 2 * 100)
+
+
+def test_summ_empty():
+    m, w, n = bt.summ([])
+    assert np.isnan(m) and np.isnan(w) and n == 0
+
+
+def test_summ_year_groups():
+    out = bt.summ_year([0.01, 0.02, 0.03], ["2023", "2023", "2024"])
+    assert out[0][0] == "2023" and out[0][3] == 2
+    assert out[1][0] == "2024" and out[1][3] == 1
+
+
+def test_welch_t_formula():
+    a = [1.0 + 0.1 * i for i in range(10)]
+    b = [5.0 + 0.1 * i for i in range(10)]
+    r = bt.welch_t(a, b)
+    m1, m2 = np.mean(a), np.mean(b)
+    v1, v2 = np.var(a, ddof=1), np.var(b, ddof=1)
+    n1 = n2 = 10
+    expected_t = (m1 - m2) / ((v1 / n1 + v2 / n2) ** 0.5)
+    assert r["t"] == pytest.approx(expected_t)
+    assert 0.0 <= r["p"] <= 1.0
+    assert r["p"] < 0.001  # 差异极大 -> 极显著
+
+
+def test_welch_t_identical():
+    a = [1.0, 1.1, 1.2, 1.3, 1.4]
+    r = bt.welch_t(a, a)
+    assert r["t"] == 0.0 and r["p"] == 1.0
+
+
+def test_welch_t_too_small():
+    r = bt.welch_t([1.0], [2.0])
+    assert r["t"] is None and r["p"] is None

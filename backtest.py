@@ -185,3 +185,109 @@ def select_baskets(sector_members, pos_of, all_days, i, buyable, hot, get_score,
         basket_c = list(rng.choice(basket_c, size=TOP_SECTORS * PER_SECTOR, replace=False))
     basket_d = list(buyable)
     return {"A": basket_a, "E_hi": pos_hi, "E_lo": pos_lo, "B": basket_b, "C": basket_c, "D": basket_d}
+
+
+def stats(basket, m):
+    return float(np.mean([m[c] for c in basket if c in m])) if basket else np.nan
+
+
+def summ(arr):
+    a = np.array([x for x in arr if x == x and x is not None])
+    if len(a):
+        return (round(float(np.nanmean(a) * 100), 3),
+                round(float(np.mean(a > 0) * 100), 1),
+                int(len(a)))
+    return (np.nan, np.nan, 0)
+
+
+def summ_year(arr, years):
+    groups = {}
+    for x, y in zip(arr, years):
+        if x is None or x != x:
+            continue
+        groups.setdefault(y, []).append(x)
+    out = []
+    for y in sorted(groups):
+        a = np.array(groups[y])
+        if len(a):
+            out.append((y, round(float(np.nanmean(a) * 100), 3),
+                        round(float(np.mean(a > 0) * 100), 1), int(len(a))))
+    return out
+
+
+def _betacf(a, b, x):
+    """不完全 beta 的连分式展开(Numerical Recipes 6.4)。"""
+    MAXIT = 200
+    EPS = 3.0e-14
+    FPMIN = 1.0e-300
+    qab = a + b
+    qap = a + 1.0
+    qam = a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < FPMIN:
+        d = FPMIN
+    d = 1.0 / d
+    h = d
+    for m in range(1, MAXIT + 1):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < FPMIN:
+            d = FPMIN
+        c = 1.0 + aa / c
+        if abs(c) < FPMIN:
+            c = FPMIN
+        d = 1.0 / d
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < FPMIN:
+            d = FPMIN
+        c = 1.0 + aa / c
+        if abs(c) < FPMIN:
+            c = FPMIN
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < EPS:
+            break
+    return h
+
+
+def _betainc(a, b, x):
+    """正则化不完全 beta I_x(a,b)。"""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    ln_beta = math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log(1.0 - x)
+    bt = math.exp(ln_beta)
+    if x < (a + 1.0) / (a + b + 2.0):
+        return bt * _betacf(a, b, x) / a
+    return 1.0 - bt * _betacf(b, a, 1.0 - x) / b
+
+
+def _t_cdf(t, df):
+    """Student's t CDF(t >= 0)。"""
+    x = df / (df + t * t)
+    return 1.0 - 0.5 * _betainc(df / 2.0, 0.5, x)
+
+
+def welch_t(a, b):
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    a = a[np.isfinite(a)]
+    b = b[np.isfinite(b)]
+    n1, n2 = len(a), len(b)
+    if n1 < 2 or n2 < 2:
+        return {"t": None, "p": None}
+    m1, m2 = a.mean(), b.mean()
+    v1, v2 = a.var(ddof=1), b.var(ddof=1)
+    se = (v1 / n1 + v2 / n2) ** 0.5
+    if se == 0.0:
+        return {"t": 0.0, "p": 1.0}
+    t = (m1 - m2) / se
+    df = (v1 / n1 + v2 / n2) ** 2 / ((v1 / n1) ** 2 / (n1 - 1) + (v2 / n2) ** 2 / (n2 - 1))
+    p = 2.0 * (1.0 - _t_cdf(abs(t), df))
+    return {"t": float(t), "p": float(p)}
