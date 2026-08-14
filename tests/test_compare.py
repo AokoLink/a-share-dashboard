@@ -67,3 +67,24 @@ def test_path_metric():
     m = compare._path_metric(rows)
     assert m["n"] == 3
     assert m["acc_path"] == pytest.approx(2.0 / 3.0)
+
+
+def test_return_metric():
+    rows = [(0.10, 0.10), (0.0, 0.05), (-0.05, -0.05)]
+    m = compare._return_metric(rows)
+    assert m["n"] == 3
+    assert m["mae"] == pytest.approx((0.0 + 0.05 + 0.0) / 3.0)
+    assert m["rmse"] == pytest.approx(((0.0 ** 2 + 0.05 ** 2 + 0.0 ** 2) / 3.0) ** 0.5)
+    assert m["mean_residual"] == pytest.approx((0.0 + 0.05 + 0.0) / 3.0)
+    assert m["sign_n"] == 3
+    assert m["sign_agreement"] == pytest.approx(2.0 / 3.0)
+
+
+def test_risk_metric():
+    rows = [(0.1, 0), (0.2, 0), (0.3, 1), (0.4, 1)]
+    m = compare._risk_metric(rows)
+    assert m["n"] == 4
+    assert m["adverse_rate"] == pytest.approx(0.5)
+    assert m["brier"] == pytest.approx((0.01 + 0.04 + 0.49 + 0.36) / 4.0)
+    assert m["ece"] == pytest.approx(abs(0.25 - 0.5))
+    assert m["lift"] is None  # n=4 < N_BINS=10 降单箱
