@@ -19,7 +19,7 @@
 **包含:**
 
 - 校准器 `Calibrator`(composite 分箱 → 经验概率,PAV 单调池化)+ 最小 temporal train/valid 切分。
-- 每股逐只预测,覆盖**全 buyable 宇宙**(非仅 15 只篮子)。
+- 每股逐只预测(非仅 15 只篮子):回测模式覆盖**全 buyable 宇宙**,前向模式覆盖 `as_of_date` 当日**可交易宇宙**(§8.2,不要求 T+1 存在)。
 - 四个 horizon 的校准:次日方向(close1)、开盘 gap、盘中 od、T+3 趋势(close3)。
 - 结构化预测 JSON(§7)+ 版本戳(§9)。
 - 反泄露测试(§12.3)。
@@ -65,6 +65,7 @@
 | `_labels(d, i)` | 四 horizon 二分类标签 `{close1, gap, od, trend3}`(0/1/None,§6.1) | bt.next_returns、fwd_close |
 | `Calibrator` | composite → 单调经验概率(§6) | 无 |
 | `_fit_calibrator(pairs, n_bins)` | 分箱 + PAV 单调池化(§6) | 无 |
+| `forward_universe(universe, pos_of, all_days)` | 前向宇宙 `{code: bar}`(as_of_date 当日可交易股,§8.2) | 无 |
 | `predict_at(d, i, now, cals)` | 单股 ≤T → 结构化预测(§7) | bt.score_at |
 | `run_backtest(data_dir, sector_map_path)` | 回测模式:逐日预测 + valid 窗口评估(§8) | 复用 bt.* |
 | `predict_now(data_dir, sector_map_path)` | 前向模式:最新日 → 快照(§8) | 复用 bt.* |
@@ -83,9 +84,9 @@ DIRECTION_BAND = 0.05    # |P-0.5| <= band → 观望
 AFTER_CLOSE    = datetime(2026, 1, 1, 15, 1)
 ```
 
-buyable 过滤(涨停/跌停、涨跌幅 ≤ −7%、`volume*close < 1e8`)复用 `bt.build_buyable`,不另设常量。
+buyable 过滤复用 `bt.build_buyable`(涨停 `chg >= an.limit_threshold(c)` 或跌超 7% `chg <= -7.0`、`volume*close < 1e8` 剔除),不另设常量。
 
-评估日采样与 backtest.py 一致,保证口径可比:
+评估日采样**公式**与 backtest.py 一致;但 predict 不建模板块热、不跳「无热板块」日(backtest.py:346-347 `if not heat: continue`),实际评估日集为完整 range,`n_eval` 与基线可能有微小差异(报告 §9 注明,不做「同日可比」误导):
 
 ```
 all_days  = 排序后的全市场交易日并集
@@ -98,7 +99,7 @@ eval_days = range(start, len(all_days) - 1, step)
 
 ### 6.1 标签(四个二分类校准器)
 
-「buyable」= `bt.build_buyable(universe, pos_of, all_days, i)` 返回的 `buy` 集(过滤:涨停/跌停、涨跌幅 ≤ −7%、`volume*close < 1e8` 剔除)。
+「buyable」= `bt.build_buyable(universe, pos_of, all_days, i)` 返回的 `buy` 集(过滤:涨停 `chg >= an.limit_threshold(c)` 或跌超 7% `chg <= -7.0`、`volume*close < 1e8` 剔除;含 T+1 bar 守卫,故仅回测模式使用)。
 
 `_labels(d, i)` 返回 `{"close1": 0/1, "gap": 0/1, "od": 0/1, "trend3": 0/1/None}`:前三项来自 `bt.next_returns(d, i)`(其返回 None 则整只跳过),`trend3` 来自 `fwd_close(d, i, 3)`(越界仅该项为 None)。
 
@@ -165,8 +166,9 @@ confidence = max(P, 1 - P)      # 预测方向成立的概率,恒 >= 0.5
 
 - 字段值约定:`direction ∈ {"up","down","hold"}`(涨/跌/观望)、`gap ∈ {"high","low","hold"}`、`od ∈ {"up","down","hold"}`、`path ∈ {"高开高走","高开低走","低开高走","低开低走"}`(gap 或 od 为 hold 时 path 为 null)。
 - path 无独立置信度字段(可推导为 `min(conf_gap, conf_od)`,§6.4),不落 JSON。
-- `T+3` 在 `fwd_close(...,3)` 为 None(剩余 bar 不足 3)时置 `{"direction": null, "confidence": null}`。
+- `T+3` 与 `T+1` 同源:由 `composite` + `cal_trend3` 校准器产出,`composite` 可得即预测;**不读 `fwd_close`、不受「剩余 bar 不足 3」影响**(前向模式锚定最后一根 bar 时 T+3 预测仍产出,供 S5 后续验证)。`fwd_close` 的 None 判断只在回测模式的标签/验证步(§6.1)使用,不进 `predict_at`。
 - `predict_at` 内部 `composite` 为 None(评分不可得)时返回 None(该股不产出预测)。
+- `cals` 为四校准器容器(dict,键 `direction`/`gap`/`od`/`trend3`,各为 `Calibrator`,§6)。
 
 **前向模式**输出的快照为上述单股预测的列表 + 版本戳(§9)。
 
@@ -181,14 +183,16 @@ confidence = max(P, 1 - P)      # 预测方向成立的概率,恒 >= 0.5
    - `n`、`base_rate`(valid 内 label=1 占比)、`hit_rate`(二分类预测方向正确占比,观望计为「未下注」不计入 hit_rate 但计入 `n_hold`)。
    - **`ece`**(expected calibration error)= 按箱 `mean(|预测 P(箱) − 箱内真实 label 频率|)`,加权箱样本数。
    - **`brier`** = `mean((P − label)^2)`(对非观望样本)。
+   - `trend3` 的 `n` 略小于 `direction`/`gap`/`od`(末尾 2 个评估日无 T+3 真实值,`fwd_close` None 样本不参与 trend3 指标)。
    - path:四分类准确率(`acc_path`)。
 5. 输出 `results` dict(供 build_report 消费)。
 
 ### 8.2 前向模式 `predict_now`
 
 1. 同 `run_backtest` 前半段:用**全量** eval_days 拟合校准器(生产部署时用全部历史,不用切分)。
-2. 取每只股**最后一根 bar**(最新交易日),`predict_at` 产出预测列表。
-3. 输出快照 JSON + 版本戳。**只读 ≤ 最新日的数据,不读未来。**
+2. `as_of_date = all_days[-1]`;前向宇宙 = `forward_universe(universe, pos_of, all_days)` 返回 `{code: bar}`:`pos_of[c].get(as_of_date)` 非 None(停牌/未上市跳过),复用 chg/amount 过滤(`chg >= an.limit_threshold(c) or chg <= -7.0`、`volume*close < 1e8` 剔除),**去掉 build_buyable 的 T+1 守卫**(backtest.py:146,前向锚定最后一根时恒空)。**不复用 build_buyable。**
+3. 对前向宇宙每只股,`predict_at(universe[c], bar, AFTER_CLOSE, cals)` 产出预测,`date = as_of_date`。
+4. 输出快照 JSON + 版本戳。**只读 ≤ as_of_date 的数据,不读未来。**
 
 ## 9. 报告输出与版本戳
 
@@ -203,7 +207,7 @@ confidence = max(P, 1 - P)      # 预测方向成立的概率,恒 >= 0.5
   "data_range": {"start": "...", "end": "..."},
   "train_window": {"start": "...", "end": "..."},
   "valid_window": {"start": "...", "end": "..."},
-  "n_train": <int>, "n_valid": <int>,
+  "n_eval": <int>, "step": <int>, "n_train": <int>, "n_valid": <int>,
   "calibrators": {
     "<name>": {"bins": [{"upper": .., "p": ..}], "n": <int>, "degraded": <bool>}
   },
@@ -228,7 +232,7 @@ confidence = max(P, 1 - P)      # 预测方向成立的概率,恒 >= 0.5
 }
 ```
 
-`system_version` = git 短哈希(权威代码标识);`module_version` = 预测模块 semver。Markdown 报告含版本戳、train/valid 窗口、校准表(各箱上界 + p)、指标表,并**如实声明**:① 校准概率基于「代理管线」评分(无 amount,生产板块加成不可复现);② 回测模式指标仅在 valid 窗口有效(out-of-sample);③ 分钟级路径未做(数据缺口)。
+`system_version` = git 短哈希(权威代码标识);`module_version` = 预测模块 semver。Markdown 报告含版本戳、train/valid 窗口、校准表(各箱上界 + p)、指标表,并**如实声明**:① 校准概率基于「代理管线」评分(无 amount,生产板块加成不可复现);② 回测模式指标仅在 valid 窗口有效(out-of-sample);③ 分钟级路径未做(数据缺口);④ 样本按「股票 × 时间」聚集、**非 i.i.d.**,`n` 为样本数而非独立观测数,ece/brier 不可按 n 直接推置信区间;⑤ `n_eval` 为完整评估日 range,与基线 backtest(跳无热板块日)的 `n_eval` 可能不同,非同日口径。
 
 ## 10. CLI
 
@@ -246,7 +250,7 @@ python predict.py [--data-dir _analysis/daily] [--sector-map _analysis/code2sect
 - `--data-dir` 不存在 / 无 pkl → 明确报错退出。
 - `--sector-map` 缺失或非 GBK 可解码 → 明确报错。
 - 单只 pkl 缺列 → 跳过该股并计入诊断计数(非崩溃)。
-- `composite` 为 None / 剩余 bar 不足(horizon 越界)→ 该股该 horizon 预测置 null(非错误,非泄露)。
+- `composite` 为 None → 该股不产出预测(返回 None,非错误非泄露)。`fwd_close` 越界只影响回测模式 trend3 的标签/验证样本(跳过),不影响 `predict_at` 产出。
 - train 段样本不足以分 N_BINS 箱(如某校准器 n < N_BINS)→ 该校准器降为全样本单箱(常量 p),并在报告标注 `degraded: true`。
 
 ## 12. 测试(`tests/test_predict.py`,TDD)
@@ -268,8 +272,9 @@ python predict.py [--data-dir _analysis/daily] [--sector-map _analysis/code2sect
 
 ### 12.4 预测 schema 与方向
 
-- monkeypatch `bt.score_at` 返回固定 composite,断言 `predict_at` 的 direction/confidence/gap/od/path/T+3 逐字段正确(含观望带、path 四分类、T+3 null)。
+- monkeypatch `bt.score_at` 返回固定 composite,断言 `predict_at` 的 direction/confidence/gap/od/path/T+3 逐字段正确(含观望带、path 四分类);并断言 **T+3 只由 composite+calibrator 决定、不读 fwd_close**(取 `i` 使 `i+3 >= len(d)`,T+3 仍产出非 null 预测)。
 - `composite` None → `predict_at` 返回 None。
+- `forward_universe`:合成 universe,断言停牌(无 as_of_date bar)/涨停/跌超 7%/低换手被剔除、正常股保留,且**不要求 T+1 bar 存在**。
 
 ### 12.5 CLI 与报告
 
@@ -286,3 +291,4 @@ python predict.py [--data-dir _analysis/daily] [--sector-map _analysis/code2sect
 3. `python predict.py --predict ... --out prediction_snapshot.json` 产出带 `system_version` 的前向快照,`predictions` 非空、字段合法、`as_of_date` = 最新交易日。
 4. 校准单调:每个校准器 `bins` 的 p 单调不减(§12.2 测试)。
 5. 无未来数据泄露(§12.3 测试通过)。
+6. 不要求校准有「信号」:`|p-0.5|` 无展布、观望率高、`hit_rate≈base_rate`、ece 小均属**诚实基线**(composite 对次日方向的边际信号弱,切片 A 已示 ≈ 噪声级),勿当 bug 排查;验收只看校准单调 + 反泄露 + 指标如实产出。
