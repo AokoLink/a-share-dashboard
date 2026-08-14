@@ -291,3 +291,180 @@ def welch_t(a, b):
     df = (v1 / n1 + v2 / n2) ** 2 / ((v1 / n1) ** 2 / (n1 - 1) + (v2 / n2) ** 2 / (n2 - 1))
     p = 2.0 * (1.0 - _t_cdf(abs(t), df))
     return {"t": float(t), "p": float(p)}
+
+
+def run(data_dir, sector_map_path):
+    sector_map = load_sector_map(sector_map_path)
+    universe, codes = build_universe(data_dir, sector_map)
+    if not universe:
+        raise RuntimeError(f"no usable daily pkl (code in sector map and >=1200 bars) in {data_dir}")
+    sector_members = build_sector_members(sector_map, universe)
+    all_days, pos_of = build_calendar(universe, codes)
+    start = max(61, len(all_days) - 1 - EVAL_DAYS)
+    step = max(1, (len(all_days) - 2 - start) // 300)
+
+    score_cache = {}
+    def get_score(code, bar):
+        key = (code, bar)
+        if key not in score_cache:
+            score_cache[key] = score_at(universe[code], bar, AFTER_CLOSE)
+        return score_cache[key]
+
+    A_od, A_gap, A_c1 = [], [], []
+    E_hi_od, E_lo_od = [], []
+    B_od, C_od, D_od = [], [], []
+    eval_years = []
+    n_eval = 0
+
+    for i in range(start, len(all_days) - 1, step):
+        heat = sector_heat(universe, sector_members, pos_of, all_days, i)
+        if not heat:
+            continue
+        hot = sorted(heat, key=heat.get, reverse=True)[:TOP_SECTORS]
+        buyable, od_m, gap_m, c1_m = build_buyable(universe, pos_of, all_days, i)
+        baskets = select_baskets(sector_members, pos_of, all_days, i,
+                                 buyable, hot, get_score, start, RNG)
+        A_od.append(stats(baskets["A"], od_m))
+        A_gap.append(stats(baskets["A"], gap_m))
+        A_c1.append(stats(baskets["A"], c1_m))
+        E_hi_od.append(stats(baskets["E_hi"], od_m))
+        E_lo_od.append(stats(baskets["E_lo"], od_m))
+        if baskets["B"] is not None:
+            B_od.append(stats(baskets["B"], od_m))
+        C_od.append(stats(baskets["C"], od_m))
+        D_od.append(stats(baskets["D"], od_m))
+        eval_years.append(all_days[i][:4])
+        n_eval += 1
+
+    rows = {
+        "A 实际管线(热板块xtop5)  次日od": summ(A_od),
+        "A 隔夜gap": summ(A_gap),
+        "A close->next close": summ(A_c1),
+        "E 板块内低位股(pos分top5)次日od": summ(E_hi_od),
+        "E 板块内高位股(pos分bot5)次日od": summ(E_lo_od),
+        "B 全市场top15  次日od": summ(B_od),
+        "C 热板块随机  次日od": summ(C_od),
+        "D 全市场基准  次日od": summ(D_od),
+    }
+    by_year = {
+        "A 实际管线": summ_year(A_od, eval_years),
+        "E 板块内低位股(pos top5)": summ_year(E_hi_od, eval_years),
+        "E 板块内高位股(pos bot5)": summ_year(E_lo_od, eval_years),
+        "C 热板块随机": summ_year(C_od, eval_years),
+        "D 全市场基准": summ_year(D_od, eval_years),
+    }
+    welch = {
+        "A 实际管线(热板块xtop5)  次日od": welch_t(A_od, D_od),
+        "B 全市场top15  次日od": welch_t(B_od, D_od),
+        "C 热板块随机  次日od": welch_t(C_od, D_od),
+        "E 板块内低位股(pos分top5)次日od": welch_t(E_hi_od, D_od),
+        "E 板块内高位股(pos分bot5)次日od": welch_t(E_lo_od, D_od),
+    }
+    data_range = {"start": str(all_days[0]), "end": str(all_days[-1])}
+    window = {"start": str(all_days[start]), "end": str(all_days[len(all_days) - 2])}
+    return {"rows": rows, "by_year": by_year, "welch": welch,
+            "n_eval": n_eval, "step": step, "window": window, "data_range": data_range}
+
+
+def _git_short_sha():
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, check=True)
+        sha = out.stdout.strip()
+        return sha or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _json_num(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(f) else f
+
+
+def build_report(results, system_version=None, generated_at=None):
+    system_version = system_version or _git_short_sha()
+    generated_at = generated_at or datetime.now().isoformat()
+    rows = {k: {"mean_pct": _json_num(v[0]), "win_rate": _json_num(v[1]), "n": v[2]}
+            for k, v in results["rows"].items()}
+    by_year = {k: [{"year": y, "mean_pct": _json_num(m), "win_rate": _json_num(w), "n": n}
+                   for y, m, w, n in v] for k, v in results["by_year"].items()}
+    return {
+        "system_version": system_version,
+        "module_version": MODULE_VERSION,
+        "generated_at": generated_at,
+        "data_range": results["data_range"],
+        "n_eval": results["n_eval"],
+        "step": results["step"],
+        "window": results["window"],
+        "sector_heat_note": "median-5-day-gain proxy (daily pkl 无 amount,生产板块 composite 不可复现)",
+        "rows": rows,
+        "by_year": by_year,
+        "welch": results["welch"],
+    }
+
+
+def render_markdown(payload):
+    def fmt(x, nd=3):
+        return "-" if x is None else f"{x:.{nd}f}"
+
+    lines = ["# 历史盲测基线报告", ""]
+    lines.append(f"- system_version: `{payload['system_version']}`")
+    lines.append(f"- module_version: {payload['module_version']}")
+    lines.append(f"- generated_at: {payload['generated_at']}")
+    lines.append(f"- data_range: {payload['data_range']['start']} -> {payload['data_range']['end']}")
+    lines.append(f"- 评估窗口: {payload['window']['start']} -> {payload['window']['end']} (n_eval={payload['n_eval']}, step={payload['step']})")
+    lines += ["", "## 整体(次日)", "", "| 篮子 | mean_pct% | win_rate% | n |", "|---|---|---|---|"]
+    for k, v in payload["rows"].items():
+        lines.append(f"| {k} | {fmt(v['mean_pct'])} | {fmt(v['win_rate'], 1)} | {v['n']} |")
+    lines += ["", "## Welch(对 D 全市场基准,非配对且样本重叠,仅定性参考)", "", "| 篮子 | t | p |", "|---|---|---|"]
+    for k, v in payload["welch"].items():
+        lines.append(f"| {k} | {fmt(v['t'], 4)} | {fmt(v['p'], 4)} |")
+    lines += ["", "## 按年", "", "| 篮子 | 年份 | mean_pct% | win_rate% | n |", "|---|---|---|---|---|"]
+    for k, rows in payload["by_year"].items():
+        for r in rows:
+            lines.append(f"| {k} | {r['year']} | {fmt(r['mean_pct'])} | {fmt(r['win_rate'], 1)} | {r['n']} |")
+    lines += ["", "## 篮子 A 代理声明", ""]
+    lines.append(payload["sector_heat_note"])
+    lines.append("")
+    lines.append("因日线 pkl 无 amount(成交额),生产 collect_sector_metrics 所需 turnover_ratio(emotion 25%)与 activity(strength 30%)无法历史复现。篮子 A 与生产 recommend.py 管线存在以下代理差异:")
+    lines += ["", "| 维度 | 生产 recommend.py | 基线篮 A(代理) |", "|---|---|---|",
+              "| 板块选择 | select_sectors verdict∈{建议关注, 跟踪(热点延续)} + composite 降序 + top3 | hot = 板块中位数 5 日涨幅 top3 |",
+              "| 个股加成 | sector_bonus(68/60/50,+8/+4/-5) | composite 分档 8/4/0(无 -5) |",
+              "| 热权重重算 | _apply_hot_weights(composite>=68 改用 HOT_SIGNAL_WEIGHTS) | 无(恒 V3_WEIGHTS) |",
+              "| 个股硬过滤 | filter_candidates ST/新股/停牌/涨停/<=-7%/amount<1e8 | buyable 涨停/<=-7%/volume*close>=1e8 |",
+              "| 加成×风险折扣位置 | (quality+bonus)*(1-risk/100) 加成在折扣内 | quality*(1-risk/100)+bonus 加成在折扣外 |",
+              "| verdict 过滤 | rank_candidates 剔 verdict==回避(<42) | 仅 risk<70 |",
+              ""]
+    lines.append("结论:基线篮 A 的准确率是「代理管线」的准确率,作为当前版本可复现的近似基线;真正的生产口径基线须待 amount 数据补齐(后续切片)。")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="历史盲测基线(次日方向)")
+    parser.add_argument("--data-dir", default="_analysis/daily")
+    parser.add_argument("--sector-map", default="_analysis/code2sector.json")
+    parser.add_argument("--out", default="backtest_baseline.json")
+    args = parser.parse_args(argv)
+
+    try:
+        results = run(args.data_dir, args.sector_map)
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    payload = build_report(results)
+    with open(args.out, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    md_path = os.path.splitext(args.out)[0] + ".md"
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(render_markdown(payload))
+    print(f"wrote {args.out} and {md_path} (n_eval={payload['n_eval']}, step={payload['step']})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

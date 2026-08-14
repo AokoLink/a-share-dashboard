@@ -339,3 +339,96 @@ def test_welch_t_identical():
 def test_welch_t_too_small():
     r = bt.welch_t([1.0], [2.0])
     assert r["t"] is None and r["p"] is None
+
+
+def _make_universe_fixture(tmp_path, n_bars=1200):
+    codes = ["600001", "600002", "600003", "000001", "000002", "000003"]
+    sector_map = {
+        "600001": ["半导体"], "600002": ["半导体"], "600003": ["半导体"],
+        "000001": ["白酒"], "000002": ["白酒"], "000003": ["白酒"],
+    }
+    dailydir = tmp_path / "daily"
+    dailydir.mkdir()
+    for i, code in enumerate(codes):
+        closes = [2000.0 + (i + 1) * 0.1 * k for k in range(n_bars)]
+        make_daily(closes, start="2020-01-01").to_pickle(dailydir / f"{code}.pkl")
+    sm = tmp_path / "code2sector.json"
+    with open(sm, "w", encoding="gbk") as f:
+        json.dump(sector_map, f, ensure_ascii=False)
+    return str(dailydir), str(sm)
+
+
+def test_run_end_to_end(tmp_path, monkeypatch):
+    dailydir, sm = _make_universe_fixture(tmp_path)
+    def fake_score_stock(df, quote, now):
+        return {"position": 50.0, "trend": 50.0, "volume_price": 50.0,
+                "signal": 50.0, "risk": 10.0, "composite": 70.0}
+    monkeypatch.setattr(an, "score_stock", fake_score_stock)
+    results = bt.run(dailydir, sm)
+    assert set(results["rows"]) == {
+        "A 实际管线(热板块xtop5)  次日od", "A 隔夜gap", "A close->next close",
+        "E 板块内低位股(pos分top5)次日od", "E 板块内高位股(pos分bot5)次日od",
+        "B 全市场top15  次日od", "C 热板块随机  次日od", "D 全市场基准  次日od",
+    }
+    assert set(results["welch"]) == {
+        "A 实际管线(热板块xtop5)  次日od", "B 全市场top15  次日od",
+        "C 热板块随机  次日od", "E 板块内低位股(pos分top5)次日od", "E 板块内高位股(pos分bot5)次日od",
+    }
+    assert results["n_eval"] > 0
+    assert results["step"] >= 1
+    assert not np.isnan(results["rows"]["A 实际管线(热板块xtop5)  次日od"][0])
+    assert results["data_range"]["start"] == "2020-01-01"
+
+
+def test_build_report_fields():
+    results = {
+        "rows": {"A x": (1.5, 60.0, 10), "D y": (float("nan"), float("nan"), 0)},
+        "by_year": {"A": [("2024", 1.5, 60.0, 10)]},
+        "welch": {"A x": {"t": 2.0, "p": 0.05}},
+        "n_eval": 10, "step": 3,
+        "window": {"start": "2021-01-01", "end": "2026-01-01"},
+        "data_range": {"start": "2019-01-01", "end": "2026-01-01"},
+    }
+    payload = bt.build_report(results, system_version="abc1234", generated_at="2026-08-14T00:00:00")
+    assert payload["system_version"] == "abc1234"
+    assert payload["module_version"] == "1.0.0"
+    assert payload["rows"]["A x"] == {"mean_pct": 1.5, "win_rate": 60.0, "n": 10}
+    assert payload["rows"]["D y"] == {"mean_pct": None, "win_rate": None, "n": 0}
+    assert payload["welch"]["A x"]["t"] == 2.0
+    assert "sector_heat_note" in payload
+
+
+def test_render_markdown_has_sections():
+    results = {
+        "rows": {"A x": (1.5, 60.0, 10)},
+        "by_year": {"A": [("2024", 1.5, 60.0, 10)]},
+        "welch": {"A x": {"t": 2.0, "p": 0.05}},
+        "n_eval": 10, "step": 3,
+        "window": {"start": "2021-01-01", "end": "2026-01-01"},
+        "data_range": {"start": "2019-01-01", "end": "2026-01-01"},
+    }
+    payload = bt.build_report(results, system_version="abc1234", generated_at="2026-08-14T00:00:00")
+    md = bt.render_markdown(payload)
+    assert "历史盲测基线报告" in md
+    assert "代理声明" in md
+    assert "| A x |" in md
+
+
+def test_main_writes_outputs(tmp_path, monkeypatch):
+    dailydir, sm = _make_universe_fixture(tmp_path)
+    def fake_score_stock(df, quote, now):
+        return {"position": 50.0, "trend": 50.0, "volume_price": 50.0,
+                "signal": 50.0, "risk": 10.0, "composite": 70.0}
+    monkeypatch.setattr(an, "score_stock", fake_score_stock)
+    out = tmp_path / "baseline.json"
+    rc = bt.main(["--data-dir", dailydir, "--sector-map", sm, "--out", str(out)])
+    assert rc == 0
+    assert out.exists()
+    payload = json.load(open(out, encoding="utf-8"))
+    assert payload["system_version"]
+    assert (tmp_path / "baseline.md").exists()
+
+
+def test_main_missing_data_dir_exits_nonzero(tmp_path):
+    rc = bt.main(["--data-dir", str(tmp_path / "nope")])
+    assert rc == 1
