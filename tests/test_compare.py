@@ -42,3 +42,28 @@ def test_actual_outcomes_edge_cases():
     # 非正价
     d2 = _mk_df([-5.0, 110.0], [100.0, 105.0])
     assert compare._actual_outcomes(d2, 0) == {"close1": None, "gap": None, "od": None, "trend3": None}
+
+
+def test_class_metric():
+    rows = [("up", 1), ("down", 0), ("up", 0), ("hold", 1)]
+    m = compare._class_metric(rows)
+    assert m["n"] == 4
+    assert m["n_hold"] == 1
+    assert m["n_bet"] == 3
+    assert m["hit_rate"] == pytest.approx(2.0 / 3.0)
+    assert m["base_rate"] == pytest.approx(0.5)
+
+
+def test_class_metric_all_hold():
+    m = compare._class_metric([("hold", 1), ("hold", 0)])
+    assert m["n_bet"] == 0
+    assert m["hit_rate"] is None
+    assert m["n_hold"] == 2
+    assert m["base_rate"] == pytest.approx(0.5)
+
+
+def test_path_metric():
+    rows = [("高开高走", "高开高走"), ("高开高走", "低开低走"), ("低开低走", "低开低走")]
+    m = compare._path_metric(rows)
+    assert m["n"] == 3
+    assert m["acc_path"] == pytest.approx(2.0 / 3.0)

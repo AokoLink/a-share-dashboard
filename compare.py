@@ -51,3 +51,39 @@ def _actual_outcomes(d, bar):
         if close3 > 0:
             out["trend3"] = close3 / close0 - 1.0
     return out
+
+
+def _class_metric(rows):
+    """分类维命中率(镜像 predict._metric 的 hit_rate/n_hold/base_rate,输入为已存预测)。
+
+    rows = [(pred, label)];pred in {"up","down","hold"},label in {0,1}。
+    """
+    n = len(rows)
+    if n == 0:
+        return {"n": 0, "base_rate": None, "hit_rate": None, "n_hold": 0, "n_bet": 0}
+    n_hold = 0
+    n_bet = 0
+    hit = 0
+    for pred, label in rows:
+        if pred == "hold":
+            n_hold += 1
+            continue
+        n_bet += 1
+        if (pred == "up" and label == 1) or (pred == "down" and label == 0):
+            hit += 1
+    base_rate = float(sum(label for _, label in rows)) / n
+    return {"n": n, "base_rate": base_rate,
+            "hit_rate": hit / n_bet if n_bet else None,
+            "n_hold": n_hold, "n_bet": n_bet}
+
+
+def _path_metric(rows):
+    """路径四分类命中率(镜像 predict._metric_path,输入为已存预测)。
+
+    rows = [(pred_path, actual_path)];pred_path 为 None 者已在采集时剔除。
+    """
+    n = len(rows)
+    if n == 0:
+        return {"n": 0, "acc_path": None}
+    correct = sum(1 for p, a in rows if p == a)
+    return {"n": n, "acc_path": correct / n}
