@@ -13,6 +13,7 @@
 
 - **来源与调整基础**:`data_source.get_stock_daily` → `_ak.stock_zh_a_daily(symbol, adjust="qfq")`(东财 hist)。该接口返回 9 列;其中 `close/open/high/low` 前复权,`volume` 与 `amount` **不复权**(原始股数 / 原始成交额,元)。已核(2026-08-14):对最大复权因子历史日(600519 2002-05-17 close 比 0.11244)amount 比不复权 = 1.000000。
 - **大盘层取值**:用 `amount` 原始成交额做**同日横截面** top20% 排名。不复权正确(排名用真实成交额,不需要跨日调整)。
+- **缺失处理**:`amount` 为 NaN 或缺失的股票,排名前 `dropna`(不参与当日 top20% 排名,也不计入分母);若某日 buyable 中 amount 全缺失 → 该日大盘层 n=0,报告如实标注「amount 缺失」,不静默回退到 `volume*close` 代理。
 - **存储**:`amount` 已含于 `_analysis/daily/<code>.pkl`(9 列,Step 1 已重拉)。`evaluate.py` **只读** `df["amount"]`,**不 fetch** —— 不违反 V1.0 §3「读现有缓存,不 fetch」契约。
 - **逐日对齐**:大盘层用 `universe[code]["amount"].iloc[bar]`,`bar = pos_of[code][all_days[i]]`(≤T,与 `score_at` 同 bar)。
 - **缓存/幂等**:pkl 即缓存,`_analysis/` gitignored。
@@ -24,6 +25,7 @@
 
 - 特征 = `composite`(与 direction 校准器同源),标签 = `close1 = close[T+1]/close[T] − 1`。
 - 拟合 = 现有 `_fit_calibrator` 的**等量十分箱**(N_BINS=10)去掉 PAV 池化,每箱记 `upper` 与 `mean(close1)`。收益对 composite **不强制单调**,故不加 PAV。
+- **参数化(非注释)**:`_fit_calibrator` 新增 `monotone=True` 形参(默认 True,保证 direction/gap/od/trend3/risk 五校准器行为不变);ReturnCalibrator 调用时传 `monotone=False` 跳过 PAV。writing-plans 须按「新增参数」实现,**不得**用注释掉 PAV 的写法(那会破坏其余校准器的单调语义)。
 - 退化:干净样本 < N_BINS → 单箱(全局 mean,degraded=True)。
 - 预测:`expected_return(composite)` = 该 composite 落入箱的 `mean(close1)`。全宇宙当天只有 ≤10 个取值(阶梯函数)。
 
@@ -84,6 +86,7 @@
 
 - **`predict.py`(单一真相源)**:新增两个校准器 + 全部**指标函数**(`_metric_return`、`_metric_risk`、以及复用 §8.1 的 direction/gap/od/trend3/path)。`run_backtest` 返回拟合好的 6 校准器 + valid 记录(每记录:code/date/bar/composite/risk/close1/gap/od/trend3/expected_return/risk_p/预测方向)。
 - **`evaluate.py`(只做分层报告)**:调用 `predict.run_backtest` 取校准器与 valid 记录,**不重拟合**;对 valid 记录打 8 层标签,逐层调用 `predict` 的指标函数,输出「分层 × 六维」报告 + 总体。**指标代码只存在一份**(predict 内)。
+- **`evaluate.py` 自建 universe**:`run_backtest` 的 valid 记录只含 `code/date/bar` 与预测值,不含原始行情;8 层中趋势/高位/超跌/反抽/震荡需价格序列(MA、60 日高、ret20、振幅),龙头/热门需 `sector_map`。故 `evaluate.run` 需自建 `bt.build_universe` + `bt.load_sector_map`(与 predict 同源、同参数),按 `code/bar` 计算层特征打标签。
 
 ## 7. 诚实性声明(⑤,报告层)
 
@@ -107,4 +110,4 @@
 
 1. 全量测试通过。
 2. valid 段生成「八层 × 六维」报告 + 总体;诚实声明 4 条齐全。
-3. 不挑易预测样本:分层报告必须**暴露**至少一个弱层(若八层全部高准确率,视为分层定义失效,需重审)。
+3. 不挑易预测样本:**报告须含「每层 × 维 vs 总体」对比,并给 ±2σ 噪声界**(n 已知,σ = 二项标准误 `sqrt(p̂(1−p̂)/n)`,方向/开盘/路径/趋势/风险命中率用二项、MAE/RMSE 用均值的 `σ/√n` 估计)。若所有层与总体差异均在噪声界内,报告须**如实标注「八层无显著分化」**并触发分层定义重审(合并/换规则),**不当作达标、不凑数**。此验收可证伪,且不赌实证结果(composite 信号弱时各层本可能都 ≈ base_rate)。

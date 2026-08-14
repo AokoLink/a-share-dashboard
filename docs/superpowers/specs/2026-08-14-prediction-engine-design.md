@@ -38,6 +38,8 @@
 同 backtest.py 规格,复述关键点:
 
 - 日线缓存:`--data-dir` 指向 `_analysis/daily/*.pkl`(默认)。文件名 = 6 位纯数字代码。列精确为 `[date, open, high, low, close, volume]`,`date` 为 `"YYYY-MM-DD"` 字符串,RangeIndex,**无 amount/成交额列,无分钟列**。前复权。原始全史 1990-12-19 → 2026-08-11,截尾 1200 根后评估窗口 ≈ 2021-08 → 2026-08。
+
+> **修订(2026-08-15,评分系统 spec 交叉引用)**:自 Step 1(`data_source.get_stock_daily` 改列选择,commit `d3d72fd`,HEAD `c269456`)起,pkl 为 **9 列** `[date, open, high, low, close, volume, amount, outstanding_share, turnover]`。其中 `close/open/high/low` 前复权,`volume` 与 `amount`(成交额,元)**不复权**。本文 §3 其余口径不变;依赖 6 列旧假设的既有代码与测试不受影响(多出的列被忽略)。
 - 板块映射:`--sector-map` 指向 `_analysis/code2sector.json`(默认),**GBK 编码**,`{6位代码: [THS 板块名列表]}`。须 `encoding="gbk"` 显式打开。
 
 输入位于 gitignored `_analysis/`,不提交;输出报告提交(§9)。
