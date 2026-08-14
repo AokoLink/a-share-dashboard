@@ -187,10 +187,14 @@ def predict_at(d, i, now, cals):
     if sc is None:
         return None
     composite = float(sc["composite"])
+    risk = sc.get("risk")
+    risk = float(risk) if risk is not None else None
     p_dir = cals["direction"].p_up(composite)
     p_gap = cals["gap"].p_up(composite)
     p_od = cals["od"].p_up(composite)
     p_t3 = cals["trend3"].p_up(composite)
+    expected_return = cals["return"].p_up(composite)
+    risk_p = cals["risk"].p_up(risk) if risk is not None else None
     direction, confidence = _dir_conf(p_dir)
     gap_dir = _gap_dir(p_gap)
     od_dir, _ = _dir_conf(p_od)
@@ -199,6 +203,8 @@ def predict_at(d, i, now, cals):
         "code": str(d["code"].iloc[i]),
         "date": str(d["date"].iloc[i]),
         "composite": composite,
+        "expected_return": expected_return,
+        "risk_p": risk_p,
         "T+1": {
             "direction": direction,
             "confidence": confidence,

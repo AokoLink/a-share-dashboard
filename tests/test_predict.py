@@ -124,7 +124,9 @@ def test_forward_universe_filters():
 def _fake_cals():
     up = pr._fit_calibrator([(5.0, 1)] * 10, 2)    # p=1
     down = pr._fit_calibrator([(5.0, 0)] * 10, 2)  # p=0
-    return {"direction": up, "gap": down, "od": up, "trend3": up}
+    ret = pr._fit_calibrator([(5.0, 0.02)] * 10, 2, monotone=False)  # mean=0.02
+    risk = pr._fit_calibrator([(5.0, 0)] * 10, 2)  # p=0
+    return {"direction": up, "gap": down, "od": up, "trend3": up, "return": ret, "risk": risk}
 
 
 def test_predict_at_full_schema(monkeypatch):
@@ -134,6 +136,8 @@ def test_predict_at_full_schema(monkeypatch):
     assert pred["code"] == "000001"
     assert pred["date"] == d["date"].iloc[10]
     assert pred["composite"] == pytest.approx(61.4)
+    assert pred["expected_return"] == pytest.approx(0.02)
+    assert pred["risk_p"] is None  # score_at 未提供 risk → risk_p None
     t1 = pred["T+1"]
     assert t1["direction"] == "up"
     assert t1["confidence"] == pytest.approx(1.0)
@@ -142,6 +146,13 @@ def test_predict_at_full_schema(monkeypatch):
     assert t1["path"] == "低开高走"
     assert pred["T+3"]["direction"] == "up"
     assert pred["T+3"]["confidence"] == pytest.approx(1.0)
+
+
+def test_predict_at_risk_p_present(monkeypatch):
+    d = make_daily([10.0] * 70)
+    monkeypatch.setattr(bt, "score_at", lambda d, i, now: {"composite": 61.4, "risk": 30.0})
+    pred = pr.predict_at(d, 10, pr.AFTER_CLOSE, _fake_cals())
+    assert pred["risk_p"] == pytest.approx(0.0)  # _fake_cals risk 单箱 p=0
 
 
 def test_predict_at_t3_no_future_bars(monkeypatch):
