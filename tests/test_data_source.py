@@ -278,3 +278,17 @@ def test_market_spot_includes_open(monkeypatch):
     df, stale = ds.get_market_spot()
     assert stale is False and "open" in df.columns
     assert float(df.loc[0, "open"]) == pytest.approx(9.9)   # sh600000 今开 9.9
+
+
+def test_market_spot_volume_hand_to_share_and_high_low(monkeypatch):
+    ds.cache._data.clear()                          # 避免被其他用例缓存污染
+    raw = make_spot().copy()
+    raw["成交量"] = [1000, 2000, 3000, 0, 4000]       # 手
+    raw["最高"] = [10.5, 1400.0, 12.5, 45.0, 210.0]
+    raw["最低"] = [9.5, 1330.0, 11.5, 44.0, 190.0]
+    monkeypatch.setattr(ds._ak, "stock_zh_a_spot", lambda: raw)
+    df, stale = ds.get_market_spot()
+    assert stale is False
+    assert df.loc[0, "volume"] == pytest.approx(1000.0 * 100.0)   # 手 → 股
+    assert df.loc[0, "high"] == pytest.approx(10.5)
+    assert df.loc[0, "low"] == pytest.approx(9.5)

@@ -220,9 +220,12 @@ def get_market_spot():
             "volume": _pick(raw, "成交量", "volume"),
             "amount": _pick(raw, "成交额", "amount"),
             "open": _pick(raw, "今开", "open"),
+            "high": _pick(raw, "最高", "high"),
+            "low": _pick(raw, "最低", "low"),
         })
-        for col in ("price", "change_pct", "volume", "amount", "open"):
+        for col in ("price", "change_pct", "volume", "amount", "open", "high", "low"):
             out[col] = pd.to_numeric(out[col], errors="coerce")
+        out["volume"] = out["volume"] * 100.0   # 手 → 股(与日线成交量单位一致,对齐腾讯路径 :186)
         return out
 
     return _cached(_key("spot"), 60, lambda: _fetch_with_retry(fetch))
