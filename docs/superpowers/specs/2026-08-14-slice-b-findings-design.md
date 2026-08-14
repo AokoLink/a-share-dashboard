@@ -69,9 +69,17 @@ if prev and prev["signal_date"] is not None:
 `gap_pct` 实测的是「D-1 收盘 → D+1 开盘」的跳空,非「D 收盘 → D+1 开盘」。这是 best-effort 的
 正确口径(盘中快照本无 D 收盘价),不改。此点仅在 spec 记录,不额外处理。
 
-**测试**:更新 `tests/test_recommend.py` 的 prev 快照 fixture(补 `signal_date` 字段);新增两用例——
-①盘中生成 prev(signal_date=D, close_date=D-1)且当前 prev_trading_date=D → `is_next_day=True`;
-②跨多日 gap → `gap_days` 计数正确。
+**测试**:prev 快照 fixture 全在 `tests/test_api.py`(不在 test_recommend.py):
+`test_recommend_prev_snapshot`(:369-394)、`test_recommend_degenerate_snapshot_not_written`(:396)、
+`test_recommend_prev_snapshot_bj_prefix`(:419)。这些 fixture **已传 signal_date**(`upsert_recommend_snapshot`
+第一参),「补字段」不成立;要改的是**锚点构造语义**:现有 :381-383 把 `close_date = prev_trading_date`
+(恰满足旧的 close_date 锚点)且 signal_date 硬编码 `"2026-08-12"`。改锚点后触发条件是
+`prev.signal_date == payload.prev_trading_date`,故 fixture 须把 signal_date 设为当前 prev_trading_date
+(而非硬编码),:388 注释改为 signal_date 口径。
+
+新增两用例(写入 test_api.py,真正验证修复):
+①盘中 prev(signal_date=D, close_date=D-1,二者不等)且当前 prev_trading_date=D → `is_next_day=True`;
+②跨多日 gap → `gap_days` 计数正确(严格按 `prev.signal_date < d <= payload.signal_date`)。
 
 ---
 
@@ -80,7 +88,9 @@ if prev and prev["signal_date"] is not None:
 **现状**:龙头页/推荐页 16 处 `innerHTML` 拼接股票名/板块名/理由等后端字符串,未转义。后端返回的
 name/verdict/tag/reason 等字段若含 `<>&"` 会注入脚本。
 
-**修复**:文件顶部加 `esc()` 助手,16 处注入点全部包裹:
+**修复**:文件顶部加 `esc()` 助手,**凡插值后端字符串处一律 `esc()`**(不按固定计数——实际 innerHTML
+约 24 处、后端字符串插值约 19-20 处,如 :56/:58 的 `s.name`/`s.verdict`、:104-108 的 `x.tag`/`x.name`、
+:272/:319/:397 的 name/verdict/tag/reason。实施指引 = 「插值任何后端来源字符串都包 `esc()`」,按个数易漏包):
 
 ```javascript
 function esc(s) {
@@ -182,8 +192,10 @@ def close_all():
 报 PermissionError → 测试 fixture teardown 须调 `store.close_all()`。
 
 **测试**:①同一线程连续两次 `_connect(db)` 返回同一连接对象;②写后读同一连接可见(commit 生效);
-③`close_all()` 后 `_connect` 开新连接;④现有 store 测试 fixture 加 `close_all()` teardown,确认
-Windows tmp_path 清理通过。
+③`close_all()` 后 `_connect` 开新连接;④teardown 用 **autouse fixture**(新建 `tests/conftest.py`,
+`yield` 后调 `store.close_all()`),而非只改 store 的 db fixture——因为 `test_api.py` 每个用例都建独立
+tmp_path db 且走真实 store(`client_factory` :61,用例 :370/:398/:421 等),缓存连接同样锁 Windows 文件句柄。
+一处 autouse 覆盖所有测试文件(含 test_store.py/test_api.py/test_backtest.py)。
 
 ---
 
@@ -217,7 +229,8 @@ pos60 = _pos60(df)   # df = add_ma(daily_df, (20,))
 ```
 
 `add_ma` 返回 `df.copy()` 且只增 ma 列、不改 low/high/close,故 `_pos60(df)` 与内联计算
-`(last_close - lo_min)/(hi_max - lo_min)` 逐位一致。行为零变化。
+`(last_close - lo_min)/(hi_max - lo_min)` 逐位一致。行为零变化。(顺手把 `_pos60`(:419)定义移到
+`compute_position_score`(:314)之前,读码顺序更自然;运行时无碍,非必须。)
 
 **测试**:两处改动由现有全量测试(`tests/test_analysis.py` 等)钉值证明无漂移;不新增用例,但须跑全量
 确认 `compute_position_score`/`score_sector`/`sector_verdict` 的既有断言全绿。
@@ -226,15 +239,19 @@ pos60 = _pos60(df)   # df = add_ma(daily_df, (20,))
 
 ## §6 recommend.py — 三处清理(maint)
 
-### §6.1 删冗余 quality 实参(:104/147)
+### §6.1 删冗余 quality 实参(三处:app.py:244 / recommend.py:104 / recommend.py:147)
 
-`sector_bonus(sector_composite, scores["composite"])` 把「加成前 composite」当 quality 传,但
-`BONUS_QUALITY_GATE=False`(:16)短路 `quality` 读取(:262),实参死。
+`recommend.sector_bonus(sector_composite, scores["composite"])` 把「加成前 composite」当 quality 传,但
+`BONUS_QUALITY_GATE=False`(:16)短路 `quality` 读取(:262),实参死。同一模式出现在**三处**,须一起改避免
+留同模式不一致:
+- `recommend.py:104`(`_score_candidate`)、`recommend.py:147`(`_apply_hot_weights_one`)
+- `app.py:244`(`sector_bonus_val = recommend.sector_bonus(max(comps), scores["composite"])`,个股接口板块加成)
 
-**修复(最小方案)**:两处删第二实参:
+**修复(最小方案)**:三处删第二实参:
 
 ```python
-bonus = sector_bonus(sector_composite)   # :104 与 :147 同改
+bonus = sector_bonus(sector_composite)   # recommend.py:104 / :147
+# app.py:244 → sector_bonus_val = recommend.sector_bonus(max(comps))
 ```
 
 哨兵 `if scores["composite"] is None`(:102)**保留不动**——它是「数据不足」守卫,与 quality 实参无关。
@@ -279,18 +296,16 @@ plan Task 11 已定「此分支不实现」。删除:
 return out.where(pd.notna(out), None)
 ```
 
-2. `app.py` intraday 构造(:254-256)改为 None 安全——否则 `float(None)` 抛 TypeError:
+2. `app.py` intraday 构造(:254-256)改为 None 安全——否则 `float(None)` 抛 TypeError。直接用**已有**
+`_num`(app.py:34-42,`None/NaN/非数值→None,其余→float`),不新造助手:
 
 ```python
-def _f(v):
-    return None if v is None or v != v else float(v)
-
-intraday = [{"time": str(x["time"]), "price": _f(x["price"]),
-             "avg": _f(x["avg"]), "volume": _f(x["volume"])}
+intraday = [{"time": str(x["time"]), "price": _num(x["price"]),
+             "avg": _num(x["avg"]), "volume": _num(x["volume"])}
             for x in minute.to_dict("records")]
 ```
 
-(`v != v` 同时兜住残留 NaN,双保险。)归一后 NaN→None→`json.dumps` 产 `null`(合法 JSON)。
+`_num` 已同时兜住 NaN(`f != f`)与 None,双保险齐备。归一后 NaN→None→`json.dumps` 产 `null`(合法 JSON)。
 
 **测试**:①`get_stock_minute` 构造累计量为 0 的原始行 → 返回 `avg` 为 None 而非 NaN;②api_stock
 intraday 对 None 值产出 `"price": null` 不抛;③现有 `tests/test_data_source.py` 相关用例不回归。
@@ -300,9 +315,9 @@ intraday 对 None 值产出 `"price": null` 不抛;③现有 `tests/test_data_so
 ## §8 static/app.js — loadSectors null 强转(范围外)
 
 **现状(:58)**:`s.index_change_pct >= 0` 对 null 强转 → `0 >= 0` → true,停牌/无数据板块被当「红盘」。
-与 :107 已有 `!= null` 守卫不一致。
+与 :108 已有 `x.change_pct != null && x.change_pct >= 0` 守卫模式不一致。
 
-**修复**:对齐 :107:
+**修复**:对齐 :108:
 
 ```javascript
 if (s.index_change_pct != null && s.index_change_pct >= 0) { /* 红 */ }
