@@ -206,3 +206,142 @@ def predict_at(d, i, now, cals):
         },
         "T+3": {"direction": t3_dir, "confidence": t3_conf},
     }
+
+
+def _iter_scored(universe, pos_of, all_days, days):
+    """逐评估日逐 buyable 股 yield (composite, lbl)。"""
+    for i in days:
+        dt = all_days[i]
+        buyable, _, _, _ = bt.build_buyable(universe, pos_of, all_days, i)
+        for c in buyable:
+            bar = pos_of[c][dt]
+            sc = bt.score_at(universe[c], bar, AFTER_CLOSE)
+            if sc is None:
+                continue
+            lbl = _labels(universe[c], bar)
+            if lbl is None:
+                continue
+            yield float(sc["composite"]), lbl
+
+
+def _collect_samples(universe, pos_of, all_days, days):
+    samples = {"direction": [], "gap": [], "od": [], "trend3": []}
+    for composite, lbl in _iter_scored(universe, pos_of, all_days, days):
+        samples["direction"].append((composite, lbl["close1"]))
+        samples["gap"].append((composite, lbl["gap"]))
+        samples["od"].append((composite, lbl["od"]))
+        if lbl["trend3"] is not None:
+            samples["trend3"].append((composite, lbl["trend3"]))
+    return samples
+
+
+def _fit_all(samples):
+    return {name: _fit_calibrator(samples[name], N_BINS) for name in samples}
+
+
+def _bin_index(cal, composite):
+    for idx, (upper, _p) in enumerate(cal.bins):
+        if composite <= upper:
+            return idx
+    return len(cal.bins) - 1
+
+
+def _metric(name, cal, samples):
+    n = len(samples)
+    if n == 0:
+        return {"n": 0, "base_rate": None, "hit_rate": None, "ece": None, "brier": None, "n_hold": 0}
+    base_rate = float(sum(l for _, l in samples)) / n
+    counts = [0] * len(cal.bins)
+    sums = [0.0] * len(cal.bins)
+    n_hold = 0
+    hit = 0
+    n_bet = 0
+    brier_sum = 0.0
+    brier_n = 0
+    for composite, label in samples:
+        p = cal.p_up(composite)
+        direction, _ = _dir_conf(p)
+        idx = _bin_index(cal, composite)
+        counts[idx] += 1
+        sums[idx] += label
+        if direction == "hold":
+            n_hold += 1
+        else:
+            n_bet += 1
+            correct = (direction == "up" and label == 1) or (direction == "down" and label == 0)
+            if correct:
+                hit += 1
+            brier_sum += (p - label) ** 2
+            brier_n += 1
+    ece = 0.0
+    for idx, (_u, p) in enumerate(cal.bins):
+        if counts[idx]:
+            ece += (counts[idx] / n) * abs(p - sums[idx] / counts[idx])
+    return {
+        "n": n,
+        "base_rate": base_rate,
+        "hit_rate": hit / n_bet if n_bet else None,
+        "ece": ece,
+        "brier": brier_sum / brier_n if brier_n else None,
+        "n_hold": n_hold,
+    }
+
+
+def _path_label(gap_up, od_up):
+    if gap_up and od_up:
+        return "高开高走"
+    if gap_up and not od_up:
+        return "高开低走"
+    if not gap_up and od_up:
+        return "低开高走"
+    return "低开低走"
+
+
+def _evaluate(universe, pos_of, all_days, days, cals):
+    val = {"direction": [], "gap": [], "od": [], "trend3": []}
+    path_n = 0
+    path_correct = 0
+    for composite, lbl in _iter_scored(universe, pos_of, all_days, days):
+        val["direction"].append((composite, lbl["close1"]))
+        val["gap"].append((composite, lbl["gap"]))
+        val["od"].append((composite, lbl["od"]))
+        if lbl["trend3"] is not None:
+            val["trend3"].append((composite, lbl["trend3"]))
+        gap_dir = _gap_dir(cals["gap"].p_up(composite))
+        od_dir, _ = _dir_conf(cals["od"].p_up(composite))
+        pred_path = _path(gap_dir, od_dir)
+        if pred_path is not None:
+            actual = _path_label(lbl["gap"], lbl["od"])
+            path_n += 1
+            if pred_path == actual:
+                path_correct += 1
+    metrics = {name: _metric(name, cals[name], val[name]) for name in val}
+    metrics["path"] = {"n": path_n, "acc_path": path_correct / path_n if path_n else None}
+    return metrics
+
+
+def run_backtest(data_dir, sector_map_path):
+    sector_map = bt.load_sector_map(sector_map_path)
+    universe, codes = bt.build_universe(data_dir, sector_map)
+    if not universe:
+        raise RuntimeError(f"no usable daily pkl in {data_dir}")
+    all_days, pos_of = bt.build_calendar(universe, codes)
+    start = max(61, len(all_days) - 1 - EVAL_DAYS)
+    step = max(1, (len(all_days) - 2 - start) // 300)
+    eval_days = list(range(start, len(all_days) - 1, step))
+    n = len(eval_days)
+    n_train = int(TRAIN_FRAC * n)
+    train_days = eval_days[:n_train]
+    valid_days = eval_days[n_train:]
+    samples = _collect_samples(universe, pos_of, all_days, train_days)
+    cals = _fit_all(samples)
+    metrics = _evaluate(universe, pos_of, all_days, valid_days, cals)
+    return {
+        "calibrators": cals,
+        "n_samples": {name: len(samples[name]) for name in samples},
+        "metrics": metrics,
+        "data_range": {"start": str(all_days[0]), "end": str(all_days[-1])},
+        "train_window": {"start": str(all_days[train_days[0]]), "end": str(all_days[train_days[-1]])},
+        "valid_window": {"start": str(all_days[valid_days[0]]), "end": str(all_days[valid_days[-1]])},
+        "n_eval": n, "step": step, "n_train": n_train, "n_valid": n - n_train,
+    }

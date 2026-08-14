@@ -170,3 +170,32 @@ def test_predict_at_no_future_leak(monkeypatch):
     assert after != before  # 未来确实被改动
     p2 = pr.predict_at(d, 10, pr.AFTER_CLOSE, _fake_cals())
     assert p1 == p2  # 但预测逐位不变(不读未来)
+
+
+def test_metric_hit_rate_and_ece():
+    cal = pr._fit_calibrator([(1.0, 0)] * 10 + [(9.0, 1)] * 10, 2)  # p=[0,1]
+    samples = [(1.0, 0)] * 5 + [(9.0, 1)] * 5
+    m = pr._metric("direction", cal, samples)
+    assert m["n"] == 10
+    assert m["base_rate"] == pytest.approx(0.5)
+    assert m["hit_rate"] == pytest.approx(1.0)
+    assert m["ece"] == pytest.approx(0.0)
+    assert m["brier"] == pytest.approx(0.0)
+    assert m["n_hold"] == 0
+
+
+def test_run_backtest_integration(monkeypatch):
+    d = make_daily([10.0 + 0.1 * i for i in range(70)])
+    monkeypatch.setattr(bt, "load_sector_map", lambda p: {})
+    monkeypatch.setattr(bt, "build_universe", lambda dd, sm: ({"000001": d}, ["000001"]))
+    monkeypatch.setattr(bt, "build_calendar",
+                        lambda univ, codes: (list(d["date"]),
+                                             {"000001": {dt: i for i, dt in enumerate(d["date"])}}))
+    monkeypatch.setattr(bt, "build_buyable", lambda univ, pos, ad, i: ({"000001"}, {}, {}, {}))
+    monkeypatch.setattr(bt, "score_at", lambda dd, i, now: {"composite": 50.0})
+    results = pr.run_backtest("/dummy", "/dummy")
+    assert set(results["calibrators"]) == {"direction", "gap", "od", "trend3"}
+    assert set(results["metrics"]) == {"direction", "gap", "od", "trend3", "path"}
+    assert results["n_train"] + results["n_valid"] == results["n_eval"]
+    assert results["n_train"] == int(0.8 * results["n_eval"])
+    assert results["data_range"]["start"] == d["date"].iloc[0]
