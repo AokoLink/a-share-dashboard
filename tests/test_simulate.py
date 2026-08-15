@@ -219,3 +219,109 @@ def test_render_markdown_contains_table():
     assert "profit_factor" in md or "盈亏比" in md
     assert "保守日内假设" in md
     assert "A" in md
+
+
+# ---- risk_tiered_stop ----
+
+def test_risk_tiered_stop_endpoints():
+    assert sim.risk_tiered_stop(0.0) == pytest.approx(-0.12)
+    assert sim.risk_tiered_stop(1.0) == pytest.approx(-0.04)
+    assert sim.risk_tiered_stop(0.5) == pytest.approx(-0.08)
+    assert sim.risk_tiered_stop(None) == pytest.approx(-0.08)
+
+
+def test_risk_tiered_stop_custom_params():
+    assert sim.risk_tiered_stop(0.0, tight=-0.02, loose=-0.10) == pytest.approx(-0.10)
+    assert sim.risk_tiered_stop(1.0, tight=-0.02, loose=-0.10) == pytest.approx(-0.02)
+    assert sim.risk_tiered_stop(0.25, tight=-0.02, loose=-0.10) == pytest.approx(-0.08)
+
+
+# ---- run_risk_ab 布线(选篮一次 -> flat/tiered 各模拟一次 -> mean_diff) ----
+
+def test_run_risk_ab_wiring(tmp_path, monkeypatch):
+    days = [f"2026-01-{i + 1:02d}" for i in range(63)]
+    monkeypatch.setattr(bt, "load_sector_map", lambda p: {"600000": ["半导体"]})
+    monkeypatch.setattr(bt, "build_universe", lambda d, sm: ({"600000": object()}, ["600000"]))
+    monkeypatch.setattr(bt, "build_sector_members", lambda sm, u: {"半导体": ["600000"]})
+    monkeypatch.setattr(bt, "build_calendar", lambda u, c: (days, {"600000": {dt: 0 for dt in days}}))
+    monkeypatch.setattr(bt, "sector_heat", lambda *a: {"半导体": 0.05})
+    monkeypatch.setattr(bt, "build_buyable", lambda *a: ({"600000"}, {}, {}, {}))
+    monkeypatch.setattr(bt, "score_at", lambda d, i, now: {"risk": 0.0, "composite": 60.0, "position": 50.0})
+
+    def fake_baskets(*a, **k):
+        return {"A": ["600000"], "E_hi": [], "E_lo": [], "B": None, "C": [], "D": []}
+
+    monkeypatch.setattr(bt, "select_baskets", fake_baskets)
+
+    class FakeRiskCal:
+        def p_up(self, risk):
+            return 0.0   # risk_p=0 -> tiered stop = loose = -0.12
+
+    monkeypatch.setattr(sim.predict, "run_backtest",
+                        lambda d, sm: {"calibrators": {"risk": FakeRiskCal()},
+                                       "n_train": 0, "n_valid": 1})
+
+    calls = []
+
+    def fake_trade(d, bar, holding_days, stop_pct, take_pct):
+        calls.append((bar, holding_days, stop_pct, take_pct))
+        ret = 0.10 if stop_pct == -0.08 else 0.06
+        return {"entry": 100.0, "exit": 100.0 * (1.0 + ret), "exit_reason": "hold",
+                "holding_days_actual": 3, "ret_gross": ret,
+                "max_fav": 0.15, "max_adv": -0.02}
+
+    monkeypatch.setattr(sim, "simulate_trade", fake_trade)
+
+    res = sim.run_risk_ab("x", "y", holding_days=3, cost_bps=20,
+                          base_stop=-0.08, tight=-0.04, loose=-0.12)
+    # 同一笔交易 flat 先、tiered 后,止损分别为 base_stop 与 loose
+    assert calls == [(0, 3, -0.08, None), (0, 3, -0.12, None)]
+    b = res["baskets"]["A"]
+    assert b["n"] == 1
+    assert b["flat"]["n_trades"] == 1
+    assert b["tiered"]["n_trades"] == 1
+    # flat net=0.10-0.004;tiered net=0.06-0.004;diff=-0.04
+    assert b["mean_diff"] == pytest.approx((0.06 - 0.004) - (0.10 - 0.004))
+    assert res["n_valid_eval"] == 1
+
+
+# ---- build_ab_report / render_ab_markdown ----
+
+def test_build_ab_report_serializes():
+    flat_s = sim.summarize([{"ret_gross": 0.10, "max_fav": 0.15, "max_adv": -0.05}], 20)
+    tiered_s = sim.summarize([{"ret_gross": 0.06, "max_fav": 0.15, "max_adv": -0.05}], 20)
+    res = {
+        "config": {"holding_days": 3, "cost_bps": 20, "base_stop": -0.08,
+                   "tight": -0.04, "loose": -0.12},
+        "data_range": {"start": "2026-01-01", "end": "2026-08-01"},
+        "window": {"start": "2026-01-05", "end": "2026-07-31"},
+        "n_eval": 2, "n_train": 1, "n_valid": 1, "n_valid_eval": 1, "step": 1,
+        "baskets": {"A": {"n": 1, "flat": flat_s, "tiered": tiered_s, "mean_diff": -0.04}},
+        "notes": ["n1"],
+    }
+    payload = sim.build_ab_report(res, system_version="abc", generated_at="t")
+    assert payload["system_version"] == "abc"
+    assert payload["module_version"] == sim.MODULE_VERSION
+    assert payload["baskets"]["A"]["flat"]["n_trades"] == 1
+    assert payload["baskets"]["A"]["tiered"]["n_trades"] == 1
+    assert payload["baskets"]["A"]["mean_diff"] == pytest.approx(-0.04)
+    assert payload["baskets"]["A"]["flat"]["expectancy"] == pytest.approx(0.10 - 0.004)
+
+
+def test_render_ab_markdown_contains_tables():
+    flat_s = sim.summarize([{"ret_gross": 0.10, "max_fav": 0.15, "max_adv": -0.05}], 20)
+    tiered_s = sim.summarize([{"ret_gross": 0.06, "max_fav": 0.15, "max_adv": -0.05}], 20)
+    res = {
+        "config": {"holding_days": 3, "cost_bps": 20, "base_stop": -0.08,
+                   "tight": -0.04, "loose": -0.12},
+        "data_range": {"start": "2026-01-01", "end": "2026-08-01"},
+        "window": {"start": "2026-01-05", "end": "2026-07-31"},
+        "n_eval": 2, "n_train": 1, "n_valid": 1, "n_valid_eval": 1, "step": 1,
+        "baskets": {"A": {"n": 1, "flat": flat_s, "tiered": tiered_s, "mean_diff": -0.04}},
+        "notes": ["risk_p 线性内插", "保守日内假设"],
+    }
+    payload = sim.build_ab_report(res, system_version="abc", generated_at="t")
+    md = sim.render_ab_markdown(payload)
+    assert "flat vs tiered" in md
+    assert "A" in md
+    assert "risk_p 线性内插" in md
