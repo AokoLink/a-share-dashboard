@@ -104,6 +104,27 @@ def client(tmp_path, monkeypatch):
     return client_factory(monkeypatch, db_path=str(tmp_path / "api.db"))
 
 
+def test_index_route_serves_regime(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert "A股三层分析看板" in html
+    assert 'id="regime-bar"' in html
+    assert 'id="reco-regime"' in html
+
+
+def test_index_regime_wiring_static():
+    # 静态冒烟:index.html 容器 id 与 app.js 引用的 DOM id 一致(防改名漂移)
+    import pathlib
+    base = pathlib.Path(app_mod.__file__).resolve().parent
+    html = (base / "templates" / "index.html").read_text(encoding="utf-8")
+    js = (base / "static" / "app.js").read_text(encoding="utf-8")
+    for cid in ("regime-bar", "reco-regime"):
+        assert f'id="{cid}"' in html
+    for ref in ('$("#regime-bar")', '$("#reco-regime")', "loadRegime"):
+        assert ref in js
+
+
 def test_market_endpoint(client):
     r = client.get("/api/market")
     body = r.get_json()

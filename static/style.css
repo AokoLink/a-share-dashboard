@@ -34,6 +34,15 @@ tr.sector-row:hover { background: var(--bg); }
 #watchlist { display: flex; gap: 10px; align-items: center; }
 .wl-item { cursor: pointer; padding: 2px 8px; border: 1px solid var(--line); border-radius: 20px; }
 #reco-disclaimer { margin-bottom: 8px; }
+#regime-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#regime-indicator { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.regime-chip { display: inline-block; padding: 3px 12px; border-radius: 14px;
+               font-size: 13px; color: #fff; }
+.regime-buy_dip { background: #e07b00; }   /* 琥珀:恐慌抄底机会(带肥尾风险) */
+.regime-avoid   { background: #c62828; }   /* 红:高潮/退潮 空仓回避 */
+.regime-neutral { background: #5b6673; }   /* 中性灰 */
+.regime-unknown { background: #8a919c; opacity: .75; }
+#reco-regime { margin-bottom: 8px; }
 #reco-coverage { margin-bottom: 8px; }
 #reco-skipped { margin-top: 8px; }
 .reco-sector { margin-bottom: 12px; }

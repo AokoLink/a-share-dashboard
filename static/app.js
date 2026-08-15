@@ -4,6 +4,7 @@ const state = {
   market: null,
   sectors: [],
   current: null, // {kind:'sector'|'stock', code}
+  regime: null,
   autoTimer: null,
 };
 const GAP_WARN_PCT = -0.682;  // P1 探针定稿:个股次日 gap 分布 P20(原 provisional -1.5)
@@ -53,6 +54,42 @@ async function loadMarket() {
   renderBreadth(b.data.breadth, b.data.volume_vs_yesterday);
   $("#updated").textContent = "更新于 " + (b.meta.updated_at || "—");
   $("#stale-flag").classList.toggle("hidden", !b.meta.stale);
+}
+
+// ---- 市场情绪择时(regime gate) ----
+function regimeChip(d) {
+  if (!d || d.label == null) {
+    return `<span class="regime-chip regime-unknown">市场情绪:数据不足</span>`;
+  }
+  const advice = d.advice || {};
+  const action = advice.action || "unknown";
+  return `<span class="regime-chip regime-${esc(action)}"><b>市场情绪:${esc(d.label)}</b></span>`;
+}
+
+function regimeLine(d) {
+  if (!d) return "";
+  const advice = d.advice || {};
+  return regimeChip(d) + `<span class="muted">${esc(advice.message || "")}</span>`;
+}
+
+function renderRegime() {
+  const bar = $("#regime-bar");
+  if (!state.regime || state.regime.label == null) {
+    bar.classList.add("hidden");
+    return;
+  }
+  bar.classList.remove("hidden");
+  $("#regime-indicator").innerHTML =
+    regimeLine(state.regime) + `<span class="muted">(${esc(state.regime.as_of || "—")})</span>`;
+}
+
+async function loadRegime() {
+  try {
+    state.regime = (await api("/api/regime")).data;
+  } catch (e) {
+    // best-effort:初次失败保持 null(隐藏 banner);已有旧值则不覆盖
+  }
+  renderRegime();
 }
 
 async function loadSectors() {
@@ -245,6 +282,8 @@ $("#btn-wl-add").addEventListener("click", async () => {
 function renderRecommend(b) {
   const d = b.data, m = b.meta;
   const cov = m.coverage || {};
+  // 市场情绪门控:recommend 响应自带 regime(有缓存时);否则回退启动时 fetch 的 state.regime
+  $("#reco-regime").innerHTML = regimeLine(d.regime || state.regime);
   $("#reco-coverage").innerHTML = cov.strong_candidates != null
     ? `今日强势板块 ${cov.strong_candidates} 个,已覆盖 ${cov.mapped} 个,跳过 ${cov.skipped} 个`
     : "";
@@ -405,6 +444,7 @@ function switchView(view) {
 async function refreshAll() {
   try { await loadMarket(); } catch (e) { $("#stale-flag").classList.remove("hidden"); }
   try { await loadSectors(); } catch (e) { /* 沿用旧列表 */ }
+  await loadRegime();
   if (state.view === "recommend") { try { await loadRecommend(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "actionable") { try { await loadActionableLeaders(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "tradesim") { try { await loadTradeSim(); } catch (e) { /* 沿用旧 */ } }
