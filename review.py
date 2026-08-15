@@ -51,6 +51,39 @@ def _baseline(dim, cell):
     return None
 
 
+def _overall_summary(payload):
+    """逐维主指标 + 无信息基线 + edge = value - baseline。"""
+    rows = []
+    for dim in ev.DIMS:
+        o = payload["overall"][dim]
+        value = o.get(ev.PRIMARY[dim])
+        baseline = _baseline(dim, o)
+        edge = None
+        if value is not None and baseline is not None:
+            edge = value - baseline
+        rows.append({"dim": dim, "primary": ev.PRIMARY[dim], "n": o.get("n"),
+                     "value": value, "baseline": baseline, "edge": edge})
+    return rows
+
+
+def _no_edge_dims(payload):
+    """主指标在 1σ 内 ≈ 无信息基线的维度列表;risk 不做无 edge 判定。"""
+    out = []
+    for dim in ev.DIMS:
+        if dim == "risk":
+            continue
+        o = payload["overall"][dim]
+        value = o.get(ev.PRIMARY[dim])
+        baseline = _baseline(dim, o)
+        n_eff = _effective_n(dim, o)
+        if value is None or baseline is None or not n_eff:
+            continue
+        se = (baseline * (1.0 - baseline) / n_eff) ** 0.5
+        if abs(value - baseline) <= se:
+            out.append(dim)
+    return out
+
+
 def _git_short_sha():
     try:
         out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
