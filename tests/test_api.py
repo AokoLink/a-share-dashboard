@@ -138,6 +138,20 @@ def test_index_swing_wiring_static():
         assert ref in js
 
 
+def test_index_technical_detail_wiring_static():
+    # 静态冒烟:技术详情/持有建议/波段候选容器 id 与 app.js 引用一致(防改名漂移)
+    import pathlib
+    base = pathlib.Path(app_mod.__file__).resolve().parent
+    html = (base / "templates" / "index.html").read_text(encoding="utf-8")
+    js = (base / "static" / "app.js").read_text(encoding="utf-8")
+    for cid in ("hold-advice", "volume-price", "tech-indicators", "swing-candidates"):
+        assert f'id="{cid}"' in html
+    for ref in ('$("#hold-advice")', '$("#volume-price")', '$("#tech-indicators")',
+                '$("#swing-candidates")', "loadSwingCandidates", "renderTechnicalDetail",
+                "renderSwingCandidates"):
+        assert ref in js
+
+
 def test_market_endpoint(client):
     r = client.get("/api/market")
     body = r.get_json()
@@ -631,3 +645,98 @@ def test_report_trade_sim_invalid_json(tmp_path, monkeypatch):
     r = c.get("/api/report/trade-sim")
     assert r.status_code == 500
     assert r.get_json()["error"]["code"] == "REPORT_ERROR"
+
+
+def test_stock_indicators_and_hold(client, monkeypatch):
+    monkeypatch.setattr(ds, "resolve_code_sectors", lambda c: [])   # 绕过板块打分
+    monkeypatch.setattr(env, "load_cached_regime", lambda path: {
+        "as_of": "2026-08-13", "label": "震荡",
+        "metrics": {}, "advice": {"action": "neutral", "message": "震荡市"},
+        "swing": {"action": "hold", "message": "持有(中性,启发式,未回测)"}})
+    r = client.get("/api/stock?code=600519")
+    d = r.get_json()["data"]
+    ind = d["indicators"]
+    assert ind["history_limited"] is False
+    assert set(ind["ma"]) == {"ma5", "ma10", "ma20", "ma60"}
+    assert set(ind["macd"]) == {"dif", "dea", "macd", "cross", "zero"}
+    assert set(ind["kdj"]) == {"k", "d", "j", "state", "cross"}
+    assert ind["kdj"]["k"] is not None
+    assert "rsi" in ind and "bias" in ind and "pos60" in ind and "volume_price" in ind
+    hold = d["hold"]
+    assert hold["regime"]["label"] == "震荡"
+    assert hold["regime"]["action"] == "hold"
+    assert set(hold["stock"]) == {"risk", "risk_note", "pos60", "pos_note"}
+    # 方向中性:hold 块(及其 stock 子块)不含 verdict/tier/composite
+    for key in ("verdict", "tier", "composite"):
+        assert key not in hold
+        assert key not in hold["stock"]
+    assert "个股方向无算法 edge(历史回测证伪)" in hold["summary"]
+
+
+def test_stock_indicators_short_history(client, monkeypatch):
+    monkeypatch.setattr(ds, "get_stock_daily", lambda c: (make_daily(30), False))  # <61 根
+    r = client.get("/api/stock?code=600519")
+    d = r.get_json()["data"]
+    assert d["indicators"] == {"history_limited": True}
+    assert d["hold"]["stock"]["risk"] is None
+    assert d["hold"]["stock"]["pos60"] is None
+    assert d["hold"]["stock"]["risk_note"] == "历史不足,无法评估风险"
+
+
+def test_swing_candidates_endpoint(client, monkeypatch):
+    payload = {
+        "regime": {"as_of": "2026-08-13", "label": "震荡",
+                   "swing": {"action": "hold", "message": "持有(中性,启发式,未回测)"}},
+        "total": 2,
+        "items": [
+            {"code": "sh600002", "name": "乙", "price": 12.0, "change_pct": 1.0,
+             "amount": 3e8, "turnover_pct": 10.0, "amp20": 2.0,
+             "risk": 0, "pos60": 0.5, "sector_name": "板块X"},
+            {"code": "sh600001", "name": "甲", "price": 10.0, "change_pct": 1.0,
+             "amount": 2e8, "turnover_pct": 5.0, "amp20": 2.0,
+             "risk": 0, "pos60": 0.5, "sector_name": "板块X"},
+        ],
+        "diagnostics": {"stocks_daily_failed": 0},
+    }
+    monkeypatch.setattr(env, "load_cached_regime", lambda path: {
+        "as_of": "2026-08-13", "label": "震荡",
+        "metrics": {}, "advice": {"action": "neutral", "message": "震荡市"},
+        "swing": {"action": "hold", "message": "持有(中性,启发式,未回测)"}})
+    monkeypatch.setattr(recommend, "collect_swing_candidates",
+                        lambda *a, **k: (payload, False))
+    r = client.get("/api/swing-candidates")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    d = body["data"]
+    assert d["generated_at"]
+    assert d["regime"]["label"] == "震荡"
+    assert d["regime"]["swing"]["action"] == "hold"
+    assert d["total"] == 2
+    it = d["items"][0]
+    for key in ("code", "name", "price", "change_pct", "amount",
+                "turnover_pct", "amp20", "risk", "pos60", "sector_name"):
+        assert key in it
+    # 方向中性:item 无 composite/verdict/position
+    for key in ("composite", "verdict", "position"):
+        assert key not in it
+    assert body["meta"]["stale"] is False
+
+
+def test_swing_candidates_regime_none_when_no_cache(client, monkeypatch):
+    monkeypatch.setattr(env, "load_cached_regime", lambda path: None)
+    monkeypatch.setattr(recommend, "collect_swing_candidates",
+                        lambda *a, **k: ({"regime": None, "total": 0, "items": [],
+                                          "diagnostics": {"stocks_daily_failed": 0}}, False))
+    r = client.get("/api/swing-candidates")
+    d = r.get_json()["data"]
+    assert d["regime"] is None and d["total"] == 0 and d["items"] == []
+
+
+def test_swing_candidates_source_fail(client, monkeypatch):
+    def boom():
+        raise ds.DataSourceError("network down")
+    monkeypatch.setattr(ds, "get_market_spot", boom)
+    r = client.get("/api/swing-candidates")
+    assert r.status_code == 500
+    assert r.get_json()["error"]["code"] == "SOURCE_FAIL"

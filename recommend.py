@@ -440,3 +440,111 @@ def collect_actionable_leaders(summary_df, spot_df, db, type_key, now, resolve_f
              "skipped_sectors": skipped,
              "diagnostics": {"stocks_daily_failed": daily_failed}},
             stale_any)
+
+
+# ---- 波段候选(方向中性可操作性筛选;设计 2026-08-16 §1) ----
+
+def swing_pool(spot_df, exclude_codes, min_amount=MIN_AMOUNT, top_n=200):
+    """波段候选池(方向中性):排除 ST/停牌(price/volume 缺失)/新股(exclude_codes)/
+    涨停(change_pct ≥ limit_threshold);amount ≥ min_amount;按成交额降序取前 top_n。
+
+    与 pick_leaders 不同:不用「涨幅 top3」追涨,不保留涨停(买不进),纯流动性池。"""
+    rows = []
+    for r in spot_df.to_dict("records"):
+        code = str(r["code"])
+        if code in exclude_codes:
+            continue
+        if "ST" in str(r.get("name") or "").upper():
+            continue
+        price, vol, chg = _num(r.get("price")), _num(r.get("volume")), _num(r.get("change_pct"))
+        if not price or not vol or chg is None:
+            continue                              # 停牌
+        if chg >= an.limit_threshold(code):
+            continue                              # 涨停买不进
+        amt = _num(r.get("amount"))
+        if amt is None or amt < min_amount:
+            continue                              # 流动性不足
+        rows.append(r)
+    rows.sort(key=lambda x: -(_num(x["amount"]) or 0))
+    return rows[:top_n]
+
+
+def swing_eligible(turnover_frac, risk, pos60):
+    """波段可操作性硬过滤(方向中性)→ (ok, reason)。命中即剔除:
+    1. turnover_frac 缺失或 <0.02 → 换手不足;
+    2. risk 非 None 且 ≥ RISK_HARD_CUT → 风险尾部;
+    3. pos60 非 None 且 ≥ EXT_HARD_CUT → 高位。
+    risk/pos60 为 None(历史 <61 根)时 fail-open(不因无法评估而剔除,与 filter_candidates 一致)。"""
+    tf = _num(turnover_frac)
+    if tf is None or tf < 0.02:
+        return False, "换手不足"
+    r = _num(risk)
+    if r is not None and r >= RISK_HARD_CUT:
+        return False, "风险尾部"
+    p = _num(pos60)
+    if p is not None and p >= EXT_HARD_CUT:
+        return False, "高位"
+    return True, ""
+
+
+def collect_swing_candidates(spot_df, get_daily_fn, now, regime,
+                             exclude_codes=None, resolve_sectors_fn=None,
+                             top_n=60, pool_n=200):
+    """编排波段候选(方向中性,无收益预测)。返回 (payload, stale_any)。
+
+    regime 由调用方注入(env.load_cached_regime 的 swing 块组装);item 只含
+    流动性/波动/风险尾/高位等方向中性字段,无 composite/verdict/position。
+    排序:换手率降序 → 振幅降序 → 成交额降序;跨代码去重;截断 top_n。"""
+    if exclude_codes is None:
+        exclude_codes = ds.get_new_stocks()
+    if resolve_sectors_fn is None:
+        resolve_sectors_fn = ds.resolve_code_sectors
+    pool = swing_pool(spot_df, exclude_codes, MIN_AMOUNT, pool_n)
+    items, daily_failed, stale_any = [], 0, False
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futures = {ex.submit(get_daily_fn, str(r["code"])): r for r in pool}
+        for fut in as_completed(futures):
+            row = futures[fut]
+            try:
+                daily, stale = fut.result()
+                stale_any = stale_any or bool(stale)
+                if len(daily) and "turnover" in daily.columns:
+                    turnover_frac = _num(daily["turnover"].iloc[-1])
+                else:
+                    turnover_frac = None
+                amp = an.amp20(daily)
+                quote = {"price": _num(row["price"]), "change_pct": _num(row["change_pct"]),
+                         "volume": _num(row["volume"]), "amount": _num(row["amount"]),
+                         "high": _num(row.get("high")), "low": _num(row.get("low")),
+                         "open": _num(row.get("open"))}
+                scores = an.score_stock(daily, quote, now)
+                risk, pos60 = scores["risk"], scores["pos60"]
+                ok, _reason = swing_eligible(turnover_frac, risk, pos60)
+                if not ok:
+                    continue
+                secs = resolve_sectors_fn(str(row["code"]))
+                items.append({
+                    "code": ds.with_prefix(str(row["code"])), "name": str(row["name"]),
+                    "price": _num(row["price"]), "change_pct": _num(row["change_pct"]),
+                    "amount": _num(row["amount"]),
+                    "turnover_pct": round(turnover_frac * 100, 2) if turnover_frac is not None else None,
+                    "amp20": amp, "risk": risk,
+                    "pos60": round(float(pos60), 4) if pos60 is not None else None,
+                    "sector_name": secs[0] if secs else None,
+                    "_turnover_frac": turnover_frac,   # 排序键,出参前移除
+                })
+            except Exception:
+                daily_failed += 1                # 单只日线失败 → 跳过,其余继续
+    items.sort(key=lambda x: (x["_turnover_frac"] is None, -(x["_turnover_frac"] or 0),
+                              x["amp20"] is None, -(x["amp20"] or 0),
+                              -(x["amount"] or 0)))
+    seen, unique = set(), []
+    for it in items:
+        if it["code"] in seen:
+            continue
+        seen.add(it["code"])
+        it.pop("_turnover_frac")
+        unique.append(it)
+    return ({"regime": regime, "total": len(unique), "items": unique[:top_n],
+             "diagnostics": {"stocks_daily_failed": daily_failed}},
+            stale_any)

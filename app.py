@@ -256,6 +256,15 @@ def register_routes(app):
             composite = round(final, 2)
             verdict = an.stock_verdict(final)
             tier = recommend.tier_for_verdict(verdict)
+        indicators = an.compute_technical_indicators(daily, quote, now)
+        regime = env.load_cached_regime(REGIME_CACHE)
+        regime_block = None
+        if regime:
+            swing = regime.get("swing") or {}
+            regime_block = {"label": regime.get("label"),
+                            "action": swing.get("action"),
+                            "message": swing.get("message")}
+        hold = an.build_hold_advice(regime_block, scores["risk"], scores["pos60"])
         kline = [{"date": str(x["date"]), "open": float(x["open"]), "high": float(x["high"]),
                   "low": float(x["low"]), "close": float(x["close"]), "volume": float(x["volume"])}
                  for x in daily.tail(250).to_dict("records")]
@@ -266,7 +275,7 @@ def register_routes(app):
                    "scores": scores, "position": scores["position"],
                    "composite": composite, "verdict": verdict, "tier": tier,
                    "sector_resolved": sector_resolved, "kline": kline,
-                   "intraday": intraday},
+                   "intraday": intraday, "indicators": indicators, "hold": hold},
                   stale=stale1 or stale2 or stale3)
 
     @app.route("/api/recommend")
@@ -387,6 +396,23 @@ def register_routes(app):
         }, stale=stale1 or stale2 or stale_cands,
            extra_meta={"coverage": coverage,
                        "mapping_health": app.config.get("SECTOR_MAP_HEALTH", {})})
+
+    @app.route("/api/swing-candidates")
+    def api_swing_candidates():
+        try:
+            spot, spot_stale = ds.get_market_spot()
+        except ds.DataSourceError as e:
+            return err("SOURCE_FAIL", str(e), 500)
+        now = datetime.now()
+        regime = env.load_cached_regime(REGIME_CACHE)
+        regime_block = None
+        if regime:
+            regime_block = {"as_of": regime.get("as_of"), "label": regime.get("label"),
+                            "swing": regime.get("swing")}
+        payload, stale_cands = recommend.collect_swing_candidates(
+            spot, ds.get_stock_daily, now, regime_block)
+        payload["generated_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
+        return ok(payload, stale=spot_stale or stale_cands)
 
     @app.route("/api/report/trade-sim")
     def api_report_trade_sim():

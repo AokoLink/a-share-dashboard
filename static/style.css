@@ -83,3 +83,12 @@ tr.gap-warn-row td { background: color-mix(in srgb, var(--up) 8%, transparent); 
 .swing-unknown { background: #8a919c; opacity: .75; }
 .swing-item { display: inline-block; cursor: pointer; padding: 2px 8px; border: 1px solid var(--line); border-radius: 20px; margin: 2px; }
 .swing-remove { border: none; background: var(--up); color: #fff; border-radius: 50%; width: 18px; height: 18px; line-height: 1; cursor: pointer; padding: 0; margin-right: 4px; }
+
+/* ---- 波段候选 + 个股技术详情 ---- */
+#swing-candidates { margin-top: 8px; }
+tr.swing-cand-row { cursor: pointer; }
+tr.swing-cand-row:hover { background: var(--bg); }
+.detail-card { min-width: 260px; max-width: 480px; }
+#hold-advice, #volume-price, #tech-indicators { margin-bottom: 12px; }
+.tech-table { font-size: 13px; }
+.tech-table td:first-child { color: var(--muted); white-space: nowrap; }

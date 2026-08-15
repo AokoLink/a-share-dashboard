@@ -2,6 +2,7 @@
 """分析层:时间口径 + 指标 + 打分。纯函数,输入可注入,便于单测。"""
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 
 # ---- 时间口径(规格 §7 P1/A/B) ----
@@ -561,3 +562,193 @@ def score_stock(daily_df, quote, now):
             "signal": signal, "risk": risk,
             "pos60": _pos60(daily_df),
             "composite": stock_composite_v3(position, vp, trend, signal, risk)}
+
+
+# ---- 波段候选 + 个股技术详情(设计 2026-08-16;描述性,不预测方向) ----
+
+def _num(v):
+    """None/NaN → None,否则 float。"""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f
+
+
+def add_kdj(df, n=9, k0=50.0, d0=50.0):
+    """KDJ(n=9)。RSV=(C−Low9)/(High9−Low9)×100;K=(2K_prev+RSV)/3;D=(2D_prev+K)/3;J=3K−2D。
+
+    K0=D0=50;不足 n 根或 High9==Low9(一字)→ RSV=NaN → K/D/J 保持 NaN(不落值,
+    由 kdj_state 转 None)。"""
+    out = df.copy()
+    low_n = out["low"].rolling(n).min()
+    high_n = out["high"].rolling(n).max()
+    denom = (high_n - low_n).replace(0.0, np.nan)
+    rsv = (out["close"] - low_n) / denom * 100.0
+    k = np.full(len(out), np.nan)
+    d = np.full(len(out), np.nan)
+    pk, pd = k0, d0
+    for i in range(len(out)):
+        r = rsv.iloc[i]
+        if r != r:                       # NaN(不足 n 根或一字平盘)
+            continue
+        pk = pk * 2.0 / 3.0 + r / 3.0
+        pd = pd * 2.0 / 3.0 + pk / 3.0
+        k[i] = pk
+        d[i] = pd
+    out["k"] = k
+    out["d"] = d
+    out["j"] = 3.0 * k - 2.0 * d
+    return out
+
+
+def kdj_state(k, d, j, prev_k, prev_d):
+    """KDJ 描述状态 → (state, cross)。任一输入 None/NaN → (None, None)。
+    state: K>80 且 D>80 → 超买;K<20 且 D<20 → 超卖;否则 中性。
+    cross: prev_k≤prev_d 且 k>d → 金叉;prev_k≥prev_d 且 k<d → 死叉;否则 k>d → 多头 / k<d → 空头 / 相等 → —。"""
+    if any(_is_missing(v) for v in (k, d, j, prev_k, prev_d)):
+        return None, None
+    if k > 80 and d > 80:
+        state = "超买"
+    elif k < 20 and d < 20:
+        state = "超卖"
+    else:
+        state = "中性"
+    if prev_k <= prev_d and k > d:
+        cross = "金叉"
+    elif prev_k >= prev_d and k < d:
+        cross = "死叉"
+    elif k > d:
+        cross = "多头"
+    elif k < d:
+        cross = "空头"
+    else:
+        cross = "—"
+    return state, cross
+
+
+def macd_state(dif, dea, prev_dif, prev_dea):
+    """MACD 描述状态 → (cross, zero)。与打分助手 _macd_branch 解耦(其返回分值)。
+    cross: 当根金叉(prev_dif≤prev_dea 且 dif>dea)→ 金叉;当根死叉(prev_dif≥prev_dea 且 dif<dea)→ 死叉;
+    否则 dif>dea → 多头 / dif<dea → 空头 / 相等或 NaN → —。
+    zero: dif>0 → 零轴上;dif<0 → 零轴下;NaN → None。"""
+    if any(_is_missing(v) for v in (dif, dea, prev_dif, prev_dea)):
+        return "—", None
+    if prev_dif <= prev_dea and dif > dea:
+        cross = "金叉"
+    elif prev_dif >= prev_dea and dif < dea:
+        cross = "死叉"
+    elif dif > dea:
+        cross = "多头"
+    elif dif < dea:
+        cross = "空头"
+    else:
+        cross = "—"
+    zero = "零轴上" if dif > 0 else ("零轴下" if dif < 0 else None)
+    return cross, zero
+
+
+def volume_price_state(chg, vr):
+    """量价状态(描述性)。chg=当日涨跌幅%,vr=量比。
+    vr None(盘中前 15 分钟/avg5 缺失)→ 数据不足;否则按 涨跌幅×量比 分类。"""
+    if vr is None:
+        return "数据不足"
+    if chg > 1 and vr > 1.2:
+        return "放量上涨"
+    if chg > 0 and vr < 0.8:
+        return "缩量上涨"
+    if chg < -1 and vr > 1.2:
+        return "放量下跌"
+    if chg < 0 and vr < 0.8:
+        return "缩量回调"
+    return "平量"
+
+
+def amp20(daily_df):
+    """近20日日均振幅%(方向中性):(high−low)/prev_close×100 均值。不足 21 根 → None。"""
+    if len(daily_df) < 21:
+        return None
+    prev_close = daily_df["close"].shift(1)
+    amp = (daily_df["high"] - daily_df["low"]) / prev_close.replace(0.0, np.nan) * 100.0
+    tail = amp.tail(20).dropna()
+    if len(tail) == 0:
+        return None
+    return round(float(tail.mean()), 2)
+
+
+def compute_technical_indicators(daily_df, quote, now):
+    """个股技术指标(描述性,不预测方向)。历史 <61 根 → history_limited=True(全字段省略)。"""
+    if len(daily_df) < 61:
+        return {"history_limited": True}
+    df = add_ma(daily_df)
+    macd_df = add_macd(daily_df)
+    kdj_df = add_kdj(daily_df)
+    last, prev = df.iloc[-1], df.iloc[-2]
+    ml, mp = macd_df.iloc[-1], macd_df.iloc[-2]
+    kl, kp = kdj_df.iloc[-1], kdj_df.iloc[-2]
+    ma = {("ma%d" % p): _num(last["ma%d" % p]) for p in (5, 10, 20, 60)}
+    cross, zero = macd_state(ml["dif"], ml["dea"], mp["dif"], mp["dea"])
+    kstate, kcross = kdj_state(kl["k"], kl["d"], kl["j"], kp["k"], kp["d"])
+    rsi = rsi14(daily_df["close"])
+    rsi_state = "超买" if rsi > 70 else ("超卖" if rsi < 30 else "中性")
+    ma20 = _num(last["ma20"])
+    price = _num(quote.get("price"))
+    if price is None or price <= 0:
+        price = _num(last["close"])
+    bias_pct = round((price - ma20) / ma20 * 100.0, 2) if (ma20 is not None and price is not None) else None
+    vr = custom_volume_ratio(quote.get("volume", 0), trading_minutes_elapsed(now), _avg5_volume(daily_df))
+    b20 = daily_df["volume"].iloc[-25:-5].mean()
+    a5 = daily_df["volume"].iloc[-5:].mean()
+    vol_ratio = round(float(a5 / b20), 3) if (b20 and b20 > 0) else None
+    chg = quote.get("change_pct", 0.0) or 0.0
+    vp_state = volume_price_state(chg, _num(vr))
+    turnover_pct = None
+    if "turnover" in daily_df.columns:
+        tv = _num(daily_df["turnover"].iloc[-1])
+        if tv is not None:
+            turnover_pct = round(tv * 100.0, 2)
+    return {
+        "history_limited": False,
+        "ma": ma,
+        "macd": {"dif": _num(ml["dif"]), "dea": _num(ml["dea"]), "macd": _num(ml["macd"]),
+                 "cross": cross, "zero": zero},
+        "kdj": {"k": _num(kl["k"]), "d": _num(kl["d"]), "j": _num(kl["j"]),
+                "state": kstate, "cross": kcross},
+        "rsi": {"rsi14": round(float(rsi), 2), "state": rsi_state},
+        "bias": {"ma20": ma20, "pct": bias_pct},
+        "pos60": round(float(_pos60(daily_df)), 4),
+        "turnover_pct": turnover_pct,
+        "volume_price": {"vr": _num(vr), "vol_ratio": vol_ratio, "state": vp_state},
+    }
+
+
+def build_hold_advice(regime_block, risk, pos60):
+    """「适不适合持有」分层(诚实)。regime 层(唯一 edge)+ 个股风险/位置尾层(非方向)。
+
+    regime_block 由 app 层组装(env.regime_swing_action + label)后注入;不 import environment(成环)。
+    返回不含 verdict/tier/composite 等方向性结论。"""
+    if risk is None:
+        risk_note = "历史不足,无法评估风险"
+    elif risk >= 60:
+        risk_note = "个股风险尾部,注意回撤"
+    else:
+        risk_note = "个股风险可控"
+    if pos60 is None:
+        pos_note = "历史不足,无法评估位置"
+    elif pos60 >= 0.85:
+        pos_note = "60 日高位,注意追高风险"
+    else:
+        pos_note = "位置中性"
+    rb = regime_block or {}
+    label = rb.get("label")
+    action_label = {"hold": "持有", "exit": "卖出/回避", "opportunity": "等机会"}.get(rb.get("action"), "未知")
+    summary = ("大盘:%s(%s);个股:%s、%s。个股方向无算法 edge(历史回测证伪),仅供研究参考。"
+               % (label or "未知", action_label, risk_note, pos_note))
+    return {
+        "regime": rb,
+        "stock": {"risk": _num(risk), "risk_note": risk_note,
+                  "pos60": _num(pos60), "pos_note": pos_note},
+        "summary": summary,
+    }

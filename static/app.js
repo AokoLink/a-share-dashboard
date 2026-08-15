@@ -118,6 +118,9 @@ async function openSector(code) {
   $("#chart-stock").classList.add("hidden");
   $("#chart-intraday").classList.add("hidden");
   $("#stock-scores").classList.add("hidden");
+  $("#hold-advice").classList.add("hidden");
+  $("#volume-price").classList.add("hidden");
+  $("#tech-indicators").classList.add("hidden");
   renderSectorCharts(b.data);
   renderSectorScores(b.data);
   renderSectorLeaders(b.data);
@@ -165,6 +168,9 @@ async function openStock(code) {
   $("#chart-stock").classList.remove("hidden");
   $("#chart-intraday").classList.remove("hidden");
   $("#stock-scores").classList.remove("hidden");
+  $("#hold-advice").classList.remove("hidden");
+  $("#volume-price").classList.remove("hidden");
+  $("#tech-indicators").classList.remove("hidden");
   renderStockCharts(b.data);
   renderStockScores(b.data);
   $("#btn-wl-add").classList.remove("hidden");
@@ -190,6 +196,7 @@ function renderStockScores(d) {
     html += `<div class="muted" style="margin-top:8px">板块未解析,未含共振加成</div>`;
   }
   $("#stock-scores").innerHTML = html;
+  renderTechnicalDetail(d);
 }
 
 // ---- ECharts 图表 ----
@@ -316,6 +323,82 @@ function renderSwing() {
 async function loadSwing() {
   if (!state.regime) { try { await loadRegime(); } catch (e) { /* 保留空 */ } }
   renderSwing();
+}
+
+// ---- 波段候选(方向中性,可操作性筛选) ----
+function renderSwingCandidates(b) {
+  const d = b.data;
+  const el = $("#swing-candidates");
+  const head = `<div class="muted" style="margin-top:8px">波段候选(方向中性,按活跃度/换手率排序,非收益预测;基于上一交易日收盘):</div>`;
+  if (!d.items || !d.items.length) {
+    el.innerHTML = head + `<div class="muted">暂无符合可操作性的波段候选(流动性/换手/振幅/风险尾过滤)。</div>`;
+    return;
+  }
+  el.innerHTML = head + `<table class="actionable-table"><thead><tr>
+    <th>名称</th><th>代码</th><th>现价</th><th>涨跌幅</th><th>换手率%</th><th>振幅%</th><th>风险</th><th>位置</th><th>板块</th>
+    </tr></thead><tbody>` + d.items.map((x) => {
+      const chg = x.change_pct;
+      return `<tr class="swing-cand-row" data-code="${esc(x.code)}">
+        <td>${esc(x.name)}</td><td>${esc(x.code)}</td>
+        <td>${x.price == null ? "—" : x.price.toFixed(2)}</td>
+        <td class="${chg != null && chg >= 0 ? "up" : "down"}">${fmtPct(chg)}</td>
+        <td>${x.turnover_pct == null ? "—" : x.turnover_pct.toFixed(2)}</td>
+        <td>${x.amp20 == null ? "—" : x.amp20.toFixed(2)}</td>
+        <td>${x.risk == null ? "—" : x.risk.toFixed(0)}</td>
+        <td>${x.pos60 == null ? "—" : (x.pos60 * 100).toFixed(0) + "%"}</td>
+        <td>${esc(x.sector_name || "—")}</td>
+      </tr>`;
+    }).join("") + `</tbody></table>`;
+  el.querySelectorAll("tr.swing-cand-row").forEach((tr) =>
+    tr.addEventListener("click", () => openStock(tr.dataset.code)));
+}
+async function loadSwingCandidates() {
+  try {
+    renderSwingCandidates(await api("/api/swing-candidates"));
+  } catch (e) {
+    $("#swing-candidates").innerHTML = `<span class="muted">波段候选拉取失败</span>`;
+  }
+}
+
+// ---- 个股技术详情(描述性,不构成买卖信号) ----
+function renderTechnicalDetail(d) {
+  const hold = d.hold;
+  if (hold) {
+    const reg = hold.regime || {};
+    const st = hold.stock || {};
+    $("#hold-advice").innerHTML =
+      `<div class="card detail-card"><div class="label">适不适合持有</div>` +
+      `<div class="value">${swingBadge(reg)} <span class="muted" style="font-size:13px">大盘 ${esc(reg.label || "未知")}</span></div>` +
+      `<div class="muted">${esc(reg.message || "")}</div>` +
+      `<div class="muted">个股:${esc(st.risk_note || "")}、${esc(st.pos_note || "")}</div>` +
+      `<div class="muted">${esc(hold.summary || "")}</div></div>`;
+  }
+  const ind = d.indicators;
+  const limited = !ind || ind.history_limited;
+  const DISC = `<div class="muted" style="font-size:12px">技术指标为描述性,不构成买卖信号;超买/超卖仅描述当前位置,不代表即将反转。</div>`;
+  if (limited) {
+    $("#volume-price").innerHTML = `<div class="card detail-card"><div class="label">技术指标</div><div class="muted">历史不足(<3 个月)</div></div>`;
+    $("#tech-indicators").innerHTML = "";
+    return;
+  }
+  const vp = ind.volume_price || {};
+  $("#volume-price").innerHTML =
+    `<div class="card detail-card"><div class="label">量价分析</div>` +
+    `<div class="value">${esc(vp.state || "—")}</div>` +
+    `<div class="muted">量比 ${vp.vr == null ? "—" : vp.vr.toFixed(2)} · 换手率 ${ind.turnover_pct == null ? "—" : ind.turnover_pct.toFixed(2) + "%"} · 量能比 ${vp.vol_ratio == null ? "—" : vp.vol_ratio.toFixed(2)}</div></div>`;
+  const ma = ind.ma || {}, macd = ind.macd || {}, kdj = ind.kdj || {};
+  const rsi = ind.rsi || {}, bias = ind.bias || {};
+  const f = (v) => (v == null ? "—" : v.toFixed(2));
+  $("#tech-indicators").innerHTML =
+    `<div class="card detail-card"><div class="label">技术指标</div>` + DISC +
+    `<table class="tech-table"><tbody>` +
+    `<tr><td>MA(5/10/20/60)</td><td>${f(ma.ma5)} / ${f(ma.ma10)} / ${f(ma.ma20)} / ${f(ma.ma60)}</td></tr>` +
+    `<tr><td>MACD DIF/DEA</td><td>${f(macd.dif)} / ${f(macd.dea)} <span class="muted">(${esc(macd.cross || "—")} · ${esc(macd.zero || "—")})</span></td></tr>` +
+    `<tr><td>KDJ K/D/J</td><td>${f(kdj.k)} / ${f(kdj.d)} / ${f(kdj.j)} <span class="muted">(${esc(kdj.state || "—")} · ${esc(kdj.cross || "—")})</span></td></tr>` +
+    `<tr><td>RSI14</td><td>${f(rsi.rsi14)} <span class="muted">(${esc(rsi.state || "—")})</span></td></tr>` +
+    `<tr><td>乖离率(MA20)</td><td>${bias.pct == null ? "—" : bias.pct.toFixed(2) + "%"}</td></tr>` +
+    `<tr><td>60 日位置</td><td>${ind.pos60 == null ? "—" : (ind.pos60 * 100).toFixed(0) + "%"}</td></tr>` +
+    `</tbody></table></div>`;
 }
 function removeWatchlist(code) {
   saveWatchlist(getWatchlist().filter((x) => x.code !== code));
@@ -509,7 +592,7 @@ async function refreshAll() {
   await loadRegime();
   if (state.view === "recommend") { try { await loadRecommend(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "actionable") { try { await loadActionableLeaders(); } catch (e) { /* 沿用旧 */ } }
-  else if (state.view === "swing") { try { await loadSwing(); } catch (e) { /* 沿用旧 */ } }
+  else if (state.view === "swing") { try { await loadSwing(); } catch (e) { /* 沿用旧 */ } try { await loadSwingCandidates(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "tradesim") { try { await loadTradeSim(); } catch (e) { /* 沿用旧 */ } }
   if (state.current) {
     try {
@@ -537,7 +620,7 @@ document.querySelectorAll(".tab").forEach((t) =>
     switchView(view);
     if (view === "recommend") loadRecommend().catch(() => { /* 沿用旧 */ });
     else if (view === "actionable") loadActionableLeaders();   // 内部已处理失败态
-    else if (view === "swing") loadSwing();
+    else if (view === "swing") { loadSwing(); loadSwingCandidates(); }
     else if (view === "tradesim") loadTradeSim();              // 内部已处理失败态
     else { state.type = t.dataset.type || "industry"; loadSectors(); }
   }));
