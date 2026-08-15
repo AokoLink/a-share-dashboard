@@ -25,6 +25,7 @@ NOTES = [
     "max_fav/max_adv 为持有窗口全程路径极值(机会口径,与 compare.py 的 max_high3/min_low3 一致),与止损止盈退出价解耦",
     "净收益 = ret_gross - 2*cost_bps/10000(双边成本)",
     "profit_factor 无亏损笔时为 None(未定义,含 0 笔交易)",
+    "max_drawdown 基于净值曲线逐笔复利;持续负期望下曲线衰减趋零、回撤饱和至 ~100%,经济含义以 expectancy/profit_factor 为准",
     "逐笔明细不落盘,仅聚合 summary 落盘(避免全市场基准 D 大量交易膨胀 JSON)",
 ]
 
