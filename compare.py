@@ -31,25 +31,46 @@ def _path_label(gap_up, od_up):
     return "低开低走"
 
 
+def _empty_outcomes():
+    return {"close1": None, "gap": None, "od": None, "trend3": None,
+            "high1": None, "low1": None, "volume1": None,
+            "path3": None, "max_high3": None, "min_low3": None}
+
+
 def _actual_outcomes(d, bar):
-    """读 >bar 真实行情 -> {close1, gap, od, trend3};缺对应 bar 时该项为 None。"""
+    """读 >bar 真实行情 -> {close1, gap, od, trend3, high1, low1, volume1,
+    path3, max_high3, min_low3};缺对应 bar 时相应字段为 None。
+
+    trend3(3 日累计)保持原口径;path3/max_high3/min_low3 复用 holding_window(3 日窗口)。
+    """
     if bar + 1 >= len(d):
-        return {"close1": None, "gap": None, "od": None, "trend3": None}
+        return _empty_outcomes()
     close0 = float(d["close"].iloc[bar])
     open1 = float(d["open"].iloc[bar + 1])
     close1 = float(d["close"].iloc[bar + 1])
     if close0 <= 0 or open1 <= 0 or close1 <= 0:
-        return {"close1": None, "gap": None, "od": None, "trend3": None}
+        return _empty_outcomes()
     out = {
         "close1": close1 / close0 - 1.0,
         "gap": open1 / close0 - 1.0,
         "od": close1 / open1 - 1.0,
         "trend3": None,
+        "high1": float(d["high"].iloc[bar + 1]) / close0 - 1.0,
+        "low1": float(d["low"].iloc[bar + 1]) / close0 - 1.0,
+        "volume1": float(d["volume"].iloc[bar + 1]),
+        "path3": None, "max_high3": None, "min_low3": None,
     }
     if bar + 3 < len(d):
         close3 = float(d["close"].iloc[bar + 3])
         if close3 > 0:
             out["trend3"] = close3 / close0 - 1.0
+    w = bt.holding_window(d, bar, 3)
+    if w is not None and w["n"] >= 3:
+        out["path3"] = [w["close"][0] / close0 - 1.0,
+                        w["close"][1] / w["close"][0] - 1.0,
+                        w["close"][2] / w["close"][1] - 1.0]
+        out["max_high3"] = max(w["high"]) / close0 - 1.0
+        out["min_low3"] = min(w["low"]) / close0 - 1.0
     return out
 
 
@@ -171,6 +192,7 @@ def verify(snapshot_path, data_dir, sector_map_path):
     n_verified = 0
     n_trend3_verified = 0
     rows = {"direction": [], "gap": [], "od": [], "trend3": [], "path": [], "return": [], "risk": []}
+    actuals = []
     has_expected_return = False
     has_risk_p = False
 
@@ -197,6 +219,12 @@ def verify(snapshot_path, data_dir, sector_map_path):
         gap_up = 1 if oc["gap"] > 0 else 0
         od_up = 1 if oc["od"] > 0 else 0
         path_actual = _path_label(gap_up, od_up)
+        actuals.append({"code": code, "date": date,
+                        "close1": oc["close1"], "gap": oc["gap"], "od": oc["od"],
+                        "trend3": oc["trend3"], "high1": oc["high1"], "low1": oc["low1"],
+                        "volume1": oc["volume1"], "path": path_actual,
+                        "path3": oc["path3"], "max_high3": oc["max_high3"],
+                        "min_low3": oc["min_low3"]})
 
         t1 = pred.get("T+1") or {}
         t3 = pred.get("T+3") or {}
@@ -251,6 +279,7 @@ def verify(snapshot_path, data_dir, sector_map_path):
             "n_unverified": sum(unverified.values()),
             "unverified_reasons": unverified,
         },
+        "actuals": actuals,
         "metrics": metrics,
     }
 
@@ -275,6 +304,21 @@ def _num(v):
     return f
 
 
+def _clean_actuals(actuals):
+    """逐条真实结果落库,NaN -> None 保证 JSON 合法。"""
+    out = []
+    for a in actuals:
+        out.append({
+            "code": a["code"], "date": a["date"],
+            "close1": _num(a["close1"]), "gap": _num(a["gap"]), "od": _num(a["od"]),
+            "trend3": _num(a["trend3"]), "high1": _num(a["high1"]), "low1": _num(a["low1"]),
+            "volume1": _num(a["volume1"]), "path": a["path"],
+            "path3": None if a["path3"] is None else [_num(x) for x in a["path3"]],
+            "max_high3": _num(a["max_high3"]), "min_low3": _num(a["min_low3"]),
+        })
+    return out
+
+
 def build_report(results):
     payload = {
         "system_version": _git_short_sha(),
@@ -284,6 +328,7 @@ def build_report(results):
         "snapshot": results["snapshot"],
         "data_range": results["data_range"],
         "verification": results["verification"],
+        "actuals": _clean_actuals(results["actuals"]),
         "metrics": {},
     }
     for name, m in results["metrics"].items():
@@ -327,6 +372,7 @@ def render_markdown(payload):
              f"(无下日 bar {v['unverified_reasons']['no_next_bar']} / 不在宇宙 {v['unverified_reasons']['not_in_universe']}"
              f" / 非正价 {v['unverified_reasons']['non_positive_close']})")
     L.append(f"- T+3 可验证: {v['n_trend3_verified']}")
+    L.append(f"- 真实结果快照: {len(payload['actuals'])} 条已落库(见 JSON actuals,含 high/low/volume/逐日 path3/期间最高/回撤)")
     L += ["", "## 六维指标", "", "| 维度 | n | 主指标 | 备注 |", "|---|---|---|---|"]
     m = payload["metrics"]
     for name, label in (("direction", "方向"), ("gap", "开盘"), ("od", "盘中"), ("trend3", "T+3趋势")):

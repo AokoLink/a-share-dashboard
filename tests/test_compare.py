@@ -8,11 +8,21 @@ import compare
 
 def _mk_df(closes, opens):
     n = len(closes)
+    opens = list(opens)
+    closes = list(closes)
     return pd.DataFrame({
         "date": [f"2026-08-{i + 1:02d}" for i in range(n)],
-        "open": list(opens),
-        "close": list(closes),
+        "open": opens,
+        "high": [max(o, c) * 1.01 for o, c in zip(opens, closes)],
+        "low": [min(o, c) * 0.99 for o, c in zip(opens, closes)],
+        "close": closes,
+        "volume": [100000.0] * n,
     })
+
+
+EMPTY = {"close1": None, "gap": None, "od": None, "trend3": None,
+         "high1": None, "low1": None, "volume1": None,
+         "path3": None, "max_high3": None, "min_low3": None}
 
 
 def test_path_label_quadrants():
@@ -31,17 +41,30 @@ def test_actual_outcomes_values():
     assert oc["trend3"] == pytest.approx(108.9 / 100.0 - 1.0)
 
 
+def test_actual_outcomes_enriched():
+    d = _mk_df([100.0, 110.0, 121.0, 108.9], [100.0, 105.0, 115.0, 105.0])
+    oc = compare._actual_outcomes(d, 0)
+    assert oc["high1"] == pytest.approx(d["high"].iloc[1] / 100.0 - 1.0)
+    assert oc["low1"] == pytest.approx(d["low"].iloc[1] / 100.0 - 1.0)
+    assert oc["volume1"] == pytest.approx(100000.0)
+    assert oc["path3"][0] == pytest.approx(110.0 / 100.0 - 1.0)
+    assert oc["path3"][1] == pytest.approx(121.0 / 110.0 - 1.0)
+    assert oc["path3"][2] == pytest.approx(108.9 / 121.0 - 1.0)
+    assert oc["max_high3"] == pytest.approx(max(d["high"].iloc[1:4]) / 100.0 - 1.0)
+    assert oc["min_low3"] == pytest.approx(min(d["low"].iloc[1:4]) / 100.0 - 1.0)
+
+
 def test_actual_outcomes_edge_cases():
     d = _mk_df([100.0, 110.0, 121.0], [100.0, 105.0, 115.0])
     # bar+1 越界(末根)
-    assert compare._actual_outcomes(d, 2) == {"close1": None, "gap": None, "od": None, "trend3": None}
+    assert compare._actual_outcomes(d, 2) == EMPTY
     # bar+3 越界(bar=1: close1/gap/od 有值,trend3 None)
     oc = compare._actual_outcomes(d, 1)
     assert oc["close1"] == pytest.approx(121.0 / 110.0 - 1.0)
     assert oc["trend3"] is None
     # 非正价
     d2 = _mk_df([-5.0, 110.0], [100.0, 105.0])
-    assert compare._actual_outcomes(d2, 0) == {"close1": None, "gap": None, "od": None, "trend3": None}
+    assert compare._actual_outcomes(d2, 0) == EMPTY
 
 
 def test_class_metric():
@@ -150,6 +173,15 @@ def test_verify_core(tmp_path, monkeypatch):
     assert m["path"]["n"] == 1 and m["path"]["acc_path"] == pytest.approx(1.0)
     assert m["return"]["available"] is False
     assert m["risk"]["available"] is False
+    # 真实结果快照落库
+    assert len(r["actuals"]) == 1
+    a = r["actuals"][0]
+    assert a["code"] == "000001"
+    assert a["close1"] == pytest.approx(0.10)
+    assert a["trend3"] == pytest.approx(108.9 / 100.0 - 1.0)
+    assert a["path"] == "高开高走"
+    assert a["path3"][0] == pytest.approx(0.10)
+    assert a["volume1"] == pytest.approx(100000.0)
 
 
 def test_verify_field_missing(tmp_path, monkeypatch):

@@ -85,6 +85,38 @@ def next_returns(d, i):
     return {"gap": o1 / c0 - 1, "close1": c1 / c0 - 1, "od": c1 / o1 - 1}
 
 
+def holding_window(d, bar, h):
+    """(bar, bar+h] 的真实 OHLCV 路径(不含 bar 本身,bar 为决策 bar)。
+
+    返回 {"n": m, "open": [...], "high": [...], "low": [...], "close": [...], "volume": [...]}
+    - m 为实际可用根数(1 <= m <= h);越界或任一根 open/close 非正即在该根之前截断;
+    - m == 0 返回 None。
+    只向前读 > bar 的行情,无未来泄露。
+    """
+    lo = bar + 1
+    if lo >= len(d):
+        return None
+    hi = min(bar + h, len(d) - 1)
+    opens, highs, lows, closes, vols = [], [], [], [], []
+    for j in range(lo, hi + 1):
+        try:
+            o = float(d["open"].iloc[j])
+            c = float(d["close"].iloc[j])
+        except (TypeError, ValueError):
+            break
+        if o <= 0 or c <= 0:
+            break
+        opens.append(o)
+        highs.append(float(d["high"].iloc[j]))
+        lows.append(float(d["low"].iloc[j]))
+        closes.append(c)
+        vols.append(float(d["volume"].iloc[j]))
+    if not closes:
+        return None
+    return {"n": len(closes), "open": opens, "high": highs, "low": lows,
+            "close": closes, "volume": vols}
+
+
 def _win_gain(universe, pos_of, all_days, code, i, w):
     j_hi = pos_of[code].get(all_days[i])
     if j_hi is None:

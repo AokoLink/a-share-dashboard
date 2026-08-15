@@ -111,6 +111,35 @@ def test_next_returns_nonpositive():
     assert bt.next_returns(d2, 0) is None  # close[T+1] <= 0
 
 
+def test_holding_window_full():
+    d = make_daily([100.0, 101.0, 102.0, 103.0, 104.0])
+    w = bt.holding_window(d, 0, 3)
+    assert w["n"] == 3
+    assert w["close"] == [101.0, 102.0, 103.0]
+    assert w["open"] == [101.0, 102.0, 103.0]
+    assert w["volume"] == [100000.0, 100000.0, 100000.0]
+    assert w["high"][0] == pytest.approx(101.0 * 1.01)
+
+
+def test_holding_window_truncated_at_tail():
+    d = make_daily([100.0, 101.0, 102.0])  # 3 根
+    w = bt.holding_window(d, 1, 3)          # lo=2, hi=2 -> n=1
+    assert w["n"] == 1
+    assert w["close"] == [102.0]
+
+
+def test_holding_window_none_at_end():
+    d = make_daily([100.0, 101.0])
+    assert bt.holding_window(d, 1, 3) is None  # lo=2 >= len
+
+
+def test_holding_window_nonpositive_breaks():
+    d = make_daily([100.0, 101.0, 0.0, 103.0], opens=[100.0, 101.0, 0.0, 103.0])
+    w = bt.holding_window(d, 0, 3)  # bar1 ok, bar2 close=0 -> 截断
+    assert w["n"] == 1
+    assert w["close"] == [101.0]
+
+
 def test_win_gain():
     d = make_daily([10.0, 10.5, 11.0, 11.5, 12.0, 13.0], start="2026-01-01")
     all_days, pos_of = bt.build_calendar({"a": d}, ["a"])
