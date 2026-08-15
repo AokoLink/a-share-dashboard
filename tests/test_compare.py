@@ -113,6 +113,24 @@ def test_risk_metric():
     assert m["lift"] is None  # n=4 < N_BINS=10 降单箱
 
 
+def test_trend3_stats():
+    actuals = [
+        {"trend3": 0.05, "max_high3": 0.10, "min_low3": -0.03},
+        {"trend3": 0.01, "max_high3": 0.02, "min_low3": -0.01},
+        {"trend3": None, "max_high3": None, "min_low3": None},
+    ]
+    s = compare._trend3_stats(actuals)
+    assert s["n"] == 2
+    assert s["mean_cum3"] == pytest.approx(0.03)
+    assert s["mean_max_high3"] == pytest.approx(0.06)
+    assert s["mean_min_low3"] == pytest.approx(-0.02)
+
+
+def test_trend3_stats_empty():
+    assert compare._trend3_stats([]) == {"n": 0, "mean_cum3": None,
+                                         "mean_max_high3": None, "mean_min_low3": None}
+
+
 import backtest as bt
 
 D1_CLOSES = [90.0, 92.0, 95.0, 100.0, 110.0, 121.0, 108.9, 108.9]
@@ -173,6 +191,7 @@ def test_verify_core(tmp_path, monkeypatch):
     assert m["path"]["n"] == 1 and m["path"]["acc_path"] == pytest.approx(1.0)
     assert m["return"]["available"] is False
     assert m["risk"]["available"] is False
+    assert m["trend3"]["mean_cum3"] == pytest.approx(108.9 / 100.0 - 1.0)
     # 真实结果快照落库
     assert len(r["actuals"]) == 1
     a = r["actuals"][0]

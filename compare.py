@@ -173,6 +173,25 @@ def _risk_metric(rows):
     return {"n": n, "adverse_rate": adverse_rate, "ece": ece, "brier": brier, "lift": lift}
 
 
+def _trend3_stats(actuals):
+    """T+3 描述统计:3 日累计/期间最高/期间最大回撤的均值(样本 = trend3 非 None 的已验证条)。"""
+    cum, fav, adv = [], [], []
+    for a in actuals:
+        if a["trend3"] is None:
+            continue
+        cum.append(a["trend3"])
+        if a["max_high3"] is not None:
+            fav.append(a["max_high3"])
+        if a["min_low3"] is not None:
+            adv.append(a["min_low3"])
+
+    def _mean(xs):
+        return float(np.mean(xs)) if xs else None
+
+    return {"n": len(cum), "mean_cum3": _mean(cum),
+            "mean_max_high3": _mean(fav), "mean_min_low3": _mean(adv)}
+
+
 def verify(snapshot_path, data_dir, sector_map_path):
     with open(snapshot_path, "r", encoding="utf-8") as f:
         snap = json.load(f)
@@ -252,6 +271,7 @@ def verify(snapshot_path, data_dir, sector_map_path):
     for name in ("direction", "gap", "od", "trend3"):
         metrics[name] = _class_metric(rows[name])
     metrics["path"] = _path_metric(rows["path"])
+    metrics["trend3"].update(_trend3_stats(actuals))
     if has_expected_return:
         metrics["return"] = _return_metric(rows["return"])
         metrics["return"]["available"] = True
@@ -336,9 +356,14 @@ def build_report(results):
             payload["metrics"][name] = {"available": False, "reason": m["reason"]}
             continue
         if name in ("direction", "gap", "od", "trend3"):
-            payload["metrics"][name] = {"n": m["n"], "base_rate": _num(m["base_rate"]),
-                                        "hit_rate": _num(m["hit_rate"]), "n_hold": m["n_hold"],
-                                        "n_bet": m["n_bet"]}
+            entry = {"n": m["n"], "base_rate": _num(m["base_rate"]),
+                     "hit_rate": _num(m["hit_rate"]), "n_hold": m["n_hold"],
+                     "n_bet": m["n_bet"]}
+            if name == "trend3":
+                entry["mean_cum3"] = _num(m.get("mean_cum3"))
+                entry["mean_max_high3"] = _num(m.get("mean_max_high3"))
+                entry["mean_min_low3"] = _num(m.get("mean_min_low3"))
+            payload["metrics"][name] = entry
         elif name == "path":
             payload["metrics"][name] = {"n": m["n"], "acc_path": _num(m["acc_path"])}
         elif name == "return":
@@ -379,6 +404,10 @@ def render_markdown(payload):
         mm = m[name]
         L.append(f"| {label} | {mm['n']} | hit_rate={fmt(mm['hit_rate'])} (base={fmt(mm['base_rate'])})"
                  f" | n_hold={mm['n_hold']} n_bet={mm['n_bet']} |")
+        if name == "trend3":
+            L.append(f"| T+3 描述统计 | {mm['n']} | mean_cum3={fmt(mm.get('mean_cum3'))} "
+                     f"mean_max_high3={fmt(mm.get('mean_max_high3'))} "
+                     f"mean_min_low3={fmt(mm.get('mean_min_low3'))} | 3日累计/期间最高/回撤 |")
     pm = m["path"]
     L.append(f"| 路径 | {pm['n']} | acc_path={fmt(pm['acc_path'])} | - |")
     for name, label in (("return", "涨跌幅"), ("risk", "风险")):
