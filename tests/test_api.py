@@ -82,6 +82,21 @@ def client_factory(monkeypatch, db_path=None):
     return app.test_client()
 
 
+def _freeze_now_weekday(monkeypatch, day=datetime.date(2026, 8, 13)):
+    """固定 app 内 now 为工作日,使 _signal_date 稳定返回 now.date()。
+
+    生产 _signal_date 在周末/节假日回退 close_date;而 make_daily 的日历止于
+    2026-05-xx,一旦真实 now 落到周末,硬编码 signal_date 的快照会因 > 当前
+    signal_date 而查不到 prev_snapshot(测试随运行日期翻车)。固定为周四
+    (2026-08-13, weekday=3)保证确定性。
+    """
+    class _FrozenDT(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(day.year, day.month, day.day, 15, 30)
+    monkeypatch.setattr(app_mod, "datetime", _FrozenDT)
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     return client_factory(monkeypatch, db_path=str(tmp_path / "api.db"))
@@ -459,6 +474,7 @@ def test_recommend_prev_snapshot_intraday(monkeypatch, tmp_path):
 
 def test_recommend_prev_snapshot_gap_days(monkeypatch, tmp_path):
     # Fix:跨多日 gap 计数按 signal_date 锚点(非 close_date)
+    _freeze_now_weekday(monkeypatch)
     db = str(tmp_path / "reco_snap_gap.db")
     monkeypatch.setattr(an, "collect_sector_metrics", lambda *a, **k: {
         "verdict": "建议关注", "composite": 78.0, "consecutive_days": 1,
@@ -478,6 +494,7 @@ def test_recommend_prev_snapshot_gap_days(monkeypatch, tmp_path):
 
 def test_recommend_prev_snapshot_bj_prefix(monkeypatch, tmp_path):
     # Fix 3:上一期快照含北交所股(bj 前缀)→ 今日开盘对比须剔除前缀命中 spot(bj 不再被静默跳过)
+    _freeze_now_weekday(monkeypatch)
     db = str(tmp_path / "reco_bj.db")
     monkeypatch.setattr(an, "collect_sector_metrics", lambda *a, **k: {
         "verdict": "建议关注", "composite": 78.0, "consecutive_days": 1,
