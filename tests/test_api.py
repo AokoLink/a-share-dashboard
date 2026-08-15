@@ -125,6 +125,19 @@ def test_index_regime_wiring_static():
         assert ref in js
 
 
+def test_index_swing_wiring_static():
+    # 静态冒烟:波段面板容器 id 与 app.js 引用的 DOM id / 函数一致(防改名漂移)
+    import pathlib
+    base = pathlib.Path(app_mod.__file__).resolve().parent
+    html = (base / "templates" / "index.html").read_text(encoding="utf-8")
+    js = (base / "static" / "app.js").read_text(encoding="utf-8")
+    for cid in ("swing-panel", "swing-guidance", "swing-stocks", "btn-swing-switch", "btn-swing-add"):
+        assert f'id="{cid}"' in html
+    for ref in ('$("#swing-panel")', '$("#swing-guidance")', '$("#btn-swing-switch")',
+                "loadSwing", "state.regime.swing"):
+        assert ref in js
+
+
 def test_market_endpoint(client):
     r = client.get("/api/market")
     body = r.get_json()

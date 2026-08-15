@@ -5,6 +5,7 @@ const state = {
   sectors: [],
   current: null, // {kind:'sector'|'stock', code}
   regime: null,
+  swingEdit: false,
   autoTimer: null,
 };
 const GAP_WARN_PCT = -0.682;  // P1 探针定稿:个股次日 gap 分布 P20(原 provisional -1.5)
@@ -279,6 +280,64 @@ $("#btn-wl-add").addEventListener("click", async () => {
   }
 });
 
+// ---- 波段(用户自选 + regime 启发式) ----
+const SWING_ACTION_LABEL = { opportunity: "等机会", exit: "卖出/回避", hold: "持有", unknown: "未知" };
+function swingBadge(d) {
+  const a = (d && d.action) || "unknown";
+  return `<span class="swing-badge swing-${esc(a)}">${SWING_ACTION_LABEL[a] || "未知"}</span>`;
+}
+function renderSwingStocks() {
+  const w = getWatchlist();
+  const el = $("#swing-stocks");
+  if (!w.length) { el.innerHTML = `<div class="muted">自选为空:点「切换股票」加入你关注的股票。</div>`; return; }
+  const editing = state.swingEdit === true;
+  el.innerHTML = w.map((x) =>
+    `<span class="swing-item" data-code="${esc(x.code)}">` +
+    (editing ? `<button class="swing-remove" data-code="${esc(x.code)}">×</button>` : "") +
+    `⭐ ${esc(x.name)}(${esc(x.code)})</span>`).join("");
+  el.querySelectorAll(".swing-item").forEach((sp) =>
+    sp.addEventListener("click", (e) => {
+      if (e.target.classList && e.target.classList.contains("swing-remove")) {
+        removeWatchlist(e.target.dataset.code); return;
+      }
+      openStock(sp.dataset.code);
+    }));
+}
+function renderSwing() {
+  const swing = (state.regime && state.regime.swing) || null;
+  $("#swing-meta").innerHTML = "波段指引为启发式:regime 仅在进场/回避上验证过,非退出信号;自选股本身无算法 edge。";
+  const chip = (state.regime && state.regime.label != null) ? regimeChip(state.regime) : "";
+  $("#swing-guidance").innerHTML = swing
+    ? `今天整体:${swingBadge(swing)} <span class="muted">${esc(swing.message || "")}</span> ${chip}`
+    : `今天整体:${swingBadge(null)} <span class="muted">(regime 数据不足)</span> ${chip}`;
+  renderSwingStocks();
+}
+async function loadSwing() {
+  if (!state.regime) { try { await loadRegime(); } catch (e) { /* 保留空 */ } }
+  renderSwing();
+}
+function removeWatchlist(code) {
+  saveWatchlist(getWatchlist().filter((x) => x.code !== code));
+  renderWatchlist();
+  renderSwing();
+}
+$("#btn-swing-switch").addEventListener("click", () => {
+  state.swingEdit = !state.swingEdit;
+  $("#swing-edit-mode").classList.toggle("hidden", !state.swingEdit);
+  $("#btn-swing-switch").textContent = state.swingEdit ? "完成" : "切换股票";
+  renderSwingStocks();
+});
+$("#btn-swing-add").addEventListener("click", async () => {
+  const code = $("#swing-add-input").value.trim();
+  if (!code) return;
+  try {
+    const b = await api("/api/stock?code=" + encodeURIComponent(code));
+    addWatchlist(b.data.name, b.data.code);
+    $("#swing-add-input").value = "";
+    renderSwingStocks();
+  } catch (e) { $("#swing-add-input").placeholder = "无效代码"; }
+});
+
 function renderRecommend(b) {
   const d = b.data, m = b.meta;
   const cov = m.coverage || {};
@@ -437,6 +496,7 @@ function switchView(view) {
   $("#sector-view").classList.toggle("hidden", view !== "sectors");
   $("#reco-panel").classList.toggle("hidden", view !== "recommend");
   $("#actionable-panel").classList.toggle("hidden", view !== "actionable");
+  $("#swing-panel").classList.toggle("hidden", view !== "swing");
   $("#tradesim-panel").classList.toggle("hidden", view !== "tradesim");
 }
 
@@ -447,6 +507,7 @@ async function refreshAll() {
   await loadRegime();
   if (state.view === "recommend") { try { await loadRecommend(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "actionable") { try { await loadActionableLeaders(); } catch (e) { /* 沿用旧 */ } }
+  else if (state.view === "swing") { try { await loadSwing(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "tradesim") { try { await loadTradeSim(); } catch (e) { /* 沿用旧 */ } }
   if (state.current) {
     try {
@@ -474,6 +535,7 @@ document.querySelectorAll(".tab").forEach((t) =>
     switchView(view);
     if (view === "recommend") loadRecommend().catch(() => { /* 沿用旧 */ });
     else if (view === "actionable") loadActionableLeaders();   // 内部已处理失败态
+    else if (view === "swing") loadSwing();
     else if (view === "tradesim") loadTradeSim();              // 内部已处理失败态
     else { state.type = t.dataset.type || "industry"; loadSectors(); }
   }));

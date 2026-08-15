@@ -72,3 +72,14 @@ tr.actionable-row:hover { background: var(--bg); }
 #reco-exec { margin-bottom: 8px; }
 #reco-exec .gap-warn { color: var(--up); font-weight: 700; }
 tr.gap-warn-row td { background: color-mix(in srgb, var(--up) 8%, transparent); }
+
+/* ---- 波段面板 ---- */
+#swing-guidance { margin-bottom: 8px; }
+#swing-tools { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.swing-badge { display: inline-block; padding: 3px 12px; border-radius: 14px; font-size: 13px; color: #fff; }
+.swing-opportunity { background: #e07b00; }
+.swing-exit { background: #c62828; }
+.swing-hold { background: #5b6673; }
+.swing-unknown { background: #8a919c; opacity: .75; }
+.swing-item { display: inline-block; cursor: pointer; padding: 2px 8px; border: 1px solid var(--line); border-radius: 20px; margin: 2px; }
+.swing-remove { border: none; background: var(--up); color: #fff; border-radius: 50%; width: 18px; height: 18px; line-height: 1; cursor: pointer; padding: 0; margin-right: 4px; }
