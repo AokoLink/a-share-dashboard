@@ -234,50 +234,66 @@ KNOBS = [
 ]
 
 
-def _layer_weak_strong(payload):
-    """读 significant(覆盖 9 个 dim/metric 组合),按 metric == PRIMARY[dim] 过滤。"""
+def _slice_weak_strong(cells_by_slice, label_key, payload):
+    """逐 (切片, 维) 判定弱/强。
+
+    direction/gap/trend3:与切片自身多数类基线 _baseline(dim, cell) 做一样本二项
+    检验(镜像 _no_edge_dims),而非 vs overall——平坦校准器下 slice hit_rate ==
+    1 - base_rate,vs overall 会把 base_rate 构成差异误报成信号(如 gap 的 10 行假强弱)。
+    path/return/risk:保持 vs overall 的两样本检验(无 base-rate 问题)。
+    """
     weak, strong = [], []
-    se_map = {(L, dim): se for L, dim, se in payload["se_bounds"]}
-    for row in payload["significant"]:
-        L, dim, metric, v_l, v_o, _ = row
-        if metric != ev.PRIMARY[dim]:
-            continue
-        cell = payload["layers"][L][dim]
-        entry = {"layer": L, "dim": dim, "value": v_l, "overall": v_o,
-                 "se": se_map.get((L, dim)), "n": cell.get("n")}
-        if dim == "risk":  # adverse_rate 越低越好,方向反转
-            (weak if v_l > v_o else strong).append(entry)
-        else:
-            (weak if v_l < v_o else strong).append(entry)
+    overall = payload["overall"]
+    for name in cells_by_slice:
+        for dim in ev.DIMS:
+            cell = cells_by_slice[name][dim]
+            if cell.get("_suppressed"):
+                continue
+            if dim in ("direction", "gap", "trend3"):
+                value = cell.get("hit_rate")
+                baseline = _baseline(dim, cell)
+                n_eff = _effective_n(dim, cell)
+                if value is None or baseline is None or not n_eff or n_eff < ev.MIN_LAYER_N:
+                    continue
+                se = (baseline * (1.0 - baseline) / n_eff) ** 0.5
+                bound = 2.0 * se
+                entry = {label_key: name, "dim": dim, "value": value,
+                         "reference": baseline, "se": bound, "n": cell.get("n")}
+                if value > baseline + bound:
+                    strong.append(entry)
+                elif value < baseline - bound:
+                    weak.append(entry)
+                continue
+            # path/return/risk:vs overall 两样本检验(镜像 evaluate._significance)
+            o = overall[dim]
+            value = cell.get(ev.PRIMARY[dim])
+            v_o = o.get(ev.PRIMARY[dim])
+            n_l = _effective_n(dim, cell)
+            n_o = _effective_n(dim, o)
+            if value is None or v_o is None or n_l < ev.MIN_LAYER_N or n_o <= 0:
+                continue
+            se = _binom_diff_se(value, n_l, v_o, n_o)
+            if se is None:
+                continue
+            bound = 2.0 * se
+            entry = {label_key: name, "dim": dim, "value": value,
+                     "reference": v_o, "se": bound, "n": cell.get("n")}
+            diff = value - v_o
+            if abs(diff) <= bound:
+                continue
+            if dim == "risk":  # adverse_rate 越低越好,方向反转
+                (weak if diff > 0 else strong).append(entry)
+            else:
+                (weak if diff < 0 else strong).append(entry)
     return weak, strong
+
+
+def _layer_weak_strong(payload):
+    return _slice_weak_strong(payload["layers"], "layer", payload)
 
 
 def _env_weak_strong(payload):
-    """环境显著性 payload 不含,自算(二项比例差,镜像 evaluate._significance)。"""
-    weak, strong = [], []
-    for state in env.LABELS:
-        for dim in ev.DIMS:
-            cell = payload["environments"][state][dim]
-            if cell.get("_suppressed"):
-                continue
-            overall = payload["overall"][dim]
-            p_l = cell.get(ev.PRIMARY[dim])
-            p_o = overall.get(ev.PRIMARY[dim])
-            n_l = _effective_n(dim, cell)
-            n_o = _effective_n(dim, overall)
-            if p_l is None or p_o is None or n_l < ev.MIN_LAYER_N or n_o < ev.MIN_LAYER_N:
-                continue
-            se = _binom_diff_se(p_l, n_l, p_o, n_o)
-            if se is None:
-                continue
-            if abs(p_l - p_o) > 2.0 * se:
-                entry = {"env": state, "dim": dim, "value": p_l, "overall": p_o,
-                         "se": 2.0 * se, "n": cell.get("n")}
-                if dim == "risk":  # adverse_rate 越低越好,方向反转
-                    (weak if p_l > p_o else strong).append(entry)
-                else:
-                    (weak if p_l < p_o else strong).append(entry)
-    return weak, strong
+    return _slice_weak_strong(payload["environments"], "env", payload)
 
 
 def _degenerate_thin(payload):
@@ -451,10 +467,10 @@ def render_markdown(report):
         if not items:
             return []
         blk = ["", f"### {title}", "",
-               f"| {key} | 维度 | 值 | 总体 | 2σ界 | n |", "|---|---|---|---|---|---|"]
+               f"| {key} | 维度 | 值 | 参照 | 2σ界 | n |", "|---|---|---|---|---|---|"]
         for it in items:
             blk.append(f"| {it[key]} | {it['dim']} | {_fmt(it['value'])} | "
-                       f"{_fmt(it['overall'])} | {_fmt(it['se'])} | {it['n']} |")
+                       f"{_fmt(it['reference'])} | {_fmt(it['se'])} | {it['n']} |")
         return blk
     L += _weak_strong_block("弱层(显著跑输总体)", rv["weak_layers"], "layer")
     L += _weak_strong_block("强层(显著跑赢总体)", rv["strong_layers"], "layer")

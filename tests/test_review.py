@@ -50,6 +50,38 @@ def test_gap_majority_class_is_not_edge():
     assert "gap" in rv._no_edge_dims(p)
 
 
+def test_layer_gap_majority_class_not_strong():
+    # gap 平坦校准器:hit_rate == 1-base_rate(恒押多数类 low)→ 对切片自身多数类基线
+    # 无 edge,不入强弱(旧码 vs overall 会误报强层)。
+    p = _fake_payload()
+    p["overall"]["gap"] = _cell("gap", hit_rate=0.6306, base_rate=0.3694, n=85235)
+    p["layers"]["龙头"]["gap"] = _cell("gap", hit_rate=0.6703, base_rate=0.3297, n=1999)
+    weak, strong = rv._layer_weak_strong(p)
+    assert not any(w["layer"] == "龙头" and w["dim"] == "gap" for w in weak)
+    assert not any(s["layer"] == "龙头" and s["dim"] == "gap" for s in strong)
+
+
+def test_env_gap_majority_class_not_weak():
+    # gap 平坦:熊 gap hit_rate 0.6496 == 1-base_rate 0.6496 → 对自身多数类基线无 edge。
+    p = _fake_payload()
+    p["overall"]["gap"] = _cell("gap", hit_rate=0.6306, base_rate=0.3694, n=85235)
+    p["environments"]["熊"]["gap"] = _cell("gap", hit_rate=0.6496, base_rate=0.3504, n=15226)
+    weak, strong = rv._env_weak_strong(p)
+    assert not any(w["env"] == "熊" and w["dim"] == "gap" for w in weak)
+    assert not any(s["env"] == "熊" and s["dim"] == "gap" for s in strong)
+
+
+def test_env_trend3_real_deviation_survives():
+    # trend3 熊环境:base_rate 0.4255 → 多数类基线 0.5745;hit_rate 0.6324 > 0.5745+2σ
+    # → strong(真实偏离,非 base-rate 伪影,不应被修复误杀)。
+    p = _fake_payload()
+    p["overall"]["trend3"] = _cell("trend3", hit_rate=0.5572, base_rate=0.4645, n=85234)
+    p["environments"]["熊"]["trend3"] = _cell("trend3", hit_rate=0.6324, base_rate=0.4255, n=15226)
+    weak, strong = rv._env_weak_strong(p)
+    assert not any(w["env"] == "熊" and w["dim"] == "trend3" for w in weak)
+    assert any(s["env"] == "熊" and s["dim"] == "trend3" for s in strong)
+
+
 def test_knob_registry_unique_and_typed():
     names = [k["name"] for k in rv.KNOBS]
     assert len(names) == len(set(names))          # name 唯一
@@ -116,39 +148,40 @@ def test_no_edge_direction():
     assert "direction" not in rv._no_edge_dims(p)
 
 
-def test_weak_layer_from_significant():
+def test_layer_weak_strong_from_cell():
+    # 层弱/强改由 cells 直读 + 自身多数类基线(不再读 significant/se_bounds)。
     p = _fake_payload()
-    p["significant"] = [["趋势", "direction", "hit_rate", 0.42, 0.55, 0.02]]
-    p["se_bounds"] = [["趋势", "direction", 0.04]]
+    p["layers"]["趋势"]["direction"] = _cell("direction", hit_rate=0.30, base_rate=0.55, n=400)
     weak, strong = rv._layer_weak_strong(p)
-    assert any(w["layer"] == "趋势" and w["dim"] == "direction" and w["value"] == 0.42
+    assert any(w["layer"] == "趋势" and w["dim"] == "direction" and w["value"] == 0.30
                for w in weak)
     assert strong == []
-    # 反转:v_l > v_o → strong
-    p["significant"] = [["趋势", "direction", "hit_rate", 0.68, 0.55, 0.02]]
+    # 反向:hit_rate 0.72 > 多数类基线 0.50 + 2σ → strong
+    p["layers"]["龙头"]["direction"] = _cell("direction", hit_rate=0.72, base_rate=0.50, n=400)
     weak, strong = rv._layer_weak_strong(p)
-    assert weak == [] and any(s["layer"] == "趋势" for s in strong)
+    assert not any(w["layer"] == "龙头" for w in weak)
+    assert any(s["layer"] == "龙头" and s["dim"] == "direction" for s in strong)
 
 
-def test_layer_weak_filters_nonprimary_metric():
-    # significant 里 return 的 mae 显著但 PRIMARY=sign_agreement → 不产生 weak/strong
+def test_layer_return_uses_overall_comparison():
+    # 非 base-rate 维(return)仍 vs overall 两样本:sign_agreement 0.40 < 0.60 → weak。
     p = _fake_payload()
-    p["significant"] = [["趋势", "return", "mae", 0.05, 0.02, 0.01]]
+    p["overall"]["return"] = _cell("return", sign_agreement=0.60, sign_n=1000)
+    p["layers"]["趋势"]["return"] = _cell("return", sign_agreement=0.40, sign_n=400)
     weak, strong = rv._layer_weak_strong(p)
-    assert weak == [] and strong == []
+    assert any(w["layer"] == "趋势" and w["dim"] == "return" for w in weak)
+    assert strong == []
 
 
-def test_env_significance_self_computed():
-    # env direction hit_rate=0.40/n=100 vs overall 0.55/n=1000:
-    # se = sqrt(0.4*0.6/100 + 0.55*0.45/1000) ≈ 0.0514;2σ≈0.1029;|0.40-0.55|=0.15>0.1029 → 弱环境
+def test_env_direction_own_baseline():
+    # env direction 现与切片自身多数类基线做一样本检验,而非 vs overall。
     p = _fake_payload()
-    p["overall"]["direction"] = _cell("direction", hit_rate=0.55, n=1000, base_rate=0.50)
-    p["environments"]["熊"]["direction"] = _cell("direction", hit_rate=0.40, n=100, base_rate=0.50)
+    p["environments"]["熊"]["direction"] = _cell("direction", hit_rate=0.30, base_rate=0.50, n=400)
     weak, strong = rv._env_weak_strong(p)
-    assert any(w["env"] == "熊" and w["dim"] == "direction" and w["value"] == 0.40
+    assert any(w["env"] == "熊" and w["dim"] == "direction" and w["value"] == 0.30
                for w in weak)
-    # 有效 n < 30 → 跳过
-    p["environments"]["熊"]["direction"] = _cell("direction", hit_rate=0.40, n=10, base_rate=0.50)
+    # 有效 n < MIN_LAYER_N → 跳过
+    p["environments"]["熊"]["direction"] = _cell("direction", hit_rate=0.30, base_rate=0.50, n=10)
     weak, strong = rv._env_weak_strong(p)
     assert not any(w["env"] == "熊" for w in weak)
 
@@ -202,9 +235,7 @@ def test_review_shape():
 
 def test_suggest_r1_antisignal():
     p = _fake_payload()
-    p["layers"]["趋势"]["direction"] = _cell("direction", hit_rate=0.30, base_rate=0.55)
-    p["significant"] = [["趋势", "direction", "hit_rate", 0.30, 0.55, 0.05]]
-    p["se_bounds"] = [["趋势", "direction", 0.10]]
+    p["layers"]["趋势"]["direction"] = _cell("direction", hit_rate=0.30, base_rate=0.55, n=400)
     s = rv.suggest(p, rv.review(p))
     kinds = [x["kind"] for x in s]
     assert "layer_antisignal" in kinds
@@ -242,13 +273,12 @@ def test_suggest_empty_when_clean():
 
 def test_suggest_r2_env_antisignal():
     p = _fake_payload()
-    p["overall"]["direction"] = _cell("direction", hit_rate=0.55, n=1000, base_rate=0.50)
-    p["environments"]["熊"]["direction"] = _cell("direction", hit_rate=0.40, n=100, base_rate=0.50)
+    p["environments"]["熊"]["direction"] = _cell("direction", hit_rate=0.35, base_rate=0.50, n=400)
     s = rv.suggest(p, rv.review(p))
     r2 = [x for x in s if x["kind"] == "environment_antisignal"]
     assert len(r2) == 1
     assert r2[0]["knob"] == "DIRECTION_BAND"
-    assert "0.40" in r2[0]["evidence"] and "0.50" in r2[0]["evidence"]
+    assert "0.35" in r2[0]["evidence"] and "0.50" in r2[0]["evidence"]
 
 
 def test_main_end_to_end(tmp_path):
@@ -283,10 +313,10 @@ def test_review_no_utf8_minus():
 
 
 def test_layer_risk_lower_is_better():
-    # adverse_rate 越低越好:0.03 < 0.05 → 应入 strong 而非 weak
+    # adverse_rate 越低越好:0.03 < 0.05 → strong 而非 weak(非 base-rate,vs overall)
     p = _fake_payload()
-    p["significant"] = [["趋势", "risk", "adverse_rate", 0.03, 0.05, 0.02]]
-    p["se_bounds"] = [["趋势", "risk", 0.04]]
+    p["overall"]["risk"] = _cell("risk", adverse_rate=0.05, n=10000)
+    p["layers"]["趋势"]["risk"] = _cell("risk", adverse_rate=0.03, n=10000)
     weak, strong = rv._layer_weak_strong(p)
     assert not any(w["layer"] == "趋势" for w in weak)
     assert any(s["layer"] == "趋势" and s["dim"] == "risk" and s["value"] == 0.03
@@ -305,9 +335,9 @@ def test_env_risk_higher_is_weaker():
 
 
 def test_suggest_r1_skips_return():
-    # return 维 sign_agreement 0.40 < 0.50 的弱层,不应触发 R1(return 不在 R1 授权范围)
+    # return 维 sign_agreement 0.40 < 0.60 的弱层,不应触发 R1(return 不在 R1 授权范围)
     p = _fake_payload()
-    p["significant"] = [["趋势", "return", "sign_agreement", 0.40, 0.60, 0.05]]
-    p["se_bounds"] = [["趋势", "return", 0.10]]
+    p["overall"]["return"] = _cell("return", sign_agreement=0.60, sign_n=1000)
+    p["layers"]["趋势"]["return"] = _cell("return", sign_agreement=0.40, sign_n=400)
     s = rv.suggest(p, rv.review(p))
     assert not any(x["kind"] == "layer_antisignal" for x in s)
