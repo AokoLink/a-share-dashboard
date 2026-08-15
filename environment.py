@@ -202,7 +202,7 @@ def run(data_dir, sector_map_path):
 # ---------- regime gate(择时门控) ----------
 
 REGIME_ADVICE = {
-    "恐慌": {"action": "buy_dip", "message": "市场恐慌,关注超跌反弹(全市场/宽基);建议持有 2-3 天(T+1 开盘买,T+3/4 开盘卖)。日级净胜率 73%(41 天样本,肥左尾,接飞刀风险,非稳赚)"},
+    "恐慌": {"action": "buy_dip", "message": "市场恐慌,关注超跌反弹(全市场/宽基);建议持有 2-3 天(T+1 开盘买,T+3/4 开盘卖)。2-3 天持有净胜率 73%(41 天样本,肥左尾,接飞刀风险,非稳赚)"},
     "高潮": {"action": "avoid", "message": "市场冲顶(高潮),建议空仓/回避追高"},
     "退潮": {"action": "avoid", "message": "市场杀跌延续(退潮),建议空仓"},
     "牛":   {"action": "neutral", "message": "牛市主升,无择时 edge(方向中性)"},
@@ -223,10 +223,10 @@ SWING_ACTION = {
     "恐慌": {"action": "opportunity", "message": "超跌反弹窗口,等机会(启发式,未回测)"},
     "高潮": {"action": "exit", "message": "冲顶,建议卖出/回避(启发式,未回测)"},
     "退潮": {"action": "exit", "message": "杀跌延续,建议卖出/回避(启发式,未回测)"},
-    "牛":   {"action": "hold", "message": "持有(中性)"},
-    "熊":   {"action": "hold", "message": "持有(中性)"},
-    "震荡": {"action": "hold", "message": "持有(中性)"},
-    "恢复": {"action": "hold", "message": "持有(中性)"},
+    "牛":   {"action": "hold", "message": "持有(中性,启发式,未回测)"},
+    "熊":   {"action": "hold", "message": "持有(中性,启发式,未回测)"},
+    "震荡": {"action": "hold", "message": "持有(中性,启发式,未回测)"},
+    "恢复": {"action": "hold", "message": "持有(中性,启发式,未回测)"},
 }
 
 

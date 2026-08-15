@@ -212,6 +212,7 @@ def test_regime_advice_mapping():
     assert env.regime_advice("未知态")["action"] == "unknown"
     assert isinstance(env.regime_advice("恐慌")["message"], str)
     assert "持有 2-3 天" in env.regime_advice("恐慌")["message"]
+    assert "持有净胜率" in env.regime_advice("恐慌")["message"]   # 钉住"持有期净胜率",防"日级净胜率"歧义回归
 
 
 def test_regime_swing_action_mapping():

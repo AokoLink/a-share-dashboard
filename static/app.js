@@ -300,6 +300,7 @@ function renderSwingStocks() {
       if (e.target.classList && e.target.classList.contains("swing-remove")) {
         removeWatchlist(e.target.dataset.code); return;
       }
+      if (state.swingEdit) return;   // 编辑态点击名称不跳转,仅 × 按钮生效
       openStock(sp.dataset.code);
     }));
 }
