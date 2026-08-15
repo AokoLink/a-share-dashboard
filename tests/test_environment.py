@@ -214,6 +214,17 @@ def test_regime_advice_mapping():
     assert "持有 2-3 天" in env.regime_advice("恐慌")["message"]
 
 
+def test_regime_swing_action_mapping():
+    assert env.regime_swing_action("恐慌")["action"] == "opportunity"
+    assert env.regime_swing_action("高潮")["action"] == "exit"
+    assert env.regime_swing_action("退潮")["action"] == "exit"
+    for lab in ("牛", "熊", "震荡", "恢复"):
+        assert env.regime_swing_action(lab)["action"] == "hold"
+    assert env.regime_swing_action(None)["action"] == "unknown"
+    assert env.regime_swing_action("未知态")["action"] == "unknown"
+    assert isinstance(env.regime_swing_action("恐慌")["message"], str)
+
+
 def test_latest_state_bull(tmp_path, monkeypatch):
     universe, all_days, pos_of = _universe(70)   # 单股单调涨 -> 牛
     monkeypatch.setattr(bt, "load_sector_map", lambda p: {})
@@ -223,6 +234,7 @@ def test_latest_state_bull(tmp_path, monkeypatch):
     assert st["as_of"] == all_days[-1]
     assert st["label"] == "牛"
     assert st["advice"]["action"] == "neutral"
+    assert st["swing"]["action"] == "hold"
     assert st["metrics"]["r5"] is not None
     assert st["metrics"]["up_ratio"] is not None
 
@@ -250,6 +262,7 @@ def test_latest_state_cached(tmp_path, monkeypatch):
     got = env.load_cached_regime(str(cache))
     assert got["label"] == "牛"
     assert got["advice"]["action"] == "neutral"
+    assert got["swing"]["action"] == "hold"
 
 
 def test_load_cached_regime_missing(tmp_path):

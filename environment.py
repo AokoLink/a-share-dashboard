@@ -219,6 +219,24 @@ def regime_advice(label):
     return {"action": "unknown", "message": "历史不足或未知状态,无法给出择时建议"}
 
 
+SWING_ACTION = {
+    "恐慌": {"action": "opportunity", "message": "超跌反弹窗口,等机会(启发式,未回测)"},
+    "高潮": {"action": "exit", "message": "冲顶,建议卖出/回避(启发式,未回测)"},
+    "退潮": {"action": "exit", "message": "杀跌延续,建议卖出/回避(启发式,未回测)"},
+    "牛":   {"action": "hold", "message": "持有(中性)"},
+    "熊":   {"action": "hold", "message": "持有(中性)"},
+    "震荡": {"action": "hold", "message": "持有(中性)"},
+    "恢复": {"action": "hold", "message": "持有(中性)"},
+}
+
+
+def regime_swing_action(label):
+    """波段启发式:regime → 持有/卖出/等机会。纯函数,仅启发式(未回测为退出信号)。"""
+    if label in SWING_ACTION:
+        return SWING_ACTION[label]
+    return {"action": "unknown", "message": "历史不足或未知状态,无法给出波段指引"}
+
+
 def latest_state(data_dir, sector_map_path, tail_n=120, cache_path=None):
     """当日 regime 标签 + 指标 + 建议(纯因果,读 pkl)。
 
@@ -239,7 +257,8 @@ def latest_state(data_dir, sector_map_path, tail_n=120, cache_path=None):
             if cached.get("as_of") == as_of and cached.get("n_codes") == len(codes):
                 return {"as_of": as_of, "label": cached.get("label"),
                         "metrics": cached.get("metrics", {}),
-                        "advice": regime_advice(cached.get("label"))}
+                        "advice": regime_advice(cached.get("label")),
+                        "swing": regime_swing_action(cached.get("label"))}
         except (OSError, ValueError):
             pass
     series = build_series(universe, pos_of, all_days)
@@ -256,7 +275,8 @@ def latest_state(data_dir, sector_map_path, tail_n=120, cache_path=None):
         "turnover_ratio": _num(series["turnover_ratio"].iloc[-1]),
     }
     result = {"as_of": as_of, "label": label, "metrics": metrics,
-              "advice": regime_advice(label)}
+              "advice": regime_advice(label),
+              "swing": regime_swing_action(label)}
     if cache_path is not None:
         try:
             os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
@@ -280,7 +300,8 @@ def load_cached_regime(cache_path):
         return None
     return {"as_of": cached.get("as_of"), "label": cached.get("label"),
             "metrics": cached.get("metrics", {}),
-            "advice": regime_advice(cached.get("label"))}
+            "advice": regime_advice(cached.get("label")),
+            "swing": regime_swing_action(cached.get("label"))}
 
 
 def build_report(report):
