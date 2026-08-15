@@ -5,9 +5,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import backtest as bt
-import analysis as an
-import predict as pr
+from core import backtest as bt
+from core import analysis as an
+from pipeline import predict as pr
 
 
 def make_daily(closes, opens=None, volumes=None, start="2026-01-01", code="000001"):

@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import analysis as an
+from core import analysis as an
 
 
 def _daily(closes, highs=None, lows=None, opens=None, volume=None, turnover=None):

@@ -8,12 +8,12 @@ import threading
 import pandas as pd
 import pytest
 
-import analysis as an
+from core import analysis as an
 import app as app_mod
-import data_source as ds
-import environment as env
-import store
-import recommend
+from core import data_source as ds
+from core import environment as env
+from core import store
+from core import recommend
 
 
 def make_spot():

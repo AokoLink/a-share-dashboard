@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import pytest
-import analysis as an
+from core import analysis as an
 
 
 def test_emotion_score_weights_and_renormalize():
@@ -134,7 +134,7 @@ def test_collect_sector_metrics_after_close_uses_turnover_ratio():
 
 
 def test_sector_verdict_overheat_distinct_label(monkeypatch):
-    import analysis as an
+    from core import analysis as an
     # 连涨≥4 + e_hi + s_hi + not r_hi → overheated;路径 A → 独立标签
     monkeypatch.setattr(an, "OVERHEAT_MIN_DAYS", 4)
     monkeypatch.setattr(an, "P0_PATH", "intercept")
@@ -149,7 +149,7 @@ def test_sector_verdict_overheat_distinct_label(monkeypatch):
 
 
 def test_sector_verdict_overheat_badge_path(monkeypatch):
-    import analysis as an
+    from core import analysis as an
     monkeypatch.setattr(an, "OVERHEAT_MIN_DAYS", 4)
     monkeypatch.setattr(an, "P0_PATH", "badge")
     out = an.score_sector({

@@ -2,9 +2,9 @@
 import datetime
 import pandas as pd
 import pytest
-import analysis as an
-import data_source as ds
-import recommend
+from core import analysis as an
+from core import data_source as ds
+from core import recommend
 
 
 def make_summary():

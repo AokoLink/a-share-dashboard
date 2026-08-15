@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import pytest
 
-import review as rv
+from pipeline import review as rv
 
 
 def test_binom_diff_se():
@@ -308,7 +308,7 @@ def test_render_empty_suggestions_honest():
 
 
 def test_review_no_utf8_minus():
-    src = open("review.py", encoding="utf-8").read()
+    src = open("pipeline/review.py", encoding="utf-8").read()
     assert "−" not in src
 
 

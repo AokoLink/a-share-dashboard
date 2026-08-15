@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-import compare
+from pipeline import compare
 
 
 def _mk_df(closes, opens):
@@ -131,7 +131,7 @@ def test_trend3_stats_empty():
                                          "mean_max_high3": None, "mean_min_low3": None}
 
 
-import backtest as bt
+from core import backtest as bt
 
 D1_CLOSES = [90.0, 92.0, 95.0, 100.0, 110.0, 121.0, 108.9, 108.9]
 D1_OPENS = [90.0, 90.0, 93.0, 97.0, 105.0, 115.0, 105.0, 105.0]

@@ -14,8 +14,8 @@ from datetime import datetime
 
 import numpy as np
 
-import backtest as bt
-import predict as pr
+from core import backtest as bt
+from pipeline import predict as pr
 
 MODULE_VERSION = "1.0.0"
 

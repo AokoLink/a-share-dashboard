@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import pandas as pd
 import pytest
-import data_source as ds
+from core import data_source as ds
 
 
 class FakeClock:

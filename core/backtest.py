@@ -15,7 +15,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-import analysis as an
+from core import analysis as an
 
 MODULE_VERSION = "1.0.0"
 TOP_SECTORS = 3

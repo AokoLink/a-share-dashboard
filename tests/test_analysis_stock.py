@@ -5,7 +5,7 @@ from datetime import datetime
 import pandas as pd
 import pytest
 
-import analysis as an
+from core import analysis as an
 
 
 def quote(**kw):

@@ -5,3 +5,4 @@ static/echarts.min.js
 .pytest_cache/
 _analysis/
 _universe.json
+*.log

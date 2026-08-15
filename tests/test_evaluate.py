@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import evaluate as ev
+from pipeline import evaluate as ev
 
 
 def mk(closes, opens=None, highs=None, lows=None, amounts=None, code="000001"):
@@ -129,8 +129,8 @@ def _mk_records(n=200):
 
 
 def test_evaluate_cores_and_undifferentiated_flag():
-    import backtest as bt
-    import predict as pr
+    from core import backtest as bt
+    from pipeline import predict as pr
     d = mk(list(range(100, 200)))  # 单调涨 → 趋势层 True
     universe = {"000001": d}
     all_days = list(d["date"])
@@ -154,7 +154,7 @@ def test_evaluate_cores_and_undifferentiated_flag():
 
 
 def _fake_run_backtest():
-    import predict as pr
+    from pipeline import predict as pr
     return {
         "calibrators": {"direction": pr._fit_calibrator([(50.0, 0)] * 10 + [(50.0, 1)] * 10, 2),
                         "gap": pr._fit_calibrator([(50.0, 1)] * 10, 2),
@@ -228,8 +228,8 @@ def test_significant_flag_respects_primary():
 
 
 def test_run_build_report_and_main(tmp_path, monkeypatch):
-    import backtest as bt
-    import predict as pr
+    from core import backtest as bt
+    from pipeline import predict as pr
     d = mk(list(range(100, 200)))
     monkeypatch.setattr(pr, "run_backtest", lambda dd, sm: _fake_run_backtest())
     monkeypatch.setattr(bt, "load_sector_map", lambda p: {"000001": []})
@@ -248,8 +248,8 @@ def test_run_build_report_and_main(tmp_path, monkeypatch):
 
 
 def test_evaluate_environments_slicing():
-    import backtest as bt
-    import predict as pr
+    from core import backtest as bt
+    from pipeline import predict as pr
     d = mk(list(range(100, 200)))  # 100 日单调涨
     universe = {"000001": d}
     all_days = list(d["date"])

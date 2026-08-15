@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import backtest as bt
-import simulate as sim
+from core import backtest as bt
+from pipeline import simulate as sim
 
 
 def _df(closes, opens, highs, lows):

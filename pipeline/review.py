@@ -15,8 +15,8 @@ import subprocess
 import sys
 from datetime import datetime
 
-import environment as env
-import evaluate as ev
+from core import environment as env
+from pipeline import evaluate as ev
 
 MODULE_VERSION = "1.0.0"
 

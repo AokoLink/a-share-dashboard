@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import akshare as ak
-from data_source import SECTOR_CONS_MAP, SECTOR_CONS_EXPECTED, _keyword_lookup, _sina_industry_names
+from core.data_source import SECTOR_CONS_MAP, SECTOR_CONS_EXPECTED, _keyword_lookup, _sina_industry_names
 
 
 def main():

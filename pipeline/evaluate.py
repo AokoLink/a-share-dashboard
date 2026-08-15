@@ -11,10 +11,10 @@ from datetime import datetime
 
 import numpy as np
 
-import analysis as an
-import backtest as bt
-import predict as pr
-import environment as env
+from core import analysis as an
+from core import backtest as bt
+from pipeline import predict as pr
+from core import environment as env
 
 MODULE_VERSION = "1.0.0"
 TOP_SECTORS = 3

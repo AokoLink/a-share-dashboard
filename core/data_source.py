@@ -153,7 +153,7 @@ def with_prefix(code):
 
 # ---------- 个股 → 板块(规格 §5) ----------
 
-_SECTOR_CODES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sector_codes.json")
+_SECTOR_CODES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sector_codes.json")
 _sector_codes = None
 
 

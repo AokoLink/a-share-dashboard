@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import os
 import pytest
-import store
+from core import store
 
 
 @pytest.fixture()

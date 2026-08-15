@@ -2,9 +2,9 @@
 """推荐层:板块→个股双层推荐。select/filter/rank 为纯函数,build_recommend 编排。"""
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import analysis as an
-import data_source as ds
-import store
+from core import analysis as an
+from core import data_source as ds
+from core import store
 import pandas as pd
 
 MAX_WORKERS = 8

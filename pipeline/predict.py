@@ -14,8 +14,8 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-import analysis as an
-import backtest as bt
+from core import analysis as an
+from core import backtest as bt
 
 MODULE_VERSION = "1.1.0"
 EVAL_DAYS = 1200

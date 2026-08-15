@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import pytest
-import store
+from core import store
 
 
 @pytest.fixture(autouse=True)

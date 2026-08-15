@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """environment.py 市场环境分类测试。"""
-import environment as env
+from core import environment as env
 import pandas as pd
 import pytest
-import backtest as bt
+from core import backtest as bt
 
 
 def _row(r5=None, r1=None, up=None, ld=0, lu=0, tr=None, r20=None, r60=0.0,

@@ -5,7 +5,7 @@ from datetime import datetime
 import pandas as pd
 import pytest
 
-import recommend as rc
+from core import recommend as rc
 
 
 def _spot(rows):
