@@ -336,6 +336,7 @@ $("#btn-swing-add").addEventListener("click", async () => {
     addWatchlist(b.data.name, b.data.code);
     $("#swing-add-input").value = "";
     renderSwingStocks();
+    await openStock(b.data.code);   // 立即在右侧展示该股三层分析,避免"只剩一个名字"
   } catch (e) { $("#swing-add-input").placeholder = "无效代码"; }
 });
 
