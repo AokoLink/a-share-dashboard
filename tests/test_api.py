@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import datetime
+import json
 import os
 import tempfile
 import threading
@@ -514,3 +515,39 @@ def test_recommend_prev_snapshot_bj_prefix(monkeypatch, tmp_path):
     assert ps is not None
     bj = [x for x in ps["stocks"] if x["code"] == "bj830799"]
     assert bj and bj[0]["today_open"] == pytest.approx(10.5)
+
+
+def test_report_trade_sim_serves_fixture(tmp_path, monkeypatch):
+    c = client_factory(monkeypatch, db_path=str(tmp_path / "api.db"))
+    report = tmp_path / "trade_sim.json"
+    report.write_text(json.dumps({
+        "generated_at": "2026-08-15T00:00:00",
+        "baskets": {"A": {"n_trades": 5658, "win_rate": 0.402, "expectancy": -0.00527}},
+    }, ensure_ascii=False), encoding="utf-8")
+    c.application.config["TRADE_SIM_REPORT"] = str(report)
+    r = c.get("/api/report/trade-sim")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["data"]["baskets"]["A"]["n_trades"] == 5658
+    assert body["data"]["baskets"]["A"]["win_rate"] == pytest.approx(0.402)
+
+
+def test_report_trade_sim_missing(tmp_path, monkeypatch):
+    c = client_factory(monkeypatch, db_path=str(tmp_path / "api.db"))
+    c.application.config["TRADE_SIM_REPORT"] = str(tmp_path / "nope.json")
+    r = c.get("/api/report/trade-sim")
+    assert r.status_code == 404
+    body = r.get_json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "NO_REPORT"
+
+
+def test_report_trade_sim_invalid_json(tmp_path, monkeypatch):
+    c = client_factory(monkeypatch, db_path=str(tmp_path / "api.db"))
+    report = tmp_path / "trade_sim.json"
+    report.write_text("{not json", encoding="utf-8")
+    c.application.config["TRADE_SIM_REPORT"] = str(report)
+    r = c.get("/api/report/trade-sim")
+    assert r.status_code == 500
+    assert r.get_json()["error"]["code"] == "REPORT_ERROR"

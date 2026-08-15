@@ -356,11 +356,49 @@ async function loadActionableLeaders() {
   }
 }
 
+function renderTradeSim(b) {
+  const d = b.data;
+  const cfg = d.config || {};
+  $("#tradesim-meta").innerHTML =
+    `回测 ${esc((d.window && d.window.start) || "—")} → ${esc((d.window && d.window.end) || "—")} | ` +
+    `持有 ${cfg.holding_days} 日, 止损 ${cfg.stop_pct}, 止盈 ${cfg.take_pct}, 双边成本 ${cfg.cost_bps}bps`;
+  // 报告字段为比率(0-1),独立换算为百分比(fmtPct 面向已为百分数的实时数据)
+  const p = (v) => v === null || v === undefined ? "—" : (v * 100).toFixed(2) + "%";
+  const names = ["A", "E_hi", "E_lo", "B", "C", "D"];
+  const tbody = $("#tradesim-table");
+  tbody.innerHTML = names.map((n) => {
+    const x = d.baskets && d.baskets[n];
+    if (!x) return "";
+    return `<tr>
+      <td>${n}</td><td>${x.n_trades}</td>
+      <td class="${x.win_rate >= 0.5 ? "up" : "down"}">${p(x.win_rate)}</td>
+      <td>${x.profit_factor == null ? "—" : x.profit_factor.toFixed(2)}</td>
+      <td class="${x.expectancy >= 0 ? "up" : "down"}">${p(x.expectancy)}</td>
+      <td class="down">${p(x.max_drawdown)}</td>
+      <td class="up">${p(x.avg_win)}</td>
+      <td class="down">${p(x.avg_loss)}</td>
+      <td class="up">${p(x.avg_max_fav)}</td>
+      <td class="down">${p(x.avg_max_adv)}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function loadTradeSim() {
+  try {
+    const b = await api("/api/report/trade-sim");
+    renderTradeSim(b);
+  } catch (e) {
+    $("#tradesim-meta").innerHTML = `<span class="muted">交易回测报告不可用:${esc(e.message)}</span>`;
+    $("#tradesim-table").innerHTML = "";
+  }
+}
+
 function switchView(view) {
   state.view = view;
   $("#sector-view").classList.toggle("hidden", view !== "sectors");
   $("#reco-panel").classList.toggle("hidden", view !== "recommend");
   $("#actionable-panel").classList.toggle("hidden", view !== "actionable");
+  $("#tradesim-panel").classList.toggle("hidden", view !== "tradesim");
 }
 
 // ---- 刷新 ----
@@ -369,6 +407,7 @@ async function refreshAll() {
   try { await loadSectors(); } catch (e) { /* 沿用旧列表 */ }
   if (state.view === "recommend") { try { await loadRecommend(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "actionable") { try { await loadActionableLeaders(); } catch (e) { /* 沿用旧 */ } }
+  else if (state.view === "tradesim") { try { await loadTradeSim(); } catch (e) { /* 沿用旧 */ } }
   if (state.current) {
     try {
       if (state.current.kind === "sector") await openSector(state.current.code);
@@ -395,6 +434,7 @@ document.querySelectorAll(".tab").forEach((t) =>
     switchView(view);
     if (view === "recommend") loadRecommend().catch(() => { /* 沿用旧 */ });
     else if (view === "actionable") loadActionableLeaders();   // 内部已处理失败态
+    else if (view === "tradesim") loadTradeSim();              // 内部已处理失败态
     else { state.type = t.dataset.type || "industry"; loadSectors(); }
   }));
 $("#btn-sector-search").addEventListener("click", async () => {

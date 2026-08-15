@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """A股三层分析看板 —— Flask 入口 + API 路由。"""
+import json
 import logging
 import os
 from datetime import datetime
@@ -13,6 +14,7 @@ import recommend
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = os.path.join(BASE_DIR, "data", "market.db")
+DEFAULT_TRADE_SIM_REPORT = os.path.join(BASE_DIR, "_analysis", "trade_sim.json")
 SECTOR_TYPES = ("industry",)
 
 
@@ -369,6 +371,19 @@ def register_routes(app):
         }, stale=stale1 or stale2 or stale_cands,
            extra_meta={"coverage": coverage,
                        "mapping_health": app.config.get("SECTOR_MAP_HEALTH", {})})
+
+    @app.route("/api/report/trade-sim")
+    def api_report_trade_sim():
+        path = app.config.get("TRADE_SIM_REPORT", DEFAULT_TRADE_SIM_REPORT)
+        if not os.path.exists(path):
+            return err("NO_REPORT",
+                       "交易回测报告未生成:请先运行 python simulate.py --out _analysis/trade_sim.json", 404)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError) as e:
+            return err("REPORT_ERROR", str(e), 500)
+        return ok(data)
 
 
 def create_app(db_path=None):
