@@ -222,3 +222,50 @@ KNOBS = [
      "evidence_status": "provisional",
      "validation_recipe": "设计常量;undifferentiated 时触发分层定义重审"},
 ]
+
+
+def _layer_weak_strong(payload):
+    """读 significant(覆盖 9 个 dim/metric 组合),按 metric == PRIMARY[dim] 过滤。"""
+    weak, strong = [], []
+    se_map = {(L, dim): se for L, dim, se in payload["se_bounds"]}
+    for row in payload["significant"]:
+        L, dim, metric, v_l, v_o, _ = row
+        if metric != ev.PRIMARY[dim]:
+            continue
+        cell = payload["layers"][L][dim]
+        entry = {"layer": L, "dim": dim, "value": v_l, "overall": v_o,
+                 "se": se_map.get((L, dim)), "n": cell.get("n")}
+        (weak if v_l < v_o else strong).append(entry)
+    return weak, strong
+
+
+def _env_weak_strong(payload):
+    """环境显著性 payload 不含,自算(二项比例差,镜像 evaluate._significance)。"""
+    weak, strong = [], []
+    for state in env.LABELS:
+        for dim in ev.DIMS:
+            cell = payload["environments"][state][dim]
+            if cell.get("_suppressed"):
+                continue
+            overall = payload["overall"][dim]
+            p_l = cell.get(ev.PRIMARY[dim])
+            p_o = overall.get(ev.PRIMARY[dim])
+            n_l = _effective_n(dim, cell)
+            n_o = _effective_n(dim, overall)
+            if p_l is None or p_o is None or n_l < ev.MIN_LAYER_N or n_o <= 0:
+                continue
+            se = _binom_diff_se(p_l, n_l, p_o, n_o)
+            if se is None:
+                continue
+            if abs(p_l - p_o) > 2.0 * se:
+                entry = {"env": state, "dim": dim, "value": p_l, "overall": p_o,
+                         "se": 2.0 * se, "n": cell.get("n")}
+                (weak if p_l < p_o else strong).append(entry)
+    return weak, strong
+
+
+def _degenerate_thin(payload):
+    """退化环境(env_n < MIN_STATE_N)与薄层(layer_n < MIN_LAYER_N)。"""
+    degenerate = [s for s in env.LABELS if payload["env_n"].get(s, 0) < env.MIN_STATE_N]
+    thin = [L for L in ev.LAYERS if payload["layer_n"].get(L, 0) < ev.MIN_LAYER_N]
+    return degenerate, thin

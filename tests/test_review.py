@@ -94,3 +94,55 @@ def test_no_edge_direction():
     # hit_rate=0.60 -> |0.10| > 0.025 -> 有 edge,不入
     p["overall"]["direction"] = _cell("direction", hit_rate=0.60, base_rate=0.50, n=400)
     assert "direction" not in rv._no_edge_dims(p)
+
+
+def test_weak_layer_from_significant():
+    p = _fake_payload()
+    p["significant"] = [["趋势", "direction", "hit_rate", 0.42, 0.55, 0.02]]
+    p["se_bounds"] = [["趋势", "direction", 0.04]]
+    weak, strong = rv._layer_weak_strong(p)
+    assert any(w["layer"] == "趋势" and w["dim"] == "direction" and w["value"] == 0.42
+               for w in weak)
+    assert strong == []
+    # 反转:v_l > v_o → strong
+    p["significant"] = [["趋势", "direction", "hit_rate", 0.68, 0.55, 0.02]]
+    weak, strong = rv._layer_weak_strong(p)
+    assert weak == [] and any(s["layer"] == "趋势" for s in strong)
+
+
+def test_layer_weak_filters_nonprimary_metric():
+    # significant 里 return 的 mae 显著但 PRIMARY=sign_agreement → 不产生 weak/strong
+    p = _fake_payload()
+    p["significant"] = [["趋势", "return", "mae", 0.05, 0.02, 0.01]]
+    weak, strong = rv._layer_weak_strong(p)
+    assert weak == [] and strong == []
+
+
+def test_env_significance_self_computed():
+    # env direction hit_rate=0.40/n=100 vs overall 0.55/n=1000:
+    # se = sqrt(0.4*0.6/100 + 0.55*0.45/1000) ≈ 0.0514;2σ≈0.1029;|0.40-0.55|=0.15>0.1029 → 弱环境
+    p = _fake_payload()
+    p["overall"]["direction"] = _cell("direction", hit_rate=0.55, n=1000, base_rate=0.50)
+    p["environments"]["熊"]["direction"] = _cell("direction", hit_rate=0.40, n=100, base_rate=0.50)
+    weak, strong = rv._env_weak_strong(p)
+    assert any(w["env"] == "熊" and w["dim"] == "direction" and w["value"] == 0.40
+               for w in weak)
+    # 有效 n < 30 → 跳过
+    p["environments"]["熊"]["direction"] = _cell("direction", hit_rate=0.40, n=10, base_rate=0.50)
+    weak, strong = rv._env_weak_strong(p)
+    assert not any(w["env"] == "熊" for w in weak)
+
+
+def test_env_suppressed_cell_skipped():
+    p = _fake_payload()
+    p["environments"]["恐慌"]["direction"] = {"n": 10, "_suppressed": True}
+    weak, strong = rv._env_weak_strong(p)
+    assert not any(w["env"] == "恐慌" for w in weak)
+
+
+def test_degenerate_thin():
+    p = _fake_payload()
+    p["env_n"]["退潮"] = 10          # < MIN_STATE_N=20
+    p["layer_n"]["反抽"] = 25        # < MIN_LAYER_N=30
+    deg, thin = rv._degenerate_thin(p)
+    assert "退潮" in deg and "反抽" in thin
