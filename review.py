@@ -277,6 +277,36 @@ def _degenerate_thin(payload):
     return degenerate, thin
 
 
+def _degenerate_dims(payload):
+    """维度退化(失能):PRIMARY 指标为 None(零有效样本)的维度显式报出。
+
+    与 _no_edge_dims 的区别:后者是「有下注但 hit_rate ≈ 基线(1σ 内)」;
+    本函数是「零有效样本」——direction/gap/trend3 全 hold(n_hold=n)、
+    path/risk n=0、return sign_n=0。二者互斥:degenerate 维 PRIMARY=None,
+    _no_edge_dims 因 value is None 而跳过。这是真实零 alpha 状态(如
+    composite 对 od 的 spearman 仅 0.027),不是代码缺陷;此处如实呈现,
+    而非强制下注伪造信号。
+    """
+    out = []
+    for dim in ev.DIMS:
+        cell = payload["overall"][dim]
+        n = cell.get("n") or 0
+        if cell.get(ev.PRIMARY[dim]) is not None:
+            continue
+        if n == 0:
+            reason = "主指标未定义:n=0(该维零有效记录)"
+        elif dim in ("direction", "gap", "trend3"):
+            n_hold = cell.get("n_hold") or 0
+            reason = ("hit_rate 未定义:全 hold(有效 n = n - n_hold = "
+                      f"{n} - {n_hold} = {n - n_hold})")
+        elif dim == "return":
+            reason = f"sign_agreement 未定义:sign_n={cell.get('sign_n') or 0}(无符号样本)"
+        else:  # risk
+            reason = f"adverse_rate 未定义:n={n}"
+        out.append({"dim": dim, "reason": reason, "n": n})
+    return out
+
+
 def review(payload):
     """把复盘发现编排为结构化 dict。"""
     weak_layers, strong_layers = _layer_weak_strong(payload)
@@ -292,6 +322,7 @@ def review(payload):
         "undifferentiated": bool(payload.get("all_undifferentiated")),
         "degenerate_environments": degenerate,
         "thin_layers": thin,
+        "degenerate_dims": _degenerate_dims(payload),
     }
 
 
@@ -426,6 +457,12 @@ def render_markdown(report):
              f"{', '.join(rv['degenerate_environments']) or '(无)'}")
     L.append(f"- 薄层(layer_n < {ev.MIN_LAYER_N}):"
              f"{', '.join(rv['thin_layers']) or '(无)'}")
+    L += ["", "### 维度退化(失能)", ""]
+    if rv["degenerate_dims"]:
+        for dd in rv["degenerate_dims"]:
+            L.append(f"- {dd['dim']}: {dd['reason']}(n={dd['n']})")
+    else:
+        L.append("(无)")
     L += ["", "## 优化建议", ""]
     if report["suggestions"]:
         for s in report["suggestions"]:

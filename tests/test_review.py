@@ -148,11 +148,31 @@ def test_degenerate_thin():
     assert "退潮" in deg and "反抽" in thin
 
 
+def test_degenerate_dims_direction_hold_and_path_zero():
+    # direction 全 hold(hit_rate=None, n_hold=n) + path n=0 → 二者应显式报退化
+    p = _fake_payload()
+    p["overall"]["direction"] = _cell("direction", hit_rate=None, base_rate=0.50, n_hold=100)
+    p["overall"]["path"] = _cell("path", acc_path=None, n=0)
+    dd = rv._degenerate_dims(p)
+    by_dim = {d["dim"]: d for d in dd}
+    assert set(by_dim) == {"direction", "path"}
+    assert "n_hold" in by_dim["direction"]["reason"] and "100" in by_dim["direction"]["reason"]
+    assert by_dim["path"]["reason"].startswith("主指标未定义:n=0")
+    # 正常维度(gap 有 hit_rate)不入退化
+    assert "gap" not in by_dim
+
+
+def test_degenerate_dims_empty_when_clean():
+    # 默认 fixture:六维 PRIMARY 均非 None → 无退化
+    assert rv._degenerate_dims(_fake_payload()) == []
+
+
 def test_review_shape():
     r = rv.review(_fake_payload())
     for key in ("overall_summary", "weak_layers", "strong_layers",
                 "weak_environments", "strong_environments", "no_edge_dims",
-                "undifferentiated", "degenerate_environments", "thin_layers"):
+                "undifferentiated", "degenerate_environments", "thin_layers",
+                "degenerate_dims"):
         assert key in r
     assert len(r["overall_summary"]) == len(rv.ev.DIMS)
     assert r["undifferentiated"] is False          # 默认 all_undifferentiated=False

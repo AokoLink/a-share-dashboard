@@ -65,6 +65,7 @@ review.py CLI(`--in evaluate_report.json --out review_report.json`)写 JSON + �
     undifferentiated: bool,       # all_undifferentiated
     degenerate_environments: [env],  # env_n < MIN_STATE_N
     thin_layers: [L],             # layer_n < MIN_LAYER_N
+    degenerate_dims: [{dim, reason, n}],  # PRIMARY 指标为 None(零有效样本)的维度,显式报退化
   },
   suggestions: [suggestion],
   knobs: [knob_entry],            # 可调旋钮清单(文档化真相源)
@@ -92,6 +93,7 @@ suggestion 形态:
 3. **weak/strong_environments**:payload 无环境显著性,review.py 自算。对每个非 `_suppressed` 的 `environments[env][dim]`,取 PRIMARY 指标,与 `overall[dim]` 做二项比例差:
    `se = sqrt(p_l*(1-p_l)/n_eff_l + p_o*(1-p_o)/n_eff_o)`,其中 direction/gap/trend3 用 `n - n_hold`、path/risk 用 `n`、return 用 `sign_n`(镜像 evaluate `_significance` 的有效 n 规则)。有效 n 任一侧 < MIN_LAYER_N(30)→ 跳过;`|v_l - v_o| > 2*se` → 显著,按方向入 weak/strong(risk 反转同第 2 条)。
 4. **no_edge_dims / undifferentiated / degenerate_environments / thin_layers**:按 §4.1 与 `env_n < MIN_STATE_N(20)`、`layer_n < MIN_LAYER_N(30)` 填。
+5. **degenerate_dims**:`overall[dim]` 的 PRIMARY 指标为 None 时显式报退化(与 no_edge_dims 互斥:后者是「有下注但 hit_rate ≈ 基线」,本字段是「零有效样本」)。`n==0` → 「主指标未定义:n=0」;direction/gap/trend3 → 「hit_rate 未定义:全 hold(有效 n = n - n_hold)」;return → 「sign_agreement 未定义:sign_n=…」;risk → 「adverse_rate 未定义」。每条 `{dim, reason, n}`。这是真实零 alpha 状态(如 composite 对 od 的 spearman 仅 0.027),不是代码缺陷——如实呈现,不强制下注伪造信号。MD 中在「退化/薄层」节之后单列「维度退化(失能)」块。
 
 ## §5 建议规则集(小而显式)
 
