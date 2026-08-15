@@ -11,6 +11,7 @@ import pytest
 import analysis as an
 import app as app_mod
 import data_source as ds
+import environment as env
 import store
 import recommend
 
@@ -269,6 +270,51 @@ def test_recommend_endpoint(client, monkeypatch):
     meta = body["meta"]
     assert meta["coverage"]["mapped"] == 2
     assert meta["mapping_health"]["ok"] is True
+
+
+def test_regime_endpoint(client, monkeypatch):
+    monkeypatch.setattr(env, "latest_state", lambda *a, **k: {
+        "as_of": "2026-08-13", "label": "恐慌",
+        "metrics": {"r5": -0.1, "r1": -0.05, "r20": -0.02, "up_ratio": 0.1,
+                    "limit_up": 0, "limit_down": 320, "turnover_ratio": 1.0},
+        "advice": {"action": "buy_dip", "message": "市场恐慌,关注超跌反弹"}})
+    r = client.get("/api/regime")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["data"]["label"] == "恐慌"
+    assert body["data"]["advice"]["action"] == "buy_dip"
+
+
+def test_regime_endpoint_no_data(client, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("no usable daily pkl")
+    monkeypatch.setattr(env, "latest_state", boom)
+    r = client.get("/api/regime")
+    assert r.status_code == 500
+    assert r.get_json()["error"]["code"] == "NO_DATA"
+
+
+def test_recommend_includes_regime(client, monkeypatch):
+    monkeypatch.setattr(an, "collect_sector_metrics", lambda *a, **k: {
+        "verdict": "建议关注", "composite": 78.0, "consecutive_days": 1,
+        "emotion": 80, "strength": 70, "risk": 10})
+    monkeypatch.setattr(env, "load_cached_regime", lambda path: {
+        "as_of": "2026-08-13", "label": "高潮",
+        "metrics": {}, "advice": {"action": "avoid", "message": "建议空仓"}})
+    r = client.get("/api/recommend")
+    d = r.get_json()["data"]
+    assert d["regime"]["label"] == "高潮"
+    assert d["regime"]["advice"]["action"] == "avoid"
+
+
+def test_recommend_regime_none_when_no_cache(client, monkeypatch):
+    monkeypatch.setattr(an, "collect_sector_metrics", lambda *a, **k: {
+        "verdict": "建议关注", "composite": 78.0, "consecutive_days": 1,
+        "emotion": 80, "strength": 70, "risk": 10})
+    monkeypatch.setattr(env, "load_cached_regime", lambda path: None)
+    r = client.get("/api/recommend")
+    assert r.get_json()["data"]["regime"] is None
 
 
 def test_recommend_bad_param(client, monkeypatch):

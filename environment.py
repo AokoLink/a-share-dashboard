@@ -199,6 +199,90 @@ def run(data_dir, sector_map_path):
     }
 
 
+# ---------- regime gate(择时门控) ----------
+
+REGIME_ADVICE = {
+    "恐慌": {"action": "buy_dip", "message": "市场恐慌,关注超跌反弹(全市场/宽基);注意趋势性崩盘会接飞刀"},
+    "高潮": {"action": "avoid", "message": "市场冲顶(高潮),建议空仓/回避追高"},
+    "退潮": {"action": "avoid", "message": "市场杀跌延续(退潮),建议空仓"},
+    "牛":   {"action": "neutral", "message": "牛市主升,无择时 edge(方向中性)"},
+    "熊":   {"action": "neutral", "message": "熊市,无择时 edge"},
+    "震荡": {"action": "neutral", "message": "震荡市(占多数天数),无择时 edge,建议降低交易频率"},
+    "恢复": {"action": "neutral", "message": "恢复期,无择时 edge"},
+}
+
+
+def regime_advice(label):
+    """标签 → 择时建议(纯函数)。None/未知 → unknown。"""
+    if label in REGIME_ADVICE:
+        return REGIME_ADVICE[label]
+    return {"action": "unknown", "message": "历史不足或未知状态,无法给出择时建议"}
+
+
+def latest_state(data_dir, sector_map_path, tail_n=120, cache_path=None):
+    """当日 regime 标签 + 指标 + 建议(纯因果,读 pkl)。
+
+    tail_n=120:分类只需最近 60 日(MIN_HISTORY);合成指数 M 为复利,ma/r 比较对
+    起始基重定不变,故末日常标签与完整历史一致、但快约 30 倍。
+    文件缓存:as_of(日历最后交易日)与 code 数不变则跳过 build_series 重算。
+    """
+    sector_map = bt.load_sector_map(sector_map_path)
+    universe, codes = bt.build_universe(data_dir, sector_map, tail_n=tail_n)
+    if not universe:
+        raise RuntimeError(f"no usable daily pkl in {data_dir}")
+    all_days, pos_of = bt.build_calendar(universe, codes)
+    as_of = str(all_days[-1])
+    if cache_path is not None and os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            if cached.get("as_of") == as_of and cached.get("n_codes") == len(codes):
+                return {"as_of": as_of, "label": cached.get("label"),
+                        "metrics": cached.get("metrics", {}),
+                        "advice": regime_advice(cached.get("label"))}
+        except (OSError, ValueError):
+            pass
+    series = build_series(universe, pos_of, all_days)
+    label = series["environment"].iloc[-1]
+    if label is not None and label != label:     # NaN 防御(object 已用 None,但防 pandas 3.0)
+        label = None
+    metrics = {
+        "r5": _num(series["r5"].iloc[-1]),
+        "r1": _num(series["r1"].iloc[-1]),
+        "r20": _num(series["r20"].iloc[-1]),
+        "up_ratio": _num(series["up_ratio"].iloc[-1]),
+        "limit_up": _num(series["limit_up"].iloc[-1]),
+        "limit_down": _num(series["limit_down"].iloc[-1]),
+        "turnover_ratio": _num(series["turnover_ratio"].iloc[-1]),
+    }
+    result = {"as_of": as_of, "label": label, "metrics": metrics,
+              "advice": regime_advice(label)}
+    if cache_path is not None:
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump({"as_of": as_of, "n_codes": len(codes),
+                           "label": label, "metrics": metrics},
+                          f, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+    return result
+
+
+def load_cached_regime(cache_path):
+    """读文件缓存(instant);无缓存/损坏 → None。供 /api/recommend 快速注入,不触发重算。"""
+    if cache_path is None or not os.path.exists(cache_path):
+        return None
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return {"as_of": cached.get("as_of"), "label": cached.get("label"),
+            "metrics": cached.get("metrics", {}),
+            "advice": regime_advice(cached.get("label"))}
+
+
 def build_report(report):
     return {
         "system_version": _git_short_sha(),

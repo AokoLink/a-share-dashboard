@@ -42,7 +42,8 @@ def load_sector_map(path):
         return json.load(f)
 
 
-def build_universe(data_dir, sector_map):
+def build_universe(data_dir, sector_map, tail_n=1200):
+    """加载 universe。tail_n=1200(默认,生产 5 年基线);tail_n=None 保留完整历史(regime 择时用)。"""
     universe, codes = {}, []
     files = sorted(f for f in os.listdir(data_dir) if f.endswith(".pkl"))
     for fn in files:
@@ -52,7 +53,10 @@ def build_universe(data_dir, sector_map):
         d = load_daily(data_dir, code)
         if len(d) < 1200:
             continue
-        d = d.reset_index(drop=True).tail(1200).copy()
+        d = d.reset_index(drop=True)
+        if tail_n is not None:
+            d = d.tail(tail_n)
+        d = d.copy()
         d["code"] = code
         d["change_pct"] = d["close"].pct_change() * 100.0
         d.iloc[0, d.columns.get_loc("change_pct")] = 0.0

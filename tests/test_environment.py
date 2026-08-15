@@ -198,3 +198,58 @@ def test_main_end_to_end(tmp_path, monkeypatch):
     assert payload["mode"] == "environment"
     assert payload["n_days"] == 70
     assert out.with_suffix(".md").exists()
+
+
+# ---------- regime gate ----------
+
+def test_regime_advice_mapping():
+    assert env.regime_advice("恐慌")["action"] == "buy_dip"
+    assert env.regime_advice("高潮")["action"] == "avoid"
+    assert env.regime_advice("退潮")["action"] == "avoid"
+    for lab in ("牛", "熊", "震荡", "恢复"):
+        assert env.regime_advice(lab)["action"] == "neutral"
+    assert env.regime_advice(None)["action"] == "unknown"
+    assert env.regime_advice("未知态")["action"] == "unknown"
+    assert isinstance(env.regime_advice("恐慌")["message"], str)
+
+
+def test_latest_state_bull(tmp_path, monkeypatch):
+    universe, all_days, pos_of = _universe(70)   # 单股单调涨 -> 牛
+    monkeypatch.setattr(bt, "load_sector_map", lambda p: {})
+    monkeypatch.setattr(bt, "build_universe", lambda dd, sm, tail_n=None: (universe, list(universe.keys())))
+    monkeypatch.setattr(bt, "build_calendar", lambda univ, cs: (all_days, pos_of))
+    st = env.latest_state(str(tmp_path), "x", tail_n=None)
+    assert st["as_of"] == all_days[-1]
+    assert st["label"] == "牛"
+    assert st["advice"]["action"] == "neutral"
+    assert st["metrics"]["r5"] is not None
+    assert st["metrics"]["up_ratio"] is not None
+
+
+def test_latest_state_cached(tmp_path, monkeypatch):
+    universe, all_days, pos_of = _universe(70)
+    monkeypatch.setattr(bt, "load_sector_map", lambda p: {})
+    monkeypatch.setattr(bt, "build_universe", lambda dd, sm, tail_n=None: (universe, list(universe.keys())))
+    monkeypatch.setattr(bt, "build_calendar", lambda univ, cs: (all_days, pos_of))
+    cache = tmp_path / "regime_cache.json"
+    calls = {"n": 0}
+    real_build = env.build_series
+
+    def counted(univ, po, ad):
+        calls["n"] += 1
+        return real_build(univ, po, ad)
+
+    monkeypatch.setattr(env, "build_series", counted)
+    st1 = env.latest_state(str(tmp_path), "x", tail_n=None, cache_path=str(cache))
+    assert calls["n"] == 1
+    assert st1["label"] == "牛"
+    st2 = env.latest_state(str(tmp_path), "x", tail_n=None, cache_path=str(cache))
+    assert calls["n"] == 1                      # 缓存命中,不重算 build_series
+    assert st2["label"] == st1["label"]
+    got = env.load_cached_regime(str(cache))
+    assert got["label"] == "牛"
+    assert got["advice"]["action"] == "neutral"
+
+
+def test_load_cached_regime_missing(tmp_path):
+    assert env.load_cached_regime(str(tmp_path / "nope.json")) is None

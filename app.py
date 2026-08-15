@@ -9,6 +9,7 @@ from flask import Flask, jsonify, render_template, request
 
 import analysis as an
 import data_source as ds
+import environment as env
 import store
 import recommend
 
@@ -16,6 +17,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = os.path.join(BASE_DIR, "data", "market.db")
 DEFAULT_TRADE_SIM_REPORT = os.path.join(BASE_DIR, "_analysis", "trade_sim.json")
 SECTOR_TYPES = ("industry",)
+DAILY_DIR = os.path.join(BASE_DIR, "_analysis", "daily")
+SECTOR_MAP_PATH = os.path.join(BASE_DIR, "_analysis", "code2sector.json")
+REGIME_CACHE = os.path.join(BASE_DIR, "_analysis", "regime_cache.json")
 
 
 def ok(data, stale=False, extra_meta=None):
@@ -338,9 +342,21 @@ def register_routes(app):
             "close_date": payload["close_date"],
             "prev_trading_date": payload["prev_trading_date"],
             "prev_snapshot": prev_snapshot,
+            "regime": env.load_cached_regime(REGIME_CACHE),
         }, stale=stale1 or stale2 or stale_cands,
            extra_meta={"coverage": coverage,
                        "mapping_health": app.config.get("SECTOR_MAP_HEALTH", {})})
+
+    @app.route("/api/regime")
+    def api_regime():
+        """市场情绪择时(regime gate):读 pkl 合成指数,返回当日七态 + 择时建议。"""
+        try:
+            regime = env.latest_state(DAILY_DIR, SECTOR_MAP_PATH, cache_path=REGIME_CACHE)
+        except (FileNotFoundError, RuntimeError) as e:
+            return err("NO_DATA", f"regime 计算失败(缺 daily pkl 或 sector map): {e}", 500)
+        except Exception as e:                      # 其它异常不拖垮服务,按错误码上报
+            return err("REGIME_FAIL", str(e), 500)
+        return ok(regime)
 
     @app.route("/api/actionable-leaders")
     def api_actionable_leaders():
