@@ -41,9 +41,19 @@ def _effective_n(dim, m):
 
 
 def _baseline(dim, cell):
-    """无信息基线:dir/gap/trend3 用 cell base_rate;path 0.25;return 0.5;risk None。"""
+    """无信息基线:dir/gap/trend3 用多数类率 max(base_rate, 1-base_rate);
+    path 0.25;return 0.5;risk None。
+
+    base_rate 是正类(up/high)率。无信息的方向分类器恒押多数类,准确率 =
+    max(base_rate, 1-base_rate),而非 base_rate。用 base_rate 会把「恒押多数类」
+    的退化分类器误报成巨大 edge——例如 gap:calibrator 平坦(恒押 low),
+    hit_rate 0.6306 = 1 - 0.3694 恰为多数类率,用 base_rate 会报出 +0.26 假 edge。
+    """
     if dim in ("direction", "gap", "trend3"):
-        return cell.get("base_rate")
+        br = cell.get("base_rate")
+        if br is None:
+            return None
+        return max(br, 1.0 - br)
     if dim == "path":
         return 0.25
     if dim == "return":
@@ -353,7 +363,7 @@ def suggest(payload, rv):
         if w["dim"] != "direction":
             continue
         cell = payload["environments"][w["env"]]["direction"]
-        base = cell.get("base_rate")
+        base = _baseline("direction", cell)
         if base is None or w["value"] is None or w["value"] >= base:
             continue
         out.append({

@@ -30,6 +30,26 @@ def test_baseline():
     assert rv._baseline("risk", {}) is None
 
 
+def test_baseline_majority_class():
+    # 正类率 < 0.5 时,无信息基线 = 多数类率 1-base_rate,而非 base_rate
+    assert abs(rv._baseline("gap", {"base_rate": 0.37}) - 0.63) < 1e-12
+    # 正类率 > 0.5 时,多数类即正类,基线 = base_rate
+    assert abs(rv._baseline("direction", {"base_rate": 0.70}) - 0.70) < 1e-12
+    # 无 base_rate → None
+    assert rv._baseline("gap", {}) is None
+
+
+def test_gap_majority_class_is_not_edge():
+    # 复现真实 bug:gap base_rate=0.3694,hit_rate=0.6306=1-base_rate(恒押多数类)
+    # → edge 应为 0 且 gap 入 no_edge_dims(而非报 +0.26 假 edge)
+    p = _fake_payload()
+    p["overall"]["gap"] = _cell("gap", hit_rate=0.6306, base_rate=0.3694, n=85235, n_hold=0)
+    rows = {r["dim"]: r for r in rv._overall_summary(p)}
+    assert rows["gap"]["edge"] is not None
+    assert abs(rows["gap"]["edge"]) < 1e-9
+    assert "gap" in rv._no_edge_dims(p)
+
+
 def test_knob_registry_unique_and_typed():
     names = [k["name"] for k in rv.KNOBS]
     assert len(names) == len(set(names))          # name 唯一
