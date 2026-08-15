@@ -17,6 +17,13 @@ BONUS_GE75 = False           # P3: +8 门槛提到 ≥75;decisions.md 定稿
 BONUS_QUALITY_GATE = False   # P3: quality<50 不给加成;decisions.md 定稿
 PRICE_FLOOR = None           # P4: 低于此价的候选排除(None=关);decisions.md 定稿
 
+# 风险尾部 + 高位硬过滤(spec 2026-08-15-risk-first-recommendation-design §3.2)
+# 探针(risk_pos60_probe,318k stock-day)证伪「风险优先排序」:risk 是尾部信号非均值信号——
+# [0,20) 净 -0.433 最差(84.6% 的"横盘死水"股)、[20,60) 净 -0.11 最优、[60,101) 净 -0.66~-1.33 崩溃尾。
+# 故 risk 只做硬尾砍(≥60),不做升序排序;pos60 单调(越高越差),做硬砍(≥0.85)。
+RISK_HARD_CUT = 60.0         # 风险尾部硬过滤:risk ≥ 60 剔除(原 70;40 会误砍最优均值段 [20,60))
+EXT_HARD_CUT = 0.85          # 高位硬过滤:pos60 ≥ 0.85 剔除(单调,越高越差)
+
 
 def _num(v):
     if v is None:
@@ -87,9 +94,22 @@ def filter_candidates(codes, spot_df, exclude_codes, min_amount=MIN_AMOUNT):
 
 
 def rank_candidates(scored, per_sector):
-    """剔除高风险(≥70)与回避;按最终综合分降序取前 per_sector。"""
-    kept = [x for x in scored if x["scores"]["risk"] < 70 and x["verdict"] != "回避"]
-    kept.sort(key=lambda x: x["composite"], reverse=True)
+    """风险尾部硬过滤 + 高位硬过滤;composite 降序取前 per_sector。
+
+    探针证伪「风险升序排序」(risk 是尾部信号非均值信号,最低风险档 [0,20) 反而是最差
+    均值),故排序维持 composite 降序;风险只作硬尾砍(≥RISK_HARD_CUT)。
+    """
+    def keep(x):
+        s = x["scores"]
+        risk = s.get("risk")
+        pos60 = s.get("pos60")
+        if risk is None or risk >= RISK_HARD_CUT:
+            return False
+        if pos60 is not None and pos60 >= EXT_HARD_CUT:
+            return False
+        return x["verdict"] != "回避"
+    kept = [x for x in scored if keep(x)]
+    kept.sort(key=lambda x: -(x["composite"] or 0))
     return kept[:per_sector]
 
 

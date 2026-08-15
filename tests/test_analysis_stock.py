@@ -192,19 +192,32 @@ def test_verdict_v3_five_tiers_unrounded():
 def test_score_stock_v3_guard_and_no_verdict():
     short = make_daily([float(10 + i) for i in range(40)])   # <61 根
     out = an.score_stock(short, quote(), dt_now(15, 0))
-    assert set(out) == {"position", "trend", "volume_price", "signal", "risk", "composite"}
+    assert set(out) == {"position", "trend", "volume_price", "signal", "risk", "composite", "pos60"}
     assert out == {"position": None, "trend": None, "volume_price": None,
-                   "signal": None, "risk": None, "composite": None}
+                   "signal": None, "risk": None, "composite": None, "pos60": None}
     full = make_daily([float(10 + i * 0.2) for i in range(65)])
     out2 = an.score_stock(full, quote(price=full["close"].iloc[-1], change_pct=2.0,
                                       volume=100000), dt_now(15, 0))
-    assert set(out2) == {"position", "trend", "volume_price", "signal", "risk", "composite"}
+    assert set(out2) == {"position", "trend", "volume_price", "signal", "risk", "composite", "pos60"}
     assert "verdict" not in out2                              # 无 verdict 泄漏(第二轮#2)
     assert 0 <= out2["composite"] <= 100
     # composite = stock_composite_v3(bonus=0)
     expected = an.stock_composite_v3(out2["position"], out2["volume_price"],
                                      out2["trend"], out2["signal"], out2["risk"])
     assert out2["composite"] == pytest.approx(expected)
+
+
+def test_score_stock_pos60_exposed():
+    # pos60 新增暴露:score_stock 返回的 pos60 与 _pos60(daily_df) 一致(推荐层硬过滤用)。
+    # 上升 65 根 → 60 日区间顶部 → pos60 接近 1(>0.9);下跌 65 根 → 底部 → <0.1。
+    up = make_daily([float(10 + i) for i in range(65)])
+    q_up = quote(price=up["close"].iloc[-1], change_pct=2.0, volume=100000)
+    assert an.score_stock(up, q_up, dt_now(15, 0))["pos60"] == pytest.approx(an._pos60(up))
+    assert an.score_stock(up, q_up, dt_now(15, 0))["pos60"] > 0.9
+    down = make_daily([float(100 - i) for i in range(65)])
+    q_down = quote(price=down["close"].iloc[-1], change_pct=-2.0, volume=100000)
+    assert an.score_stock(down, q_down, dt_now(15, 0))["pos60"] == pytest.approx(an._pos60(down))
+    assert an.score_stock(down, q_down, dt_now(15, 0))["pos60"] < 0.1
 
 
 def test_bias_sweet_boundaries():

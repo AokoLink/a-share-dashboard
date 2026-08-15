@@ -551,7 +551,7 @@ def score_stock(daily_df, quote, now):
     """个股打分(规格 §4.0/§4.6):≥61 根守卫;返回四因子 + 风险 + 未含板块的 composite;无 verdict。"""
     if len(daily_df) < 61:
         return {"position": None, "trend": None, "volume_price": None,
-                "signal": None, "risk": None, "composite": None}
+                "signal": None, "risk": None, "composite": None, "pos60": None}
     position = compute_position_score(daily_df)
     vp = compute_volume_price_score(daily_df, quote, now)
     trend = compute_trend_score(daily_df)
@@ -559,4 +559,5 @@ def score_stock(daily_df, quote, now):
     risk = compute_stock_risk(daily_df, quote, now)
     return {"position": position, "trend": trend, "volume_price": vp,
             "signal": signal, "risk": risk,
+            "pos60": _pos60(daily_df),
             "composite": stock_composite_v3(position, vp, trend, signal, risk)}

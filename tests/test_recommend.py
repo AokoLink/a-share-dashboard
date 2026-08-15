@@ -93,13 +93,51 @@ def test_filter_candidates_rules():
 
 def test_rank_candidates():
     scored = [
-        {"code": "a", "composite": 80, "scores": {"composite": 80, "risk": 10}, "verdict": "关注"},
-        {"code": "b", "composite": 90, "scores": {"composite": 90, "risk": 80}, "verdict": "回避"},
-        {"code": "c", "composite": 70, "scores": {"composite": 70, "risk": 20}, "verdict": "持有/跟踪"},
-        {"code": "d", "composite": 60, "scores": {"composite": 60, "risk": 30}, "verdict": "观望"},
+        {"code": "a", "composite": 80, "scores": {"composite": 80, "risk": 10, "pos60": 0.5}, "verdict": "关注"},
+        {"code": "b", "composite": 90, "scores": {"composite": 90, "risk": 80, "pos60": 0.5}, "verdict": "回避"},
+        {"code": "c", "composite": 70, "scores": {"composite": 70, "risk": 20, "pos60": 0.5}, "verdict": "持有/跟踪"},
+        {"code": "d", "composite": 60, "scores": {"composite": 60, "risk": 30, "pos60": 0.5}, "verdict": "观望"},
     ]
     ranked = recommend.rank_candidates(scored, 2)
-    assert [x["code"] for x in ranked] == ["a", "c"]   # b 回避/高险剔除;按 composite 降序取 2
+    # b 高险(risk=80)剔除;剩余按(风险档, -composite):a(档0) > c(档1,70) > d(档1,60) → 取 2
+    assert [x["code"] for x in ranked] == ["a", "c"]
+
+
+def test_rank_candidates_risk_hard_cut():
+    # risk ≥ RISK_HARD_CUT(60) 被硬剔;59.99 保留
+    scored = [
+        {"code": "a", "composite": 90, "scores": {"risk": 60.0, "pos60": 0.5}, "verdict": "关注"},
+        {"code": "b", "composite": 50, "scores": {"risk": 59.99, "pos60": 0.5}, "verdict": "持有/跟踪"},
+    ]
+    assert [x["code"] for x in recommend.rank_candidates(scored, 5)] == ["b"]
+
+
+def test_rank_candidates_ext_hard_cut():
+    # pos60 ≥ EXT_HARD_CUT(0.85) 被硬剔;0.8499 保留;pos60 缺失(fail-open)保留
+    scored = [
+        {"code": "a", "composite": 90, "scores": {"risk": 10, "pos60": 0.85}, "verdict": "关注"},
+        {"code": "b", "composite": 80, "scores": {"risk": 10, "pos60": 0.8499}, "verdict": "关注"},
+        {"code": "c", "composite": 70, "scores": {"risk": 10}, "verdict": "关注"},  # 无 pos60 → 不硬过滤
+    ]
+    assert [x["code"] for x in recommend.rank_candidates(scored, 5)] == ["b", "c"]
+
+
+def test_rank_candidates_composite_desc_not_risk_asc():
+    # 探针证伪「风险升序排序」:低风险档不应仅因 risk 低就排到高 composite 前;维持 composite 降序。
+    scored = [
+        {"code": "low", "composite": 55, "scores": {"risk": 5, "pos60": 0.5}, "verdict": "持有/跟踪"},
+        {"code": "mid", "composite": 95, "scores": {"risk": 35, "pos60": 0.5}, "verdict": "强烈关注"},
+    ]
+    assert [x["code"] for x in recommend.rank_candidates(scored, 2)] == ["mid", "low"]
+
+
+def test_rank_candidates_risk_none_dropped():
+    # risk=None 恒剔除(防御;生产 <61 根已被 composite-None 守卫跳过)
+    scored = [
+        {"code": "a", "composite": 90, "scores": {"risk": None, "pos60": 0.5}, "verdict": "关注"},
+        {"code": "b", "composite": 50, "scores": {"risk": 10, "pos60": 0.5}, "verdict": "关注"},
+    ]
+    assert [x["code"] for x in recommend.rank_candidates(scored, 5)] == ["b"]
 
 
 def test_build_recommend_happy_path(monkeypatch):
