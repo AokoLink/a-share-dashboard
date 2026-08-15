@@ -240,3 +240,34 @@ def test_render_empty_suggestions_honest():
 def test_review_no_utf8_minus():
     src = open("review.py", encoding="utf-8").read()
     assert "−" not in src
+
+
+def test_layer_risk_lower_is_better():
+    # adverse_rate 越低越好:0.03 < 0.05 → 应入 strong 而非 weak
+    p = _fake_payload()
+    p["significant"] = [["趋势", "risk", "adverse_rate", 0.03, 0.05, 0.02]]
+    p["se_bounds"] = [["趋势", "risk", 0.04]]
+    weak, strong = rv._layer_weak_strong(p)
+    assert not any(w["layer"] == "趋势" for w in weak)
+    assert any(s["layer"] == "趋势" and s["dim"] == "risk" and s["value"] == 0.03
+               for s in strong)
+
+
+def test_env_risk_higher_is_weaker():
+    # 熊 risk adverse_rate 0.20 高于总体 0.05 → 应入 weak(跑输);总体/环境 n=10000 保证显著
+    p = _fake_payload()
+    p["overall"]["risk"] = _cell("risk", adverse_rate=0.05, n=10000)
+    p["environments"]["熊"]["risk"] = _cell("risk", adverse_rate=0.20, n=10000)
+    weak, strong = rv._env_weak_strong(p)
+    assert any(w["env"] == "熊" and w["dim"] == "risk" and w["value"] == 0.20
+               for w in weak)
+    assert not any(s["env"] == "熊" and s["dim"] == "risk" for s in strong)
+
+
+def test_suggest_r1_skips_return():
+    # return 维 sign_agreement 0.40 < 0.50 的弱层,不应触发 R1(return 不在 R1 授权范围)
+    p = _fake_payload()
+    p["significant"] = [["趋势", "return", "sign_agreement", 0.40, 0.60, 0.05]]
+    p["se_bounds"] = [["趋势", "return", 0.10]]
+    s = rv.suggest(p, rv.review(p))
+    assert not any(x["kind"] == "layer_antisignal" for x in s)

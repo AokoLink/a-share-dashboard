@@ -88,9 +88,9 @@ suggestion 形态:
 `review(payload) -> review_payload`,全部由 payload 字段派生:
 
 1. **overall_summary**:逐维取 PRIMARY 指标 + 无信息基线。baseline:direction/gap/trend3 用 `base_rate`;path 用 0.25(四分类机会);return 用 0.5;risk 无基线(adverse_rate 越低越好,单独报 ece/brier/lift)。`edge = value - baseline`。无 edge 判定(no_edge_dims):direction/gap/trend3 `|hit_rate - base_rate| <= se(单侧 1σ,即 sqrt(base_rate*(1-base_rate)/n_eff))`;path `|acc_path - 0.25| <= sqrt(0.25*0.75/n)`;return `|sign_agreement - 0.5| <= 0.5/sqrt(sign_n)`。risk 不做无 edge 判定。
-2. **weak/strong_layers**:读 payload `significant`(覆盖 9 个 (dim, metric) 组合:六维主指标 + return 的 mae/rmse/mean_residual),**按 `metric == PRIMARY[dim]` 过滤**后 `v_l < v_o` → weak、`v_l > v_o` → strong。附 `se_bounds[(L,dim)]`(仅主指标有 2σ 界)。
+2. **weak/strong_layers**:读 payload `significant`(覆盖 9 个 (dim, metric) 组合:六维主指标 + return 的 mae/rmse/mean_residual),**按 `metric == PRIMARY[dim]` 过滤**后 `v_l < v_o` → weak、`v_l > v_o` → strong;**risk 维例外**:adverse_rate 越低越好,方向反转(`v_l > v_o` → weak、`v_l < v_o` → strong)。附 `se_bounds[(L,dim)]`(仅主指标有 2σ 界)。
 3. **weak/strong_environments**:payload 无环境显著性,review.py 自算。对每个非 `_suppressed` 的 `environments[env][dim]`,取 PRIMARY 指标,与 `overall[dim]` 做二项比例差:
-   `se = sqrt(p_l*(1-p_l)/n_eff_l + p_o*(1-p_o)/n_eff_o)`,其中 direction/gap/trend3 用 `n - n_hold`、path/risk 用 `n`、return 用 `sign_n`(镜像 evaluate `_significance` 的有效 n 规则)。有效 n 任一侧 < MIN_LAYER_N(30)→ 跳过;`|v_l - v_o| > 2*se` → 显著,按方向入 weak/strong。
+   `se = sqrt(p_l*(1-p_l)/n_eff_l + p_o*(1-p_o)/n_eff_o)`,其中 direction/gap/trend3 用 `n - n_hold`、path/risk 用 `n`、return 用 `sign_n`(镜像 evaluate `_significance` 的有效 n 规则)。有效 n 任一侧 < MIN_LAYER_N(30)→ 跳过;`|v_l - v_o| > 2*se` → 显著,按方向入 weak/strong(risk 反转同第 2 条)。
 4. **no_edge_dims / undifferentiated / degenerate_environments / thin_layers**:按 §4.1 与 `env_n < MIN_STATE_N(20)`、`layer_n < MIN_LAYER_N(30)` 填。
 
 ## §5 建议规则集(小而显式)

@@ -235,7 +235,10 @@ def _layer_weak_strong(payload):
         cell = payload["layers"][L][dim]
         entry = {"layer": L, "dim": dim, "value": v_l, "overall": v_o,
                  "se": se_map.get((L, dim)), "n": cell.get("n")}
-        (weak if v_l < v_o else strong).append(entry)
+        if dim == "risk":  # adverse_rate 越低越好,方向反转
+            (weak if v_l > v_o else strong).append(entry)
+        else:
+            (weak if v_l < v_o else strong).append(entry)
     return weak, strong
 
 
@@ -252,7 +255,7 @@ def _env_weak_strong(payload):
             p_o = overall.get(ev.PRIMARY[dim])
             n_l = _effective_n(dim, cell)
             n_o = _effective_n(dim, overall)
-            if p_l is None or p_o is None or n_l < ev.MIN_LAYER_N or n_o <= 0:
+            if p_l is None or p_o is None or n_l < ev.MIN_LAYER_N or n_o < ev.MIN_LAYER_N:
                 continue
             se = _binom_diff_se(p_l, n_l, p_o, n_o)
             if se is None:
@@ -260,7 +263,10 @@ def _env_weak_strong(payload):
             if abs(p_l - p_o) > 2.0 * se:
                 entry = {"env": state, "dim": dim, "value": p_l, "overall": p_o,
                          "se": 2.0 * se, "n": cell.get("n")}
-                (weak if p_l < p_o else strong).append(entry)
+                if dim == "risk":  # adverse_rate 越低越好,方向反转
+                    (weak if p_l > p_o else strong).append(entry)
+                else:
+                    (weak if p_l < p_o else strong).append(entry)
     return weak, strong
 
 
@@ -296,6 +302,8 @@ def suggest(payload, rv):
     # R1 层反信号
     for w in rv["weak_layers"]:
         dim = w["dim"]
+        if dim not in ("direction", "gap", "trend3", "path"):
+            continue  # R1 只覆盖 direction/gap/trend3(基线 base_rate)与 path(基线 0.25);return/risk 不产 R1
         cell = payload["layers"][w["layer"]][dim]
         baseline = _baseline(dim, cell)
         if baseline is None or w["value"] is None:
