@@ -111,6 +111,28 @@ def test_next_returns_nonpositive():
     assert bt.next_returns(d2, 0) is None  # close[T+1] <= 0
 
 
+def test_next_returns_ext_exact():
+    # 4 根:c0=100, o1=105 c1=110, o2=108 c2=120
+    d = make_daily([100.0, 110.0, 120.0, 130.0], opens=[100.0, 105.0, 108.0, 128.0])
+    r = bt.next_returns_ext(d, 0)
+    assert r["gap"] == pytest.approx(105.0 / 100.0 - 1)
+    assert r["od"] == pytest.approx(110.0 / 105.0 - 1)
+    assert r["close1"] == pytest.approx(110.0 / 100.0 - 1)
+    assert r["gap1"] == pytest.approx(108.0 / 110.0 - 1)
+    assert r["od2"] == pytest.approx(120.0 / 108.0 - 1)
+    assert r["oo"] == pytest.approx(108.0 / 105.0 - 1)
+    assert r["oc"] == pytest.approx(120.0 / 105.0 - 1)
+    assert r["cc2"] == pytest.approx(120.0 / 100.0 - 1)
+
+
+def test_next_returns_ext_missing_bar2():
+    d = make_daily([100.0, 110.0, 120.0])  # 3 根,i=1 -> i+2=3 越界
+    r = bt.next_returns_ext(d, 1)
+    assert r is not None
+    assert r["gap"] == pytest.approx(120.0 / 110.0 - 1)
+    assert "oo" not in r and "oc" not in r and "gap1" not in r and "od2" not in r
+
+
 def test_holding_window_full():
     d = make_daily([100.0, 101.0, 102.0, 103.0, 104.0])
     w = bt.holding_window(d, 0, 3)
@@ -247,6 +269,34 @@ def test_build_buyable_filters():
     buy, od_m, gap_m, c1_m = bt.build_buyable(universe, pos_of, all_days, 1)
     assert buy == {"600519"}
     assert set(od_m) == set(gap_m) == set(c1_m) == {"600519"}
+
+
+def test_build_buyable_ext_legal_windows_and_backcompat():
+    # 4 根,bar=1 时 bar+2=3 可用;volume*close >= 1e8
+    d = _with_change_pct(make_daily([1000.0, 1001.0, 1002.0, 1003.0],
+                                    volumes=[200000] * 4), [0.0, 1.0, 1.0, 1.0])
+    universe = {"600519": d}
+    codes = ["600519"]
+    all_days, pos_of = bt.build_calendar(universe, codes)
+    buy, od_m, gap_m, c1_m, oo_m, oc_m, gap1_m, od2_m = \
+        bt.build_buyable_ext(universe, pos_of, all_days, 1)
+    assert buy == {"600519"}
+    assert set(oo_m) == set(oc_m) == set(gap1_m) == set(od2_m) == {"600519"}
+    # 前四元组与 build_buyable 完全一致(向后兼容)
+    buy2, od2m, gap2m, c12m = bt.build_buyable(universe, pos_of, all_days, 1)
+    assert buy2 == buy and od2m == od_m and gap2m == gap_m and c12m == c1_m
+
+
+def test_build_buyable_ext_missing_bar2():
+    # 3 根,bar=1 时 bar+2=3 越界 -> oo/oc 等扩展映射为空
+    d = _with_change_pct(make_daily([1000.0, 1001.0, 1002.0],
+                                    volumes=[200000] * 3), [0.0, 1.0, 0.0])
+    universe = {"600519": d}
+    all_days, pos_of = bt.build_calendar(universe, ["600519"])
+    buy, od_m, gap_m, c1_m, oo_m, oc_m, gap1_m, od2_m = \
+        bt.build_buyable_ext(universe, pos_of, all_days, 1)
+    assert buy == {"600519"}
+    assert oo_m == {} and oc_m == {} and gap1_m == {} and od2_m == {}
 
 
 def test_select_baskets_exact():
@@ -408,10 +458,13 @@ def test_run_end_to_end(tmp_path, monkeypatch):
         "A 实际管线(热板块xtop5)  次日od", "A 隔夜gap", "A close->next close",
         "E 板块内低位股(pos分top5)次日od", "E 板块内高位股(pos分bot5)次日od",
         "B 全市场top15  次日od", "C 热板块随机  次日od", "D 全市场基准  次日od",
+        "A 买次日开盘卖次日开盘(合法oo)", "A 买次日开盘卖次日收盘(合法oc)",
+        "D 买次日开盘卖次日开盘(合法oo)", "D 买次日开盘卖次日收盘(合法oc)",
     }
     assert set(results["welch"]) == {
         "A 实际管线(热板块xtop5)  次日od", "B 全市场top15  次日od",
         "C 热板块随机  次日od", "E 板块内低位股(pos分top5)次日od", "E 板块内高位股(pos分bot5)次日od",
+        "A 买次日开盘卖次日开盘(合法oo)", "A 买次日开盘卖次日收盘(合法oc)",
     }
     assert results["n_eval"] > 0
     assert results["step"] >= 1

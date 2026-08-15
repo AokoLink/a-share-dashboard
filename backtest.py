@@ -85,6 +85,35 @@ def next_returns(d, i):
     return {"gap": o1 / c0 - 1, "close1": c1 / c0 - 1, "od": c1 / o1 - 1}
 
 
+def next_returns_ext(d, i):
+    """next_returns 的超集:额外读 bar+2,补齐 A股 T+1 下合法可执行窗口。
+
+    基础键 gap/close1/od 同 next_returns;当 bar+2 可用且价为正时追加:
+    - gap1 = o2/c1-1   (T+1 close -> T+2 open 隔夜 gap)
+    - od2  = c2/o2-1   (T+2 open -> close)
+    - oo   = o2/o1-1   (买 T+1 开盘卖 T+2 开盘,合法最短)
+    - oc   = c2/o1-1   (买 T+1 开盘卖 T+2 收盘,合法)
+    - cc2  = c2/c0-1   (买 T 收盘卖 T+2 收盘,两夜)
+
+    口径说明(entry_timing_probe 证实):od = 买 T+1 开盘卖 T+1 收盘是当日 round-trip,
+    违反 A股 T+1(当日买入不可卖);close1 = 买 T 收盘,但信号 AFTER_CLOSE 收盘后才生成,
+    二者均不可交易。oo/oc 才是用户真正可执行的买卖窗口。
+    """
+    base = next_returns(d, i)
+    if base is None or i + 2 >= len(d):
+        return base
+    c0 = float(d["close"].iloc[i]); o1 = float(d["open"].iloc[i + 1]); c1 = float(d["close"].iloc[i + 1])
+    o2 = float(d["open"].iloc[i + 2]); c2 = float(d["close"].iloc[i + 2])
+    if o2 <= 0 or c2 <= 0:
+        return base
+    base["gap1"] = o2 / c1 - 1
+    base["od2"] = c2 / o2 - 1
+    base["oo"] = o2 / o1 - 1
+    base["oc"] = c2 / o1 - 1
+    base["cc2"] = c2 / c0 - 1
+    return base
+
+
 def holding_window(d, bar, h):
     """(bar, bar+h] 的真实 OHLCV 路径(不含 bar 本身,bar 为决策 bar)。
 
@@ -170,9 +199,20 @@ def _long_upper_shadow(high, low, open_, close):
 
 
 def build_buyable(universe, pos_of, all_days, i):
+    buy, od_m, gap_m, c1_m, *_ = build_buyable_ext(universe, pos_of, all_days, i)
+    return buy, od_m, gap_m, c1_m
+
+
+def build_buyable_ext(universe, pos_of, all_days, i):
+    """build_buyable 的超集:额外返回 oo/oc/gap1/od2(读 bar+2 的合法 T+1 可执行窗口)。
+
+    返回 (buy, od_m, gap_m, c1_m, oo_m, oc_m, gap1_m, od2_m);前四元组与 build_buyable 完全一致。
+    oo_m/oc_m/gap1_m/od2_m 仅含 bar+2 可用的成员(最后评估日越界则缺)。
+    """
     dt = all_days[i]
     buy = set()
     od_m, gap_m, c1_m = {}, {}, {}
+    oo_m, oc_m, gap1_m, od2_m = {}, {}, {}, {}
     for c in universe:
         bar = pos_of[c].get(dt)
         if bar is None or bar + 1 >= len(universe[c]):
@@ -180,7 +220,7 @@ def build_buyable(universe, pos_of, all_days, i):
         d = universe[c]
         chg = float(d["change_pct"].iloc[bar])
         close = float(d["close"].iloc[bar])
-        nr = next_returns(d, bar)
+        nr = next_returns_ext(d, bar)
         if nr is None:
             continue
         th = an.limit_threshold(c)
@@ -190,7 +230,10 @@ def build_buyable(universe, pos_of, all_days, i):
             continue
         buy.add(c)
         od_m[c] = nr["od"]; gap_m[c] = nr["gap"]; c1_m[c] = nr["close1"]
-    return buy, od_m, gap_m, c1_m
+        if "oo" in nr:
+            oo_m[c] = nr["oo"]; oc_m[c] = nr["oc"]
+            gap1_m[c] = nr["gap1"]; od2_m[c] = nr["od2"]
+    return buy, od_m, gap_m, c1_m, oo_m, oc_m, gap1_m, od2_m
 
 
 def select_baskets(sector_members, pos_of, all_days, i, buyable, hot, get_score, start, rng):
@@ -367,9 +410,9 @@ def run(data_dir, sector_map_path):
                         diag["pushed_over_70"] += 1
         return score_cache[key]
 
-    A_od, A_gap, A_c1 = [], [], []
+    A_od, A_gap, A_c1, A_oo, A_oc = [], [], [], [], []
     E_hi_od, E_lo_od = [], []
-    B_od, C_od, D_od = [], [], []
+    B_od, C_od, D_od, D_oo, D_oc = [], [], [], [], []
     eval_years = []
     n_eval = 0
 
@@ -378,18 +421,23 @@ def run(data_dir, sector_map_path):
         if not heat:
             continue
         hot = sorted(heat, key=heat.get, reverse=True)[:TOP_SECTORS]
-        buyable, od_m, gap_m, c1_m = build_buyable(universe, pos_of, all_days, i)
+        buyable, od_m, gap_m, c1_m, oo_m, oc_m, gap1_m, od2_m = \
+            build_buyable_ext(universe, pos_of, all_days, i)
         baskets = select_baskets(sector_members, pos_of, all_days, i,
                                  buyable, hot, get_score, start, RNG)
         A_od.append(stats(baskets["A"], od_m))
         A_gap.append(stats(baskets["A"], gap_m))
         A_c1.append(stats(baskets["A"], c1_m))
+        A_oo.append(stats(baskets["A"], oo_m))
+        A_oc.append(stats(baskets["A"], oc_m))
         E_hi_od.append(stats(baskets["E_hi"], od_m))
         E_lo_od.append(stats(baskets["E_lo"], od_m))
         if baskets["B"] is not None:
             B_od.append(stats(baskets["B"], od_m))
         C_od.append(stats(baskets["C"], od_m))
         D_od.append(stats(baskets["D"], od_m))
+        D_oo.append(stats(baskets["D"], oo_m))
+        D_oc.append(stats(baskets["D"], oc_m))
         eval_years.append(all_days[i][:4])
         n_eval += 1
 
@@ -397,11 +445,15 @@ def run(data_dir, sector_map_path):
         "A 实际管线(热板块xtop5)  次日od": summ(A_od),
         "A 隔夜gap": summ(A_gap),
         "A close->next close": summ(A_c1),
+        "A 买次日开盘卖次日开盘(合法oo)": summ(A_oo),
+        "A 买次日开盘卖次日收盘(合法oc)": summ(A_oc),
         "E 板块内低位股(pos分top5)次日od": summ(E_hi_od),
         "E 板块内高位股(pos分bot5)次日od": summ(E_lo_od),
         "B 全市场top15  次日od": summ(B_od),
         "C 热板块随机  次日od": summ(C_od),
         "D 全市场基准  次日od": summ(D_od),
+        "D 买次日开盘卖次日开盘(合法oo)": summ(D_oo),
+        "D 买次日开盘卖次日收盘(合法oc)": summ(D_oc),
     }
     by_year = {
         "A 实际管线": summ_year(A_od, eval_years),
@@ -416,11 +468,17 @@ def run(data_dir, sector_map_path):
         "C 热板块随机  次日od": welch_t(C_od, D_od),
         "E 板块内低位股(pos分top5)次日od": welch_t(E_hi_od, D_od),
         "E 板块内高位股(pos分bot5)次日od": welch_t(E_lo_od, D_od),
+        "A 买次日开盘卖次日开盘(合法oo)": welch_t(A_oo, D_oo),
+        "A 买次日开盘卖次日收盘(合法oc)": welch_t(A_oc, D_oc),
     }
     data_range = {"start": str(all_days[0]), "end": str(all_days[-1])}
     window = {"start": str(all_days[start]), "end": str(all_days[len(all_days) - 2])}
+    t1_note = ("A股 T+1(当日买入不可卖):「次日od」=买 T+1 开盘卖 T+1 收盘,是当日 round-trip,非法;"
+               "「close->next close」=买 T 收盘,但信号 AFTER_CLOSE=15:01 收盘后才生成,不可执行。"
+               "真正可交易口径是「买次日开盘卖次日开盘/收盘」(合法 oo/oc)。")
     return {"rows": rows, "by_year": by_year, "welch": welch, "diag": diag,
-            "n_eval": n_eval, "step": step, "window": window, "data_range": data_range}
+            "n_eval": n_eval, "step": step, "window": window, "data_range": data_range,
+            "t1_note": t1_note}
 
 
 def _git_short_sha():
@@ -461,6 +519,7 @@ def build_report(results, system_version=None, generated_at=None):
         "by_year": by_year,
         "welch": results["welch"],
         "diag": results.get("diag", {}),
+        "t1_note": results.get("t1_note", ""),
     }
 
 
@@ -474,6 +533,9 @@ def render_markdown(payload):
     lines.append(f"- generated_at: {payload['generated_at']}")
     lines.append(f"- data_range: {payload['data_range']['start']} -> {payload['data_range']['end']}")
     lines.append(f"- 评估窗口: {payload['window']['start']} -> {payload['window']['end']} (n_eval={payload['n_eval']}, step={payload['step']})")
+    if payload.get("t1_note"):
+        lines += ["", "## ⚠ 可交易性口径(A股 T+1)", ""]
+        lines.append(payload["t1_note"])
     lines += ["", "## 整体(次日)", "", "| 篮子 | mean_pct% | win_rate% | n |", "|---|---|---|---|"]
     for k, v in payload["rows"].items():
         lines.append(f"| {k} | {fmt(v['mean_pct'])} | {fmt(v['win_rate'], 1)} | {v['n']} |")
