@@ -211,6 +211,7 @@ def test_regime_advice_mapping():
     assert env.regime_advice(None)["action"] == "unknown"
     assert env.regime_advice("未知态")["action"] == "unknown"
     assert isinstance(env.regime_advice("恐慌")["message"], str)
+    assert "持有 2-3 天" in env.regime_advice("恐慌")["message"]
 
 
 def test_latest_state_bull(tmp_path, monkeypatch):

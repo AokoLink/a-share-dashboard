@@ -202,7 +202,7 @@ def run(data_dir, sector_map_path):
 # ---------- regime gate(择时门控) ----------
 
 REGIME_ADVICE = {
-    "恐慌": {"action": "buy_dip", "message": "市场恐慌,关注超跌反弹(全市场/宽基);注意趋势性崩盘会接飞刀"},
+    "恐慌": {"action": "buy_dip", "message": "市场恐慌,关注超跌反弹(全市场/宽基);建议持有 2-3 天(T+1 开盘买,T+3/4 开盘卖)。日级净胜率 73%(41 天样本,肥左尾,接飞刀风险,非稳赚)"},
     "高潮": {"action": "avoid", "message": "市场冲顶(高潮),建议空仓/回避追高"},
     "退潮": {"action": "avoid", "message": "市场杀跌延续(退潮),建议空仓"},
     "牛":   {"action": "neutral", "message": "牛市主升,无择时 edge(方向中性)"},
