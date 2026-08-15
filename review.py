@@ -269,3 +269,21 @@ def _degenerate_thin(payload):
     degenerate = [s for s in env.LABELS if payload["env_n"].get(s, 0) < env.MIN_STATE_N]
     thin = [L for L in ev.LAYERS if payload["layer_n"].get(L, 0) < ev.MIN_LAYER_N]
     return degenerate, thin
+
+
+def review(payload):
+    """把复盘发现编排为结构化 dict。"""
+    weak_layers, strong_layers = _layer_weak_strong(payload)
+    weak_envs, strong_envs = _env_weak_strong(payload)
+    degenerate, thin = _degenerate_thin(payload)
+    return {
+        "overall_summary": _overall_summary(payload),
+        "weak_layers": weak_layers,
+        "strong_layers": strong_layers,
+        "weak_environments": weak_envs,
+        "strong_environments": strong_envs,
+        "no_edge_dims": _no_edge_dims(payload),
+        "undifferentiated": bool(payload.get("all_undifferentiated")),
+        "degenerate_environments": degenerate,
+        "thin_layers": thin,
+    }

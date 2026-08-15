@@ -146,3 +146,15 @@ def test_degenerate_thin():
     p["layer_n"]["反抽"] = 25        # < MIN_LAYER_N=30
     deg, thin = rv._degenerate_thin(p)
     assert "退潮" in deg and "反抽" in thin
+
+
+def test_review_shape():
+    r = rv.review(_fake_payload())
+    for key in ("overall_summary", "weak_layers", "strong_layers",
+                "weak_environments", "strong_environments", "no_edge_dims",
+                "undifferentiated", "degenerate_environments", "thin_layers"):
+        assert key in r
+    assert len(r["overall_summary"]) == len(rv.ev.DIMS)
+    assert r["undifferentiated"] is False          # 默认 all_undifferentiated=False
+    # all_undifferentiated=True → undifferentiated=True 原样透传
+    assert rv.review(_fake_payload(all_undifferentiated=True))["undifferentiated"] is True
