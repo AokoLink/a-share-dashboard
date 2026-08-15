@@ -87,7 +87,7 @@ suggestion 形态:
 
 `review(payload) -> review_payload`,全部由 payload 字段派生:
 
-1. **overall_summary**:逐维取 PRIMARY 指标 + 无信息基线。baseline:direction/gap/trend3 用 `base_rate`;path 用 0.25(四分类机会);return 用 0.5;risk 无基线(adverse_rate 越低越好,单独报 ece/brier/lift)。`edge = value - baseline`。无 edge 判定(no_edge_dims):direction/gap/trend3 `|hit_rate - base_rate| <= se(单侧 1σ,即 sqrt(base_rate*(1-base_rate)/n))`;path `|acc_path - 0.25| <= sqrt(0.25*0.75/n)`;return `|sign_agreement - 0.5| <= 0.5/sqrt(sign_n)`。risk 不做无 edge 判定。
+1. **overall_summary**:逐维取 PRIMARY 指标 + 无信息基线。baseline:direction/gap/trend3 用 `base_rate`;path 用 0.25(四分类机会);return 用 0.5;risk 无基线(adverse_rate 越低越好,单独报 ece/brier/lift)。`edge = value - baseline`。无 edge 判定(no_edge_dims):direction/gap/trend3 `|hit_rate - base_rate| <= se(单侧 1σ,即 sqrt(base_rate*(1-base_rate)/n_eff))`;path `|acc_path - 0.25| <= sqrt(0.25*0.75/n)`;return `|sign_agreement - 0.5| <= 0.5/sqrt(sign_n)`。risk 不做无 edge 判定。
 2. **weak/strong_layers**:读 payload `significant`(覆盖 9 个 (dim, metric) 组合:六维主指标 + return 的 mae/rmse/mean_residual),**按 `metric == PRIMARY[dim]` 过滤**后 `v_l < v_o` → weak、`v_l > v_o` → strong。附 `se_bounds[(L,dim)]`(仅主指标有 2σ 界)。
 3. **weak/strong_environments**:payload 无环境显著性,review.py 自算。对每个非 `_suppressed` 的 `environments[env][dim]`,取 PRIMARY 指标,与 `overall[dim]` 做二项比例差:
    `se = sqrt(p_l*(1-p_l)/n_eff_l + p_o*(1-p_o)/n_eff_o)`,其中 direction/gap/trend3 用 `n - n_hold`、path/risk 用 `n`、return 用 `sign_n`(镜像 evaluate `_significance` 的有效 n 规则)。有效 n 任一侧 < MIN_LAYER_N(30)→ 跳过;`|v_l - v_o| > 2*se` → 显著,按方向入 weak/strong。
@@ -95,11 +95,11 @@ suggestion 形态:
 
 ## §5 建议规则集(小而显式)
 
-`suggest(review_payload) -> list[suggestion]`。每条规则独立、数据锚定;无命中 → 空表(诚实)。规则:
+`suggest(payload, review_payload) -> list[suggestion]`。每条规则独立、数据锚定;无命中 → 空表(诚实)。suggest 读 payload(源指标 ece/mean_residual/base_rate)+ review_payload(复盘发现),两者在 build_report 时均可得。规则:
 
 - **R1 层反信号**:weak_layers 中存在 direction/gap/trend3 且 `hit_rate < base_rate`(反信号)或 path `acc_path < 0.25` → 建议「该层为反信号,考虑在评分/选股中降权或排除该层标的」。evidence 引用 `{layer, dim, hit_rate vs base_rate, n, 2σ}`。knob=None(行为建议,非单旋钮)。confidence="med"。validation=「held-out 重跑 evaluate,看该层反信号是否跨期稳定」。
 - **R2 环境反信号/无优势**:weak_environments 中存在方向维 `hit_rate < base_rate` → 建议「该环境下预测无优势,考虑更保守(加宽 ε-band 使更多 hold 或加警示徽章)」。knob="DIRECTION_BAND"。evidence 引用 `{env, dim, hit_rate vs base_rate, n, 2σ}`。confidence="med"。requires_probe=false。
-- **R3 方向维无区分度**:`no_edge_dims` 含 direction 或 `undifferentiated` → 建议「方向维无方向性 edge(与 S1/P2 结论一致);接受为结论,或加宽 DIRECTION_BAND 减少无信息下注」。knob="DIRECTION_BAND"。confidence="high"(方向无 edge 已多次复现)。validation=「对比不同 DIRECTION_BAND 下 up/down 调用数 vs 命中率,无提升则维持」。
+- **R3 方向维无区分度**:`no_edge_dims` 含 direction → 建议「方向维无方向性 edge(与 S1/P2 结论一致);接受为结论,或加宽 DIRECTION_BAND 减少无信息下注」。knob="DIRECTION_BAND"。confidence="high"(方向无 edge 已多次复现)。validation=「对比不同 DIRECTION_BAND 下 up/down 调用数 vs 命中率,无提升则维持」。`undifferentiated` 不作为建议触发,单独在 review 报告与 MD「无分化判定」节呈现(镜像 evaluate render_markdown 的分层定义重审提示)。
 - **R4 风险校准偏离**:risk 维 `ece > 0.10` → 建议「风险校准器 ECE 偏高(ece=…),考虑重审风险分箱(N_BINS)或校准样本」。evidence 引用 `{ece, n}`。knob="N_BINS"。confidence="low"。requires_probe=true(ECE 复核需 predict 内部样本,review 只读 payload 不持有)。注:risk cell = `{n, adverse_rate, ece, brier, lift}` 不含 mean(risk_p),故仅以 ece 触发。
 - **R5 收益系统性偏估**:return 维 `|mean_residual| > 0.02` → 建议「expected_return 系统性偏估(mean_residual=…),考虑加偏移校准」。knob=None。confidence="low"。requires_probe=true。
 - **R6 薄层/退化(警示,不产建议)**:`degenerate_environments` / `thin_layers` 非空 → 不产出 suggestion 条目。它们已在 review 的 `degenerate_environments` / `thin_layers` 字段如实列出,作为「样本不足(n<阈值),不足以支撑该层/环境建议」的警示;`suggest()` 对这两类字段恒不产建议。
