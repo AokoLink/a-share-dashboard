@@ -287,3 +287,77 @@ def review(payload):
         "degenerate_environments": degenerate,
         "thin_layers": thin,
     }
+
+
+def suggest(payload, rv):
+    """数据锚定优化建议(R1-R5);无命中 → 空表。不产出 R6(薄层/退化已在 review 字段)。"""
+    out = []
+
+    # R1 层反信号
+    for w in rv["weak_layers"]:
+        dim = w["dim"]
+        cell = payload["layers"][w["layer"]][dim]
+        baseline = _baseline(dim, cell)
+        if baseline is None or w["value"] is None:
+            continue
+        if w["value"] < baseline:  # 反信号(hit_rate < base_rate 或 acc_path < 0.25)
+            out.append({
+                "id": f"r1-{w['layer']}-{dim}", "kind": "layer_antisignal",
+                "knob": None, "current": "分层照常纳入", "proposed": "该层降权或排除",
+                "evidence": f"{w['layer']}层 {dim} 维 {ev.PRIMARY[dim]}={w['value']:.3f} "
+                            f"< 基线 {baseline:.3f}(n={w['n']}, 2σ 界 {w['se']:.3f})",
+                "validation_recipe": "held-out 重跑 evaluate,看该层反信号是否跨期稳定",
+                "confidence": "med", "requires_probe": False})
+
+    # R2 环境反信号/无优势(方向维)
+    for w in rv["weak_environments"]:
+        if w["dim"] != "direction":
+            continue
+        cell = payload["environments"][w["env"]]["direction"]
+        base = cell.get("base_rate")
+        if base is None or w["value"] is None or w["value"] >= base:
+            continue
+        out.append({
+            "id": f"r2-{w['env']}-direction", "kind": "environment_antisignal",
+            "knob": "DIRECTION_BAND", "current": "0.05",
+            "proposed": "该环境更保守(加宽 ε-band 或加警示徽章)",
+            "evidence": f"{w['env']}环境 direction hit_rate={w['value']:.3f} "
+                        f"< base_rate={base:.3f}(n={w['n']}, 2σ 界 {w['se']:.3f})",
+            "validation_recipe": "held-out 重跑 evaluate,看该环境反信号是否跨期稳定",
+            "confidence": "med", "requires_probe": False})
+
+    # R3 方向维无区分度
+    if "direction" in rv["no_edge_dims"]:
+        o = payload["overall"]["direction"]
+        out.append({
+            "id": "r3-direction-no-edge", "kind": "direction_no_edge",
+            "knob": "DIRECTION_BAND", "current": "0.05",
+            "proposed": "加宽 DIRECTION_BAND 减少无信息下注(或接受为结论)",
+            "evidence": f"direction hit_rate={o.get('hit_rate'):.3f} ≈ "
+                        f"base_rate={o.get('base_rate'):.3f}(n={o.get('n')}, 1σ 内)",
+            "validation_recipe": "对比不同 DIRECTION_BAND 下 up/down 调用数 vs 命中率,无提升则维持",
+            "confidence": "high", "requires_probe": False})
+
+    # R4 风险校准偏离
+    risk = payload["overall"]["risk"]
+    if risk.get("ece") is not None and risk["ece"] > 0.10:
+        out.append({
+            "id": "r4-risk-ece", "kind": "risk_miscalibration",
+            "knob": "N_BINS", "current": "10",
+            "proposed": "重审风险分箱或校准样本",
+            "evidence": f"risk ece={risk['ece']:.3f} > 0.10(n={risk.get('n')})",
+            "validation_recipe": "需 predict 内部样本复核分箱(requires_probe)",
+            "confidence": "low", "requires_probe": True})
+
+    # R5 收益系统性偏估
+    ret = payload["overall"]["return"]
+    if ret.get("mean_residual") is not None and abs(ret["mean_residual"]) > 0.02:
+        out.append({
+            "id": "r5-return-bias", "kind": "return_bias",
+            "knob": None, "current": "无偏移校准", "proposed": "加偏移校准",
+            "evidence": f"return mean_residual={ret['mean_residual']:.3f} "
+                        f"(|.| > 0.02, n={ret.get('n')})",
+            "validation_recipe": "需 predict 内部样本复核(requires_probe)",
+            "confidence": "low", "requires_probe": True})
+
+    return out

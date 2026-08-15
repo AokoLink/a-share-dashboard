@@ -158,3 +158,43 @@ def test_review_shape():
     assert r["undifferentiated"] is False          # 默认 all_undifferentiated=False
     # all_undifferentiated=True → undifferentiated=True 原样透传
     assert rv.review(_fake_payload(all_undifferentiated=True))["undifferentiated"] is True
+
+
+def test_suggest_r1_antisignal():
+    p = _fake_payload()
+    p["layers"]["趋势"]["direction"] = _cell("direction", hit_rate=0.30, base_rate=0.55)
+    p["significant"] = [["趋势", "direction", "hit_rate", 0.30, 0.55, 0.05]]
+    p["se_bounds"] = [["趋势", "direction", 0.10]]
+    s = rv.suggest(p, rv.review(p))
+    kinds = [x["kind"] for x in s]
+    assert "layer_antisignal" in kinds
+    r1 = next(x for x in s if x["kind"] == "layer_antisignal")
+    assert "0.30" in r1["evidence"] and "0.55" in r1["evidence"]
+
+
+def test_suggest_r3_no_edge():
+    p = _fake_payload()
+    p["overall"]["direction"] = _cell("direction", hit_rate=0.51, base_rate=0.50, n=400)
+    s = rv.suggest(p, rv.review(p))
+    r3 = next(x for x in s if x["kind"] == "direction_no_edge")
+    assert r3["knob"] == "DIRECTION_BAND"
+    assert r3["confidence"] == "high"
+
+
+def test_suggest_r4_ece():
+    p = _fake_payload()
+    p["overall"]["risk"] = _cell("risk", ece=0.15)
+    s = rv.suggest(p, rv.review(p))
+    assert any(x["kind"] == "risk_miscalibration" and x["knob"] == "N_BINS" for x in s)
+
+
+def test_suggest_r5_residual_bias():
+    p = _fake_payload()
+    p["overall"]["return"] = _cell("return", mean_residual=0.05)
+    s = rv.suggest(p, rv.review(p))
+    assert any(x["kind"] == "return_bias" for x in s)
+
+
+def test_suggest_empty_when_clean():
+    # 默认 fixture:方向有 edge、无显著弱层/弱环境、ece=0.10(不>0.10)、mean_residual=0.01(不>0.02)
+    assert rv.suggest(_fake_payload(), rv.review(_fake_payload())) == []
