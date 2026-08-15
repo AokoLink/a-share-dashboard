@@ -198,3 +198,14 @@ def test_suggest_r5_residual_bias():
 def test_suggest_empty_when_clean():
     # 默认 fixture:方向有 edge、无显著弱层/弱环境、ece=0.10(不>0.10)、mean_residual=0.01(不>0.02)
     assert rv.suggest(_fake_payload(), rv.review(_fake_payload())) == []
+
+
+def test_suggest_r2_env_antisignal():
+    p = _fake_payload()
+    p["overall"]["direction"] = _cell("direction", hit_rate=0.55, n=1000, base_rate=0.50)
+    p["environments"]["熊"]["direction"] = _cell("direction", hit_rate=0.40, n=100, base_rate=0.50)
+    s = rv.suggest(p, rv.review(p))
+    r2 = [x for x in s if x["kind"] == "environment_antisignal"]
+    assert len(r2) == 1
+    assert r2[0]["knob"] == "DIRECTION_BAND"
+    assert "0.40" in r2[0]["evidence"] and "0.50" in r2[0]["evidence"]
