@@ -209,3 +209,34 @@ def test_suggest_r2_env_antisignal():
     assert len(r2) == 1
     assert r2[0]["knob"] == "DIRECTION_BAND"
     assert "0.40" in r2[0]["evidence"] and "0.50" in r2[0]["evidence"]
+
+
+def test_main_end_to_end(tmp_path):
+    p = _fake_payload()
+    in_path = tmp_path / "ev.json"
+    import json as _json
+    in_path.write_text(_json.dumps(p, ensure_ascii=False), encoding="utf-8")
+    out = tmp_path / "review.json"
+    rc = rv.main(["--in", str(in_path), "--out", str(out)])
+    assert rc == 0
+    rep = rv.json_load(out)
+    assert rep["mode"] == "review"
+    assert rep["module_version"] == "1.0.0"
+    assert "review" in rep and "suggestions" in rep and "knobs" in rep
+    assert rep["source"]["path"] == str(in_path)
+    md = out.with_suffix(".md").read_text(encoding="utf-8")
+    assert "## 复盘" in md and "## 优化建议" in md and "## 可调旋钮" in md
+
+
+def test_render_empty_suggestions_honest():
+    p = _fake_payload()
+    r = rv.review(p)
+    s = rv.suggest(p, r)
+    rep = rv.build_report(p, r, s, "ev.json")
+    md = rv.render_markdown(rep)
+    assert "零建议" in md or "无建议" in md
+
+
+def test_review_no_utf8_minus():
+    src = open("review.py", encoding="utf-8").read()
+    assert "−" not in src

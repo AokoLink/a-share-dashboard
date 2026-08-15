@@ -361,3 +361,108 @@ def suggest(payload, rv):
             "confidence": "low", "requires_probe": True})
 
     return out
+
+
+def build_report(payload, rv, suggestions, in_path):
+    return {
+        "system_version": _git_short_sha(),
+        "module_version": MODULE_VERSION,
+        "generated_at": datetime.now().isoformat(),
+        "mode": "review",
+        "source": {
+            "path": in_path,
+            "evaluate_system_version": payload.get("system_version"),
+            "valid_window": payload.get("valid_window"),
+            "n_valid_records": payload.get("n_valid_records"),
+        },
+        "review": rv,
+        "suggestions": suggestions,
+        "knobs": KNOBS,
+    }
+
+
+def _fmt(x, nd=4):
+    return "-" if x is None else f"{x:.{nd}f}"
+
+
+def render_markdown(report):
+    rv = report["review"]
+    L = ["# 自动复盘 + 优化建议(review)", ""]
+    L.append(f"- module_version: {report['module_version']}")
+    L.append(f"- system_version: `{report['system_version']}`")
+    L.append(f"- 源评估报告: {report['source']['path']} "
+             f"(engine `{report['source']['evaluate_system_version']}`)")
+    L.append(f"- 无分化判定: {'是(触发分层定义重审)' if rv['undifferentiated'] else '否'}")
+    L += ["", "## 复盘", "", "### 总体(六维 edge)", "",
+          "| 维度 | 主指标 | n | 值 | 基线 | edge |", "|---|---|---|---|---|---|"]
+    for row in rv["overall_summary"]:
+        L.append(f"| {row['dim']} | {row['primary']} | {row['n']} | "
+                 f"{_fmt(row['value'])} | {_fmt(row['baseline'])} | {_fmt(row['edge'])} |")
+    def _weak_strong_block(title, items, key):
+        if not items:
+            return []
+        blk = ["", f"### {title}", "",
+               f"| {key} | 维度 | 值 | 总体 | 2σ界 | n |", "|---|---|---|---|---|---|"]
+        for it in items:
+            blk.append(f"| {it[key]} | {it['dim']} | {_fmt(it['value'])} | "
+                       f"{_fmt(it['overall'])} | {_fmt(it['se'])} | {it['n']} |")
+        return blk
+    L += _weak_strong_block("弱层(显著跑输总体)", rv["weak_layers"], "layer")
+    L += _weak_strong_block("强层(显著跑赢总体)", rv["strong_layers"], "layer")
+    L += _weak_strong_block("弱环境(显著跑输总体)", rv["weak_environments"], "env")
+    L += _weak_strong_block("强环境(显著跑赢总体)", rv["strong_environments"], "env")
+    L += ["", "### 无 edge 维度", "",
+          ("、".join(rv["no_edge_dims"]) if rv["no_edge_dims"] else "(无)")]
+    L += ["", "### 退化/薄层", ""]
+    L.append(f"- 退化环境(env_n < {env.MIN_STATE_N}):"
+             f"{', '.join(rv['degenerate_environments']) or '(无)'}")
+    L.append(f"- 薄层(layer_n < {ev.MIN_LAYER_N}):"
+             f"{', '.join(rv['thin_layers']) or '(无)'}")
+    L += ["", "## 优化建议", ""]
+    if report["suggestions"]:
+        for s in report["suggestions"]:
+            L.append(f"- **[{s['kind']}] {s['proposed']}**")
+            L.append(f"  - 旋钮: {s['knob'] or '(无)'};当前: {s['current']}")
+            L.append(f"  - 证据: {s['evidence']}")
+            L.append(f"  - 验证: {s['validation_recipe']}")
+            L.append(f"  - 置信度: {s['confidence']};需额外探针: {s['requires_probe']}")
+    else:
+        L.append("无规则命中,零建议(数据不足以支撑任何改动)。")
+    L += ["", "## 可调旋钮", "",
+          "| name | current | controls | evidence_status |", "|---|---|---|---|"]
+    for k in report["knobs"]:
+        L.append(f"| {k['name']} | {k['current']} | {k['controls']} | {k['evidence_status']} |")
+    L += ["", "## 诚实声明", ""]
+    L.append("1. 只读:不应用任何改动;建议是提案,应用/版本化由 #129 执行。")
+    L.append("2. significant[] 是 72 项原始 ±2σ 未多重校正;weak/strong 为提示性,非确认性。")
+    L.append("3. 样本按股票×时间聚集、非 i.i.d.;n 为样本数而非独立观测数。")
+    L.append("4. 控制器裁定旋钮(manual-ruling)不可机械推导,触及它们的建议须人工重推。")
+    L.append("")
+    return "\n".join(L)
+
+
+def json_load(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="自动复盘 + 优化建议(只读)")
+    parser.add_argument("--in", dest="in_path", default="evaluate_report.json")
+    parser.add_argument("--out", default="review_report.json")
+    args = parser.parse_args(argv)
+    payload = json_load(args.in_path)
+    rv = review(payload)
+    suggestions = suggest(payload, rv)
+    report = build_report(payload, rv, suggestions, args.in_path)
+    with open(args.out, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    md_path = os.path.splitext(args.out)[0] + ".md"
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(render_markdown(report))
+    print(f"wrote {args.out} and {md_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
