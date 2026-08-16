@@ -32,8 +32,10 @@
     <div class="tabs">
       <button class="tab active" data-type="industry" data-view="sectors">行业板块</button>
       <button class="tab" data-view="recommend">推荐</button>
+      <button class="tab" data-view="themevol">主题策略</button>
       <button class="tab" data-view="actionable">可介入龙头</button>
       <button class="tab" data-view="swing">波段</button>
+      <button class="tab" data-view="diagnose">持仓诊断</button>
       <button class="tab" data-view="tradesim">交易回测</button>
     </div>
     <div id="sector-view">
@@ -75,6 +77,21 @@
       <div id="swing-stocks"></div>
       <div class="muted">点击自选名称 → 右侧查看该股 K 线与三层评分。</div>
       <div id="swing-candidates"></div>
+    </div>
+    <div id="themevol-panel" class="hidden">
+      <div id="themevol-meta" class="muted"></div>
+      <div id="themevol-summary"></div>
+      <div id="themevol-positions"></div>
+    </div>
+    <div id="diagnose-panel" class="hidden">
+      <div id="diagnose-meta" class="muted"></div>
+      <div id="diagnose-tools">
+        <input id="diagnose-input" placeholder="输入 6 位代码,如 600519">
+        <button id="btn-diagnose">诊断</button>
+        <button id="btn-diagnose-wl">诊断自选</button>
+      </div>
+      <div class="muted">持仓诊断给出 1/3/5/10/20 日 P(涨) 与期望收益,并标注是否超过成本;测不到会明说「信号不足,无法判断」。不构成买卖建议。</div>
+      <div id="diagnose-results"></div>
     </div>
     <div id="tradesim-panel" class="hidden">
       <div id="tradesim-meta" class="muted"></div>

@@ -92,3 +92,23 @@ tr.swing-cand-row:hover { background: var(--bg); }
 #hold-advice, #volume-price, #tech-indicators { margin-bottom: 12px; }
 .tech-table { font-size: 13px; }
 .tech-table td:first-child { color: var(--muted); white-space: nowrap; }
+
+/* ---- 主题策略(vol-target 月度仓位) ---- */
+#themevol-meta { margin-bottom: 8px; }
+#themevol-summary { margin-bottom: 8px; }
+#themevol-positions .leader-chip { cursor: pointer; }
+#themevol-positions .leader-chip:hover { border-color: var(--text); }
+
+/* ---- 持仓诊断 ---- */
+#diagnose-tools { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+#diagnose-results { margin-top: 8px; }
+.diag-card { margin-bottom: 12px; }
+.diag-head { display: flex; gap: 10px; align-items: baseline; margin-bottom: 6px; flex-wrap: wrap; }
+.diag-chart { width: 100%; height: 220px; margin-bottom: 8px; }
+.diag-table { font-size: 13px; }
+.diag-confidence { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; color: #fff; }
+.diag-positive { background: var(--up); }        /* 有正向期望(红=看涨,符合 A股 规范) */
+.diag-weak { background: #e07b00; }              /* 弱方向信号(琥珀) */
+.diag-insufficient { background: #8a919c; }      /* 信号不足(灰) */
+.diag-risk { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; color: #fff; background: #c62828; }
+.diag-cost { color: var(--up); font-weight: 700; }

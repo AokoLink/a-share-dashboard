@@ -360,6 +360,49 @@ async function loadSwingCandidates() {
   }
 }
 
+// ---- 主题策略(动量 vol-target 月度仓位信号) ----
+function fmtPosPct(w) { return w === null || w === undefined || w !== w ? "—" : (w * 100).toFixed(0) + "%"; }
+function fmtStatPct(v) {  // 回测摘要 total/mdd:原始值 ×100 才是百分比
+  if (v === null || v === undefined || v !== v) return "—";
+  const p = v * 100;
+  return (p > 0 ? "+" : "") + p.toFixed(1) + "%";
+}
+function renderThemeVol(d) {
+  const vt = d.vol_target || {}, fb = d.full_baseline || {}, pr = d.params || {};
+  $("#themevol-meta").innerHTML =
+    `主题动量 vol-target 策略:每月末重平衡,信号日 <b>${esc(d.signal_date || "—")}</b>` +
+    `(生成于 ${esc((d.generated_at || "").slice(0, 19))})。仅研究参考,不构成投资建议。` +
+    `回测:vol-target top${esc(pr.topn)} 回撤 ${fmtStatPct(vt.mdd)} / 收益 ${fmtStatPct(vt.total)},` +
+    `满仓对照回撤 ${fmtStatPct(fb.mdd)} / 收益 ${fmtStatPct(fb.total)}。`;
+  $("#themevol-summary").innerHTML =
+    `<div class="score-cards">` +
+    `<div class="card"><div class="label">总仓位</div><div class="value">${fmtPosPct(d.total_pos)}</div></div>` +
+    `<div class="card"><div class="label">现金</div><div class="value">${fmtPosPct(d.cash)}</div></div>` +
+    `</div>`;
+  const el = $("#themevol-positions");
+  const pos = d.positions || [];
+  if (!pos.length) {
+    el.innerHTML = `<div class="muted">无持仓(全部现金)。</div>`;
+    return;
+  }
+  el.innerHTML = `<table class="actionable-table"><thead><tr><th>主题</th><th>仓位</th><th>个股</th></tr></thead><tbody>` +
+    pos.map((p) => {
+      const chips = (p.stocks || []).map((s) =>
+        `<span class="leader-chip themevol-stock" data-code="${esc(s.code)}">${esc(s.name)}</span>`).join(" ");
+      return `<tr><td>${esc(p.theme)}</td><td>${fmtPosPct(p.weight)}</td><td>${chips}</td></tr>`;
+    }).join("") + `</tbody></table>`;
+  el.querySelectorAll(".themevol-stock").forEach((chip) =>
+    chip.addEventListener("click", () => openStock(chip.dataset.code)));
+}
+async function loadThemeVol() {
+  try {
+    renderThemeVol((await api("/api/theme-vol")).data);
+  } catch (e) {
+    $("#themevol-summary").innerHTML = "";
+    $("#themevol-positions").innerHTML = `<span class="muted">主题策略信号拉取失败:${esc(e.message)}</span>`;
+  }
+}
+
 // ---- 个股技术详情(描述性,不构成买卖信号) ----
 function renderTechnicalDetail(d) {
   const hold = d.hold;
@@ -576,12 +619,102 @@ async function loadTradeSim() {
   }
 }
 
+// ---- 持仓诊断(多 horizon 前向分布,诚实输出) ----
+function confidenceClass(c) {
+  if (c === "有正向期望(超过成本)") return "diag-positive";
+  if (c === "弱方向信号,未超过成本") return "diag-weak";
+  return "diag-insufficient";
+}
+function confidenceBadge(c) {
+  return `<span class="diag-confidence ${confidenceClass(c)}">${esc(c)}</span>`;
+}
+function diagnoseOption(H, r) {
+  const hs = r.horizons;
+  return {
+    tooltip: { trigger: "axis" },
+    legend: { data: ["该股 P(涨)", "基准 P(涨)"] },
+    grid: { left: 45, right: 20, top: 30, bottom: 25 },
+    xAxis: { type: "category", data: H.map((h) => h + "日") },
+    yAxis: { type: "value", min: 0, max: 1, axisLabel: { formatter: (v) => (v * 100).toFixed(0) + "%" } },
+    series: [
+      { name: "该股 P(涨)", type: "line", data: H.map((h) => (hs[h] ? hs[h].p_up : null)), showSymbol: true, lineStyle: { width: 2 } },
+      { name: "基准 P(涨)", type: "line", data: H.map((h) => (hs[h] ? hs[h].base_up : null)), showSymbol: true, lineStyle: { type: "dashed" } },
+    ],
+  };
+}
+function renderDiagnose(b) {
+  const d = b.data;
+  $("#diagnose-meta").innerHTML = d.as_of
+    ? `校准基准截至 ${esc(d.as_of)} · 双边成本 ${(d.cost * 100).toFixed(2)}% · 信号带 ${(d.min_signal_band * 100).toFixed(0)}%`
+    : "";
+  const el = $("#diagnose-results");
+  if (!d.results || !d.results.length) {
+    const errTxt = (d.errors || []).map((x) => `${x.code}:${x.error}`).join(", ");
+    el.innerHTML = `<div class="muted">暂无诊断结果${errTxt ? "(" + esc(errTxt) + ")" : ""}。请先运行 <code>python -m core.forward</code> 生成校准器。</div>`;
+    return;
+  }
+  const H = d.horizons;
+  const pct = (v) => (v === null || v === undefined ? "—" : (v * 100).toFixed(1) + "%");
+  el.innerHTML = d.results.map((r) => {
+    const hs = r.horizons;
+    const rows = H.map((h) => {
+      const x = hs[h] || {};
+      const costHit = x.exceeds_cost ? ' <span class="diag-cost">超成本</span>' : "";
+      const cmp = x.beats_benchmark == null ? "—" : (x.beats_benchmark ? "跑赢" : "跑输");
+      return `<tr>
+        <td>${h}日</td>
+        <td class="${x.p_up != null && x.p_up >= 0.5 ? "up" : "down"}">${pct(x.p_up)}</td>
+        <td>${pct(x.base_up)}</td>
+        <td class="${x.expected_return != null && x.expected_return >= 0 ? "up" : "down"}">${pct(x.expected_return)}</td>
+        <td>${pct(x.benchmark)}</td>
+        <td class="down">${pct(x.left_tail)}</td>
+        <td>${cmp}${costHit}</td>
+      </tr>`;
+    }).join("");
+    const riskFlag = r.risk_high ? ' <span class="diag-risk">风险偏高</span>' : "";
+    const bestTxt = r.best_horizon ? ` · 最优信号 ${r.best_horizon} 日` : "";
+    return `<div class="diag-card panel">
+      <div class="diag-head"><b>${esc(r.name || r.code)}</b> <span class="muted">(${esc(r.code)})</span>
+        ${confidenceBadge(r.confidence)}${riskFlag}<span class="muted">${bestTxt}</span></div>
+      <div class="diag-chart" data-code="${esc(r.code)}"></div>
+      <table class="diag-table"><thead><tr>
+        <th>持有</th><th>P(涨)</th><th>基准P涨</th><th>期望收益</th><th>基准收益</th><th>左尾概率</th><th>对比</th>
+      </tr></thead><tbody>${rows}</tbody></table>
+    </div>`;
+  }).join("");
+  el.querySelectorAll(".diag-chart").forEach((c) => {
+    const r = d.results.find((x) => x.code === c.dataset.code);
+    if (r) makeChart(c, diagnoseOption(H, r));
+  });
+  if (d.errors && d.errors.length) {
+    el.innerHTML += `<div class="muted">未诊断: ${d.errors.map((x) => `${esc(x.code)}(${x.error})`).join(", ")}</div>`;
+  }
+}
+async function doDiagnose(codes) {
+  if (!codes || !codes.length) {
+    $("#diagnose-results").innerHTML = `<div class="muted">请输入代码,或点「诊断自选」。</div>`;
+    return;
+  }
+  try {
+    renderDiagnose(await api("/api/diagnose?codes=" + encodeURIComponent(codes.join(","))));
+  } catch (e) {
+    $("#diagnose-results").innerHTML = `<span class="muted">持仓诊断不可用:${esc(e.message)}</span>`;
+  }
+}
+async function loadDiagnose() {
+  const w = getWatchlist();
+  if (w.length) await doDiagnose(w.map((x) => x.code));
+  else $("#diagnose-results").innerHTML = `<div class="muted">自选为空:输入 6 位代码点「诊断」,或先加入自选再点「诊断自选」。</div>`;
+}
+
 function switchView(view) {
   state.view = view;
   $("#sector-view").classList.toggle("hidden", view !== "sectors");
   $("#reco-panel").classList.toggle("hidden", view !== "recommend");
   $("#actionable-panel").classList.toggle("hidden", view !== "actionable");
   $("#swing-panel").classList.toggle("hidden", view !== "swing");
+  $("#themevol-panel").classList.toggle("hidden", view !== "themevol");
+  $("#diagnose-panel").classList.toggle("hidden", view !== "diagnose");
   $("#tradesim-panel").classList.toggle("hidden", view !== "tradesim");
 }
 
@@ -593,6 +726,8 @@ async function refreshAll() {
   if (state.view === "recommend") { try { await loadRecommend(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "actionable") { try { await loadActionableLeaders(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "swing") { try { await loadSwing(); } catch (e) { /* 沿用旧 */ } try { await loadSwingCandidates(); } catch (e) { /* 沿用旧 */ } }
+  else if (state.view === "themevol") { try { await loadThemeVol(); } catch (e) { /* 沿用旧 */ } }
+  else if (state.view === "diagnose") { try { await loadDiagnose(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "tradesim") { try { await loadTradeSim(); } catch (e) { /* 沿用旧 */ } }
   if (state.current) {
     try {
@@ -621,6 +756,8 @@ document.querySelectorAll(".tab").forEach((t) =>
     if (view === "recommend") loadRecommend().catch(() => { /* 沿用旧 */ });
     else if (view === "actionable") loadActionableLeaders();   // 内部已处理失败态
     else if (view === "swing") { loadSwing(); loadSwingCandidates(); }
+    else if (view === "themevol") loadThemeVol();              // 内部已处理失败态
+    else if (view === "diagnose") loadDiagnose();              // 内部已处理失败态
     else if (view === "tradesim") loadTradeSim();              // 内部已处理失败态
     else { state.type = t.dataset.type || "industry"; loadSectors(); }
   }));
@@ -642,6 +779,14 @@ $("#btn-stock").addEventListener("click", () => {
 $("#stock-search").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { const c = $("#stock-search").value.trim(); if (c) openStock(c); }
 });
+$("#btn-diagnose").addEventListener("click", () => {
+  const code = $("#diagnose-input").value.trim();
+  if (code) doDiagnose([code]);
+});
+$("#diagnose-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { const c = $("#diagnose-input").value.trim(); if (c) doDiagnose([c]); }
+});
+$("#btn-diagnose-wl").addEventListener("click", () => loadDiagnose());
 
 // ---- 启动 ----
 renderWatchlist();

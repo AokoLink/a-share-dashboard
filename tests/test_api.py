@@ -647,6 +647,63 @@ def test_report_trade_sim_invalid_json(tmp_path, monkeypatch):
     assert r.get_json()["error"]["code"] == "REPORT_ERROR"
 
 
+def test_index_themevol_wiring_static():
+    # 静态冒烟:主题策略面板容器 id 与 app.js 引用的 DOM id / 函数一致(防改名漂移)
+    import pathlib
+    base = pathlib.Path(app_mod.__file__).resolve().parent
+    html = (base / "templates" / "index.html").read_text(encoding="utf-8")
+    js = (base / "static" / "app.js").read_text(encoding="utf-8")
+    for cid in ("themevol-panel", "themevol-meta", "themevol-summary", "themevol-positions"):
+        assert f'id="{cid}"' in html
+    for ref in ('$("#themevol-panel")', '$("#themevol-summary")', '$("#themevol-positions")',
+                "loadThemeVol", "renderThemeVol"):
+        assert ref in js
+
+
+def test_theme_vol_endpoint_serves_fixture(tmp_path, monkeypatch):
+    c = client_factory(monkeypatch, db_path=str(tmp_path / "api.db"))
+    report = tmp_path / "theme_vol.json"
+    report.write_text(json.dumps({
+        "generated_at": "2026-08-16T16:50:44",
+        "topn": 2, "kpast": 63, "long_vol": 250, "short_vol": 20,
+        "floor": 0.2, "cost_side": 0.002,
+        "themes": {
+            "MLCC": {"core": ["300408", "000636"], "names": ["三环集团", "风华高科"]},
+            "封测": {"core": ["600584"], "names": ["长电科技"]},
+        },
+        "vol_target": {"total": 19.668, "mdd": -0.3665, "avg_pos": 0.876},
+        "full_baseline": {"total": 23.769, "mdd": -0.4126},
+        "latest": {"date": "2026-07-31", "themes": ["MLCC", "封测"],
+                   "total_pos": 0.5727,
+                   "weights": {"MLCC": 0.2739, "封测": 0.2988}},
+    }, ensure_ascii=False), encoding="utf-8")
+    c.application.config["THEME_VOL_REPORT"] = str(report)
+    r = c.get("/api/theme-vol")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    d = body["data"]
+    assert d["signal_date"] == "2026-07-31"
+    assert d["total_pos"] == pytest.approx(0.5727)
+    assert d["cash"] == pytest.approx(0.4273, abs=1e-4)
+    assert len(d["positions"]) == 2
+    # 按权重降序:封测 0.2988 > MLCC 0.2739
+    assert d["positions"][0]["theme"] == "封测"
+    assert d["positions"][0]["weight"] == pytest.approx(0.2988)
+    assert d["positions"][0]["stocks"][0]["name"] == "长电科技"
+    assert d["positions"][1]["theme"] == "MLCC"
+    assert d["vol_target"]["mdd"] == pytest.approx(-0.3665)
+    assert d["params"]["topn"] == 2
+
+
+def test_theme_vol_missing(tmp_path, monkeypatch):
+    c = client_factory(monkeypatch, db_path=str(tmp_path / "api.db"))
+    c.application.config["THEME_VOL_REPORT"] = str(tmp_path / "nope.json")
+    r = c.get("/api/theme-vol")
+    assert r.status_code == 404
+    assert r.get_json()["error"]["code"] == "NO_REPORT"
+
+
 def test_stock_indicators_and_hold(client, monkeypatch):
     monkeypatch.setattr(ds, "resolve_code_sectors", lambda c: [])   # 绕过板块打分
     monkeypatch.setattr(env, "load_cached_regime", lambda path: {
@@ -740,3 +797,82 @@ def test_swing_candidates_source_fail(client, monkeypatch):
     r = client.get("/api/swing-candidates")
     assert r.status_code == 500
     assert r.get_json()["error"]["code"] == "SOURCE_FAIL"
+
+
+def test_index_diagnose_wiring_static():
+    # 静态冒烟:持仓诊断面板容器 id 与 app.js 引用的 DOM id / 函数一致(防改名漂移)
+    import pathlib
+    base = pathlib.Path(app_mod.__file__).resolve().parent
+    html = (base / "templates" / "index.html").read_text(encoding="utf-8")
+    js = (base / "static" / "app.js").read_text(encoding="utf-8")
+    for cid in ("diagnose-panel", "diagnose-input", "btn-diagnose", "btn-diagnose-wl", "diagnose-results"):
+        assert f'id="{cid}"' in html
+    for ref in ('$("#diagnose-panel")', '$("#diagnose-input")', '$("#btn-diagnose")',
+                '$("#btn-diagnose-wl")', '$("#diagnose-results")', "loadDiagnose", "renderDiagnose"):
+        assert ref in js
+
+
+def _mock_diagnose_backend(monkeypatch):
+    import core.forward as fw
+    import core.backtest as bt
+    meta = {"data_range": {"end": "2026-08-15"}, "horizons": [1, 3, 5, 10, 20],
+            "cost": 0.004, "min_signal_band": 0.03}
+    benchmarks = {h: {"base_up": 0.5, "median": 0.0, "mean": 0.0, "n": 1000} for h in (1, 3, 5, 10, 20)}
+    monkeypatch.setattr(fw, "load_model", lambda path: (None, benchmarks, meta))
+    monkeypatch.setattr(bt, "load_daily", lambda d, c: pd.DataFrame({"open": [10.0] * 70}))
+    monkeypatch.setattr(fw, "prepare_frame", lambda df, code, tail_n=1200: pd.DataFrame({"x": list(range(70))}))
+    monkeypatch.setattr(fw, "diagnose_at", lambda frame, bar, cals, benchmarks: {
+        "code": "600519", "date": "2026-08-15", "composite": 70.0, "risk": 30.0,
+        "confidence": "有正向期望(超过成本)", "best_horizon": 3, "risk_high": False,
+        "horizons": {"1": {"p_up": 0.6, "base_up": 0.5, "edge": 0.1, "expected_return": 0.01,
+                           "net": 0.006, "benchmark": 0.0, "beats_benchmark": True,
+                           "exceeds_cost": True, "left_tail": 0.05}}})
+
+
+def test_diagnose_endpoint(client, monkeypatch):
+    _mock_diagnose_backend(monkeypatch)
+    r = client.get("/api/diagnose?codes=600519")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    d = body["data"]
+    assert d["as_of"] == "2026-08-15"
+    assert d["horizons"] == [1, 3, 5, 10, 20]
+    assert d["cost"] == pytest.approx(0.004)
+    assert d["benchmarks"]["1"]["base_up"] == 0.5
+    assert len(d["results"]) == 1
+    res = d["results"][0]
+    assert res["code"] == "600519"
+    assert res["name"] == "贵州茅台"            # ds.get_stock_quote mocked in client_factory
+    assert res["confidence"] == "有正向期望(超过成本)"
+    assert res["best_horizon"] == 3
+    assert res["horizons"]["1"]["exceeds_cost"] is True
+    assert d["errors"] == []
+
+
+def test_diagnose_no_calib(client, monkeypatch):
+    import core.forward as fw
+    def boom(path):
+        raise FileNotFoundError("nope")
+    monkeypatch.setattr(fw, "load_model", boom)
+    r = client.get("/api/diagnose?codes=600519")
+    assert r.status_code == 503
+    assert r.get_json()["error"]["code"] == "NO_CALIB"
+
+
+def test_diagnose_bad_param(client):
+    assert client.get("/api/diagnose").status_code == 400
+    assert client.get("/api/diagnose?codes=abc").status_code == 400
+
+
+def test_diagnose_missing_pkl_reported(client, monkeypatch):
+    _mock_diagnose_backend(monkeypatch)
+    import core.backtest as bt
+    def load_daily(d, c):
+        raise FileNotFoundError("missing")
+    monkeypatch.setattr(bt, "load_daily", load_daily)
+    r = client.get("/api/diagnose?codes=600519,000001")
+    d = r.get_json()["data"]
+    assert d["results"] == []
+    assert d["errors"] == [{"code": "600519", "error": "no_pkl"},
+                           {"code": "000001", "error": "no_pkl"}]

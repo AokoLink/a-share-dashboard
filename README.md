@@ -34,6 +34,7 @@ python app.py         # 打开 http://127.0.0.1:8000
 | **股票推荐** | 板块→个股双层推荐(THS 强势板块 + 成分股经映射表转新浪行业,Top 5);含上一期信号次日的跳空对比(跳空预警)、被跳过板块透明化 |
 | **可介入龙头** | 全市场"可介入/观察"两档龙头(板块评价 + 现价/涨跌幅/位置/标签/综合分/风险/乖离率) |
 | **交易回测** | 逐篮盈亏比/胜率/期望/最大回撤表(读取预生成的 `_analysis/trade_sim.json`,需先跑 `pipeline/simulate.py`) |
+| **持仓诊断** | 输入代码/自选 → 1/3/5/10/20 日 P(涨)曲线 + 期望收益,标注是否超过成本、与全市场基准对比;测不到明说「信号不足,无法判断」(读取 `_analysis/forward_calib.json`,需先跑 `python -m core.forward`) |
 | **自选股** | 客户端自选(localStorage 持久化),点击查看个股 |
 
 > 盘中可用性:个股量比按全日折算盘中即比;板块"成交额放量/放量滞涨"仅收盘后计算,盘中自动降级。手动刷新 + 可选 60s 自动刷新。
@@ -48,13 +49,14 @@ python app.py         # 打开 http://127.0.0.1:8000
 |---|---|---|---|
 | `core/backtest.py` | 历史盲测基线:6 篮(A/E_hi/E_lo/B/C/D)次日方向、按年、Welch 检验 | `python -m core.backtest` | `backtest_baseline.json` |
 | `pipeline/predict.py` | 预测引擎:composite→校准概率(等量分箱+PAV 单调),T+1 方向/gap/路径 + T+3 趋势,回测 + 前向快照两模式 | `python -m pipeline.predict` / `python -m pipeline.predict --predict` | `prediction_baseline.json` / `prediction_snapshot.json` |
+| `core/forward.py` | 多 horizon 前向分布引擎:1/3/5/10/20 日(合法 oo 窗口)P(涨)/期望收益/左尾概率,持仓诊断校准器;「信号不足」为合法输出 | `python -m core.forward` / `python -m core.forward --predict` | `_analysis/forward_calib.json` / `_analysis/forward_snapshot.json` |
 | `pipeline/compare.py` | 快照对比:冻结的前向预测 vs 真实 T+1/T+3 行情,算六维命中率 + 回归误差 + 风险校准度 | `python -m pipeline.compare --snapshot prediction_snapshot.json` | `snapshot_verification.json` |
 | `pipeline/simulate.py` | 交易模拟 + 风险收益评价:逐笔保守日内假设,胜率/盈亏比/期望/最大回撤/Profit Factor;`--ab` 做 risk_p 止损参数化对照 | `python -m pipeline.simulate` / `python -m pipeline.simulate --ab` | `trade_sim.json` / `trade_sim_ab.json` |
 | `pipeline/evaluate.py` | 六维评估:八层切片(大盘/热门/龙头/趋势/高位/超跌/反抽/震荡)+ 按市场环境切片 + ±2σ 显著性 | `python -m pipeline.evaluate` | `evaluate_report.json` |
 | `core/environment.py` | 市场环境分类:七态决策树(恐慌→高潮→熊→牛→恢复→退潮→震荡),纯因果(只读 ≤i) | `python -m core.environment` | `environment_report.json` |
 | `pipeline/review.py` | 自动复盘 + 优化建议:只读消费 evaluate 报告,产出弱项/无 edge/退化判定 + R1-R5 数据锚定建议 + 26 项旋钮清单 | `python -m pipeline.review --in evaluate_report.json` | `review_report.json` |
 
-**推荐流程顺序**:`core/backtest.py`(基线)→ `pipeline/predict.py`(校准)→ `pipeline/predict.py --predict`(冻结快照)→ `pipeline/compare.py`(真实验证)→ `pipeline/evaluate.py`(评估)→ `pipeline/review.py`(复盘)。
+**推荐流程顺序**:`core/backtest.py`(基线)→ `pipeline/predict.py`(校准)→ `pipeline/predict.py --predict`(冻结快照)→ `pipeline/compare.py`(真实验证)→ `pipeline/evaluate.py`(评估)→ `pipeline/review.py`(复盘)。持仓诊断前先跑 `core/forward.py`(多 horizon 校准)→ 看板「持仓诊断」视图。
 
 > 前置数据:管线需要 `_analysis/daily/*.pkl` 与 `_analysis/code2sector.json`,由离线脚本(如 `_analysis/refetch_pkls.py`,gitignored)经 `data_source.get_stock_daily` 重拉生成,不入库。
 
