@@ -261,14 +261,33 @@ def get_index_daily(code):
 
 
 def get_stock_daily(code):
-    symbol = with_prefix(code)
+    # 用东财 stock_zh_a_hist(纯 HTTP),不用新浪 stock_zh_a_daily:
+    # 后者每次调用都 new 一个 py_mini_racer.MiniRacer 解密 JS,在多线程并发拉日线时
+    # 触发 V8 partition_address_space 崩溃,曾让 /api/swing-candidates 直接打死整个进程。
+    symbol = normalize_code(code)
 
     def fetch():
-        raw = _ak.stock_zh_a_daily(symbol=symbol, adjust="qfq")
-        out = raw[["date", "open", "high", "low", "close", "volume",
-                   "amount", "outstanding_share", "turnover"]].copy()
-        out["date"] = out["date"].astype(str)
-        return out
+        raw = _ak.stock_zh_a_hist(symbol=symbol, period="daily", adjust="qfq")
+        out = pd.DataFrame({
+            "date": _pick(raw, "日期", "date").astype(str),
+            "open": _pick(raw, "开盘", "open"),
+            "high": _pick(raw, "最高", "high"),
+            "low": _pick(raw, "最低", "low"),
+            "close": _pick(raw, "收盘", "close"),
+            "volume": _pick(raw, "成交量", "volume"),
+            "amount": _pick(raw, "成交额", "amount"),
+            "turnover": _pick(raw, "换手率", "turnover"),
+        })
+        for col in ("open", "high", "low", "close", "volume", "amount", "turnover"):
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+        # 东财单位:成交量=手、换手率=%;折算成与离线 pkl 一致:volume=股、turnover=小数、
+        # outstanding_share=股(由 volume/turnover 反推)。
+        out["volume"] = out["volume"] * 100.0
+        out["turnover"] = out["turnover"] / 100.0
+        out["outstanding_share"] = out["volume"] / out["turnover"]
+        out = out[["date", "open", "high", "low", "close", "volume",
+                   "amount", "outstanding_share", "turnover"]]
+        return out.where(pd.notna(out), None)  # NaN → None,避免 NaN 污染 JSON/排序
 
     return _cached(_key("stock_daily", symbol), 600, lambda: _fetch_with_retry(fetch))
 
