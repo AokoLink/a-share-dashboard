@@ -580,6 +580,10 @@ def collect_low_position(spot_df, get_daily_fn, now, regime=None, exclude_codes=
 
     regime 由调用方注入;排序 position 降序;跨代码去重;截断 top_n。
     返回 item 的 composite/verdict/tier 均为【未含板块共振加成与热权重】的个股口径。
+
+    底池沿用 swing_pool(方向中性),故本表**看不到**当日涨停股(买不进,被排除)、
+    ST、停牌、成交额 < MIN_AMOUNT 者,以及日线不足 61 根的新股。即「低位透视」是
+    在这套可交易池内的透视,不是全市场普查 —— 一只今日涨停的低位股不会出现在这里。
     """
     if exclude_codes is None:
         exclude_codes = ds.get_new_stocks()
