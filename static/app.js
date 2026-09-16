@@ -377,6 +377,17 @@ function renderLowPosition(b) {
   $("#lowpos-basis").innerHTML = esc(d.basis || "") +
     `<br>口径:position 分 = 50%×(1−60日位置) + 35%×乖离甜点区 + 15%×平台分,故【位置分高 = 60日位置低 = 低位】。` +
     `位置分≠综合分:综合分还含量价/趋势/信号与板块共振加成,52 分是推荐门槛。`;
+  // 恐慌日最容易被误用(低位股在恐慌日看起来"该抄底"),把当日 regime 摆在眼前
+  const reg = d.regime;
+  if (reg && reg.label != null) {
+    const adv = (reg.advice && reg.advice.message) || "";
+    $("#lowpos-regime").innerHTML =
+      regimeChip(reg) + ` <span class="muted">${esc(adv)}` +
+      `(截至 ${esc(reg.as_of || "—")})</span> <span class="muted">` +
+      `注:恐慌日的正 edge 属于「全市场等权/ETF 篮子」,不属于低位选股 —— 见下方声明。</span>`;
+  } else {
+    $("#lowpos-regime").innerHTML = regimeChip(null);
+  }
   if (!d.items || !d.items.length) {
     el.innerHTML = `<tr><td colspan="13" class="muted">暂无符合条件(流动性 / 日线长度 ≥ 61 根)的股票。</td></tr>`;
     $("#lowpos-skipped").innerHTML = "";

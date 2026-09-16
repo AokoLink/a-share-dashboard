@@ -158,15 +158,18 @@ def test_index_lowpos_wiring_static():
     base = pathlib.Path(app_mod.__file__).resolve().parent
     html = (base / "templates" / "index.html").read_text(encoding="utf-8")
     js = (base / "static" / "app.js").read_text(encoding="utf-8")
-    for cid in ("lowpos-panel", "lowpos-meta", "lowpos-warn", "lowpos-basis",
+    for cid in ("lowpos-panel", "lowpos-meta", "lowpos-regime", "lowpos-warn", "lowpos-basis",
                 "lowpos-table", "lowpos-skipped"):
         assert f'id="{cid}"' in html
     for ref in ('$("#lowpos-panel")', '$("#lowpos-table")', '$("#lowpos-warn")',
-                "loadLowPosition", "renderLowPosition", 'data-view="lowpos"'):
+                '$("#lowpos-regime")', "loadLowPosition", "renderLowPosition",
+                'data-view="lowpos"'):
         assert ref in js or ref in html
     assert 'data-view="lowpos"' in html
     # 诚实声明必须留在前端:低位反转无 alpha(Phase 0 判负)的可见提示
     assert "透视工具" in js and "不预测方向" in js
+    # 恐慌日的正 edge 属于全市场等权,不属于低位选股 —— 这条纠偏也必须可见
+    assert "不属于低位选股" in js
 
 
 def test_market_endpoint(client):
