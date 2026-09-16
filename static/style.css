@@ -67,6 +67,13 @@ tr.actionable-row:hover { background: var(--bg); }
 .tier-watch { background: var(--muted); }
 .overheat-badge { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 10px;
                   font-size: 12px; font-weight: 700; color: #fff; background: var(--up); }
+#lowpos-meta { margin-bottom: 8px; }
+#lowpos-basis { margin: 8px 0; line-height: 1.5; }
+#lowpos-skipped { margin-top: 8px; }
+.lowpos-warn { margin: 8px 0; padding: 6px 10px; border-left: 3px solid var(--up);
+               background: var(--bg); font-size: 12px; line-height: 1.5; }
+tr.lowpos-row { cursor: pointer; }
+tr.lowpos-row:hover { background: var(--bg); }
 .verdict-high { color: var(--up); font-weight: 700; }   /* 强烈关注 → 红(A股红=强势;原 --down 绿与语义相反)*/
 .verdict-avoid { color: var(--muted); font-weight: 700; }
 #reco-exec { margin-bottom: 8px; }

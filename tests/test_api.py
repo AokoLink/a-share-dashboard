@@ -152,6 +152,23 @@ def test_index_technical_detail_wiring_static():
         assert ref in js
 
 
+def test_index_lowpos_wiring_static():
+    # 静态冒烟:低位透视面板容器 id 与 app.js 引用一致(防改名漂移)
+    import pathlib
+    base = pathlib.Path(app_mod.__file__).resolve().parent
+    html = (base / "templates" / "index.html").read_text(encoding="utf-8")
+    js = (base / "static" / "app.js").read_text(encoding="utf-8")
+    for cid in ("lowpos-panel", "lowpos-meta", "lowpos-warn", "lowpos-basis",
+                "lowpos-table", "lowpos-skipped"):
+        assert f'id="{cid}"' in html
+    for ref in ('$("#lowpos-panel")', '$("#lowpos-table")', '$("#lowpos-warn")',
+                "loadLowPosition", "renderLowPosition", 'data-view="lowpos"'):
+        assert ref in js or ref in html
+    assert 'data-view="lowpos"' in html
+    # 诚实声明必须留在前端:低位反转无 alpha(Phase 0 判负)的可见提示
+    assert "透视工具" in js and "不预测方向" in js
+
+
 def test_market_endpoint(client):
     r = client.get("/api/market")
     body = r.get_json()
@@ -876,3 +893,58 @@ def test_diagnose_missing_pkl_reported(client, monkeypatch):
     assert d["results"] == []
     assert d["errors"] == [{"code": "600519", "error": "no_pkl"},
                            {"code": "000001", "error": "no_pkl"}]
+
+
+def test_low_position_endpoint(client, monkeypatch):
+    payload = {
+        "regime": {"as_of": "2026-08-13", "label": "震荡",
+                   "advice": {"action": "neutral", "message": "震荡市"},
+                   "swing": {"action": "hold", "message": "持有(中性,启发式,未回测)"}},
+        "total": 2,
+        "basis": "个股因子口径:composite/verdict/tier 未含板块共振加成与热权重",
+        "items": [
+            {"code": "sh600714", "name": "金瑞矿业", "price": 14.75, "change_pct": 1.0,
+             "amount": 3e8, "position": 68.7, "pos60": 0.156, "dd60_pct": -55.8,
+             "bias_pct": 1.58, "risk": 0.0, "composite": 59.5, "verdict": "持有/跟踪",
+             "tier": "观察", "sector_name": "小金属"},
+            {"code": "sz300314", "name": "戴维医疗", "price": 11.21, "change_pct": 1.0,
+             "amount": 2e8, "position": 9.4, "pos60": 0.935, "dd60_pct": -1.4,
+             "bias_pct": 13.59, "risk": 0.0, "composite": 28.98, "verdict": "回避",
+             "tier": None, "sector_name": "医疗器械"},
+        ],
+        "diagnostics": {"stocks_daily_failed": 0},
+    }
+    monkeypatch.setattr(env, "load_cached_regime", lambda path: {
+        "as_of": "2026-08-13", "label": "震荡", "metrics": {},
+        "advice": {"action": "neutral", "message": "震荡市"},
+        "swing": {"action": "hold", "message": "持有(中性,启发式,未回测)"}})
+    monkeypatch.setattr(recommend, "collect_low_position", lambda *a, **k: (payload, False))
+    r = client.get("/api/low-position")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    d = body["data"]
+    assert d["generated_at"]
+    assert d["regime"]["label"] == "震荡"
+    assert d["total"] == 2
+    assert d["basis"].startswith("个股因子口径")
+    it = d["items"][0]
+    for key in ("code", "name", "price", "change_pct", "amount", "position", "pos60",
+                "dd60_pct", "bias_pct", "risk", "composite", "verdict", "tier", "sector_name"):
+        assert key in it, key
+    # 低位股在前;tier=None 的股依然出参(透视工具不隐藏被拒的股)
+    assert d["items"][0]["position"] > d["items"][1]["position"]
+    assert d["items"][1]["tier"] is None
+
+
+def test_low_position_source_fail(monkeypatch, tmp_path):
+    # 先建 app 再打桩(与 test_source_fail_returns_500 同序;client_factory 会覆盖桩)
+    monkeypatch.setattr(ds, "validate_sector_map",
+                        lambda: {"ok": True, "stale": False, "renamed": False})
+    app = app_mod.create_app(db_path=str(tmp_path / "lp.db"))
+    monkeypatch.setattr(ds, "get_market_spot",
+                        lambda: (_ for _ in ()).throw(ds.DataSourceError("down")))
+    app.config["TESTING"] = True
+    r = app.test_client().get("/api/low-position")
+    assert r.status_code == 500
+    assert r.get_json()["error"]["code"] == "SOURCE_FAIL"

@@ -360,6 +360,64 @@ async function loadSwingCandidates() {
   }
 }
 
+// ---- 低位透视(方向中性;把 position 因子背后的低位股显性化) ----
+// 诚实声明:低位反转【无选股 alpha】—— Phase 0 预注册检验判负
+// (恐慌日低位组 vs 同日等权全市场 spread −0.071%,单边 p=0.666,n=41;
+//  80% 功效下可检出 0.407%,故为真·零结果,不是样本不足)。本表只是透视工具。
+function renderLowPosition(b) {
+  const d = b.data;
+  const el = $("#lowpos-table");
+  $("#lowpos-meta").innerHTML =
+    `已扫描活跃池 ${d.total} 只,按 position 分降序(越低位越靠前)` +
+    (d.generated_at ? ` · 生成于 ${esc(d.generated_at)}` : "");
+  $("#lowpos-warn").innerHTML =
+    `<div class="lowpos-warn">⚠ 透视工具,不是策略:低位反转无选股 alpha(Phase 0 预注册判负,` +
+    `恐慌日 spread −0.071%,单边 p=0.666)。本表只解释模型 position 因子为什么给某只股票高分,` +
+    `<b>不预测方向、不排收益序</b>。</div>`;
+  $("#lowpos-basis").innerHTML = esc(d.basis || "") +
+    `<br>口径:position 分 = 50%×(1−60日位置) + 35%×乖离甜点区 + 15%×平台分,故【位置分高 = 60日位置低 = 低位】。` +
+    `位置分≠综合分:综合分还含量价/趋势/信号与板块共振加成,52 分是推荐门槛。`;
+  if (!d.items || !d.items.length) {
+    el.innerHTML = `<tr><td colspan="13" class="muted">暂无符合条件(流动性 / 日线长度 ≥ 61 根)的股票。</td></tr>`;
+    $("#lowpos-skipped").innerHTML = "";
+    return;
+  }
+  el.innerHTML = d.items.map((x) => {
+    const chg = x.change_pct, dd = x.dd60_pct, bias = x.bias_pct;
+    const tier = x.tier
+      ? `<span class="tier-badge ${x.tier === "可介入" ? "tier-buy" : "tier-watch"}">${esc(x.tier)}</span>`
+      : `<span class="muted">—</span>`;
+    return `<tr class="lowpos-row" data-code="${esc(x.code)}">
+      <td>${esc(x.name)}</td><td>${esc(x.code)}</td>
+      <td>${x.price == null ? "—" : x.price.toFixed(2)}</td>
+      <td class="${chg != null && chg >= 0 ? "up" : "down"}">${fmtPct(chg)}</td>
+      <td>${x.position == null ? "…" : x.position.toFixed(1)}</td>
+      <td>${x.pos60 == null ? "—" : (x.pos60 * 100).toFixed(0) + "%"}</td>
+      <td class="down">${dd == null ? "—" : dd.toFixed(2) + "%"}</td>
+      <td>${bias == null ? "—" : bias.toFixed(2) + "%"}</td>
+      <td>${x.risk == null ? "—" : x.risk.toFixed(0)}</td>
+      <td>${x.composite == null ? "…" : x.composite.toFixed(2)}</td>
+      <td class="verdict">${esc(x.verdict || "—")}</td>
+      <td>${tier}</td>
+      <td>${esc(x.sector_name || "—")}</td>
+    </tr>`;
+  }).join("");
+  el.querySelectorAll("tr.lowpos-row").forEach((tr) =>
+    tr.addEventListener("click", () => openStock(tr.dataset.code)));
+  const failed = (d.diagnostics || {}).stocks_daily_failed;
+  $("#lowpos-skipped").innerHTML = failed
+    ? `日线拉取失败跳过 ${failed} 只。` : "";
+}
+
+async function loadLowPosition() {
+  try {
+    renderLowPosition(await api("/api/low-position"));
+  } catch (e) {
+    $("#lowpos-table").innerHTML =
+      `<tr><td colspan="13" class="muted">低位透视拉取失败</td></tr>`;
+  }
+}
+
 // ---- 主题策略(动量 vol-target 月度仓位信号) ----
 function fmtPosPct(w) { return w === null || w === undefined || w !== w ? "—" : (w * 100).toFixed(0) + "%"; }
 function fmtStatPct(v) {  // 回测摘要 total/mdd:原始值 ×100 才是百分比
@@ -713,6 +771,7 @@ function switchView(view) {
   $("#reco-panel").classList.toggle("hidden", view !== "recommend");
   $("#actionable-panel").classList.toggle("hidden", view !== "actionable");
   $("#swing-panel").classList.toggle("hidden", view !== "swing");
+  $("#lowpos-panel").classList.toggle("hidden", view !== "lowpos");
   $("#themevol-panel").classList.toggle("hidden", view !== "themevol");
   $("#diagnose-panel").classList.toggle("hidden", view !== "diagnose");
   $("#tradesim-panel").classList.toggle("hidden", view !== "tradesim");
@@ -726,6 +785,7 @@ async function refreshAll() {
   if (state.view === "recommend") { try { await loadRecommend(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "actionable") { try { await loadActionableLeaders(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "swing") { try { await loadSwing(); } catch (e) { /* 沿用旧 */ } try { await loadSwingCandidates(); } catch (e) { /* 沿用旧 */ } }
+  else if (state.view === "lowpos") { try { await loadLowPosition(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "themevol") { try { await loadThemeVol(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "diagnose") { try { await loadDiagnose(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "tradesim") { try { await loadTradeSim(); } catch (e) { /* 沿用旧 */ } }
@@ -756,6 +816,7 @@ document.querySelectorAll(".tab").forEach((t) =>
     if (view === "recommend") loadRecommend().catch(() => { /* 沿用旧 */ });
     else if (view === "actionable") loadActionableLeaders();   // 内部已处理失败态
     else if (view === "swing") { loadSwing(); loadSwingCandidates(); }
+    else if (view === "lowpos") loadLowPosition();             // 内部已处理失败态
     else if (view === "themevol") loadThemeVol();              // 内部已处理失败态
     else if (view === "diagnose") loadDiagnose();              // 内部已处理失败态
     else if (view === "tradesim") loadTradeSim();              // 内部已处理失败态

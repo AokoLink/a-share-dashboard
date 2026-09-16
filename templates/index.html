@@ -35,6 +35,7 @@
       <button class="tab" data-view="themevol">主题策略</button>
       <button class="tab" data-view="actionable">可介入龙头</button>
       <button class="tab" data-view="swing">波段</button>
+      <button class="tab" data-view="lowpos">低位透视</button>
       <button class="tab" data-view="diagnose">持仓诊断</button>
       <button class="tab" data-view="tradesim">交易回测</button>
     </div>
@@ -77,6 +78,16 @@
       <div id="swing-stocks"></div>
       <div class="muted">点击自选名称 → 右侧查看该股 K 线与三层评分。</div>
       <div id="swing-candidates"></div>
+    </div>
+    <div id="lowpos-panel" class="hidden">
+      <div id="lowpos-meta" class="muted"></div>
+      <div id="lowpos-warn"></div>
+      <div id="lowpos-basis" class="muted"></div>
+      <table class="actionable-table">
+        <thead><tr><th>名称</th><th>代码</th><th>现价</th><th>涨跌幅</th><th>位置分</th><th>60日位置</th><th>距60日高</th><th>乖离率%</th><th>风险</th><th>综合分</th><th>结论</th><th>档位</th><th>板块</th></tr></thead>
+        <tbody id="lowpos-table"></tbody>
+      </table>
+      <div id="lowpos-skipped" class="muted"></div>
     </div>
     <div id="themevol-panel" class="hidden">
       <div id="themevol-meta" class="muted"></div>

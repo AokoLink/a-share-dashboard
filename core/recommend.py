@@ -548,3 +548,86 @@ def collect_swing_candidates(spot_df, get_daily_fn, now, regime,
     return ({"regime": regime, "total": len(unique), "items": unique[:top_n],
              "diagnostics": {"stocks_daily_failed": daily_failed}},
             stale_any)
+
+
+# ---- 低位透视(方向中性;2026-09-17) ----
+
+def _dd60(daily_df):
+    """距 60 日最高价的回撤(%),≤0;缺失→None。"""
+    if not len(daily_df):
+        return None
+    hi = _num(daily_df["high"].iloc[-60:].max())
+    c = _num(daily_df["close"].iloc[-1])
+    if not hi or not c:
+        return None
+    return round((c / hi - 1.0) * 100.0, 2)
+
+
+def collect_low_position(spot_df, get_daily_fn, now, regime=None, exclude_codes=None,
+                         resolve_sectors_fn=None, top_n=60, pool_n=300):
+    """低位透视:把 position 因子背后的「60日位置最低」的股票显性化。
+
+    【定位:透视工具,不是策略;不预测方向、不排收益序】
+    Phase 0 预注册检验已判负(_analysis/lowpos_panic_probe.py,gitignored):
+    恐慌日低位组 vs 同日等权全市场,主口径 oo1 spread −0.071%(单边 p=0.666,n=41,
+    80% 功效下可检出 0.407%),oo/oc × h1/3/5/10 全部噪声,非恐慌日无交互(p=0.678),
+    子期间前后半符号相反 → 低位反转【无选股 alpha】。故本函数只回答
+    「模型为什么选/不选它」,即 position 分与 52 分门槛的关系。
+
+    易错点:compute_position_score 是 pos60 的减函数(0.5*100*(1−pos60)),
+    故 position 分【高】= pos60【低】= 60日区间【低位】。本函数按 position 降序
+    = 越低位越靠前。
+
+    regime 由调用方注入;排序 position 降序;跨代码去重;截断 top_n。
+    返回 item 的 composite/verdict/tier 均为【未含板块共振加成与热权重】的个股口径。
+    """
+    if exclude_codes is None:
+        exclude_codes = ds.get_new_stocks()
+    if resolve_sectors_fn is None:
+        resolve_sectors_fn = ds.resolve_code_sectors
+    pool = swing_pool(spot_df, exclude_codes, MIN_AMOUNT, pool_n)
+    items, daily_failed, stale_any = [], 0, False
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futures = {ex.submit(get_daily_fn, str(r["code"])): r for r in pool}
+        for fut in as_completed(futures):
+            row = futures[fut]
+            try:
+                daily, stale = fut.result()
+                stale_any = stale_any or bool(stale)
+                price = _num(row["price"])
+                quote = {"price": price, "change_pct": _num(row["change_pct"]),
+                         "volume": _num(row["volume"]), "amount": _num(row["amount"]),
+                         "high": _num(row.get("high")), "low": _num(row.get("low")),
+                         "open": _num(row.get("open"))}
+                sc = an.score_stock(daily, quote, now)
+                if sc["position"] is None:
+                    continue
+                verdict = an.stock_verdict(sc["composite"])
+                secs = resolve_sectors_fn(str(row["code"]))
+                items.append({
+                    "code": ds.with_prefix(str(row["code"])), "name": str(row["name"]),
+                    "price": price, "change_pct": _num(row["change_pct"]),
+                    "amount": _num(row["amount"]),
+                    "position": round(float(sc["position"]), 2),
+                    "pos60": round(float(sc["pos60"]), 4) if sc["pos60"] is not None else None,
+                    "dd60_pct": _dd60(daily),
+                    "bias_pct": bias_pct(daily, price),
+                    "risk": round(float(sc["risk"]), 2) if sc["risk"] is not None else None,
+                    "composite": (round(float(sc["composite"]), 2)
+                                  if sc["composite"] is not None else None),
+                    "verdict": verdict,
+                    "tier": tier_for_verdict(verdict),
+                    "sector_name": secs[0] if secs else None,
+                })
+            except Exception:
+                daily_failed += 1                # 单只日线失败 → 跳过,其余继续
+    items.sort(key=lambda x: (-(x["position"] or 0.0), x["code"]))
+    seen, unique = set(), []
+    for it in items:
+        if it["code"] in seen:
+            continue
+        seen.add(it["code"])
+        unique.append(it)
+    return ({"regime": regime, "total": len(unique), "items": unique[:top_n],
+             "basis": "个股因子口径:composite/verdict/tier 未含板块共振加成与热权重",
+             "diagnostics": {"stocks_daily_failed": daily_failed}}, stale_any)
