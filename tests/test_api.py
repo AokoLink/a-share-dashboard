@@ -937,6 +937,32 @@ def test_low_position_endpoint(client, monkeypatch):
     assert d["items"][1]["tier"] is None
 
 
+def test_low_position_all_daily_failed_is_source_fail(client, monkeypatch):
+    """产出为空 + 日线全部失败 → 必须报 500 SOURCE_FAIL。
+
+    空表不是真实市况(任何时点都必然有股票在 60 日区间低位),只能说明日线源挂了;
+    若返回 200 空表,前端会把它显示成「今天没有低位股」,是误导。
+    """
+    empty = {"regime": None, "total": 0, "items": [], "basis": "个股因子口径",
+             "diagnostics": {"stocks_daily_failed": 300}}
+    monkeypatch.setattr(env, "load_cached_regime", lambda path: None)
+    monkeypatch.setattr(recommend, "collect_low_position", lambda *a, **k: (empty, False))
+    r = client.get("/api/low-position")
+    assert r.status_code == 500
+    assert r.get_json()["error"]["code"] == "SOURCE_FAIL"
+
+
+def test_low_position_empty_without_failures_is_ok(client, monkeypatch):
+    """空表但无失败(理论上不该发生)→ 仍按正常空结果返回,不误报源失败。"""
+    empty = {"regime": None, "total": 0, "items": [], "basis": "个股因子口径",
+             "diagnostics": {"stocks_daily_failed": 0}}
+    monkeypatch.setattr(env, "load_cached_regime", lambda path: None)
+    monkeypatch.setattr(recommend, "collect_low_position", lambda *a, **k: (empty, False))
+    r = client.get("/api/low-position")
+    assert r.status_code == 200
+    assert r.get_json()["data"]["items"] == []
+
+
 def test_low_position_source_fail(monkeypatch, tmp_path):
     # 先建 app 再打桩(与 test_source_fail_returns_500 同序;client_factory 会覆盖桩)
     monkeypatch.setattr(ds, "validate_sector_map",

@@ -26,5 +26,12 @@ def register(app):
                             "advice": regime.get("advice"), "swing": regime.get("swing")}
         payload, stale_cands = recommend.collect_low_position(
             spot, ds.get_stock_daily, now, regime_block, resolve_sectors_fn=ds.resolve_code_sectors)
+        # 空表不是真实市况:任何时点都必然有股票处于 60 日区间低位。产出为空
+        # 只能说明日线源挂了 —— 必须报源失败,否则前端会显示成「今天没有低位股」。
+        failed = (payload.get("diagnostics") or {}).get("stocks_daily_failed") or 0
+        if not payload["items"] and failed:
+            return util.err(
+                "SOURCE_FAIL",
+                f"日线数据全部获取失败({failed} 只),低位透视无法计算", 500)
         payload["generated_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
         return util.ok(payload, stale=spot_stale or stale_cands)
