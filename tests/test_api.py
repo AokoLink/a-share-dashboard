@@ -427,6 +427,7 @@ def test_actionable_leaders_endpoint(client, monkeypatch):
         ],
         "skipped_sectors": [{"name": "白酒", "reason": "no_mapping"}],
         "diagnostics": {"stocks_daily_failed": 0},
+        "signal_date": "2026-08-13", "close_date": "2026-08-12",
     }
     monkeypatch.setattr(recommend, "collect_actionable_leaders",
                         lambda *a, **k: (payload, False))
@@ -977,3 +978,78 @@ def test_low_position_source_fail(monkeypatch, tmp_path):
     r = app.test_client().get("/api/low-position")
     assert r.status_code == 500
     assert r.get_json()["error"]["code"] == "SOURCE_FAIL"
+
+
+def _actionable_payload(close_date="2026-08-12", signal_date="2026-08-11"):
+    return {
+        "sectors_scanned": 3, "total": 1, "items": [
+            {"code": "sh600050", "name": "中国联通", "price": 5.0, "change_pct": 3.0,
+             "tag": "龙头+强势", "tier": "可介入", "sector_code": "industry:885887",
+             "sector_name": "半导体", "sector_verdict": "建议关注", "sector_composite": 78.0,
+             "position": 70, "trend": 100, "volume_price": 90, "signal": 80,
+             "composite": 91.5, "risk": 0, "bias_pct": -83.05,
+             "close_date": close_date},
+        ],
+        "skipped_sectors": [], "diagnostics": {"stocks_daily_failed": 0},
+        "signal_date": signal_date, "close_date": close_date,
+    }
+
+
+def _actionable_app(monkeypatch, tmp_path, payload):
+    """独立建 app 并把 db 路径交回,便于直接查表断言落库。"""
+    db = str(tmp_path / "act.db")
+    monkeypatch.setattr(ds, "validate_sector_map",
+                        lambda: {"ok": True, "total": 0, "valid": 0, "stale": [], "renamed": []})
+    app = app_mod.create_app(db_path=db)
+    monkeypatch.setattr(ds, "get_sector_summary", lambda t: (make_summary(), False))
+    monkeypatch.setattr(ds, "get_market_spot", lambda: (make_spot(), False))
+    monkeypatch.setattr(recommend, "collect_actionable_leaders", lambda *a, **k: (payload, False))
+    app.config["TESTING"] = True
+    return app.test_client(), db
+
+
+def _snapshot_rows(db):
+    return store._connect(db).execute(
+        "SELECT signal_date, close_date, total, payload FROM actionable_snapshot "
+        "ORDER BY signal_date").fetchall()
+
+
+def test_actionable_leaders_writes_snapshot_once_per_signal_date(monkeypatch, tmp_path):
+    """连调两次只留一行 —— 去重是本设计的核心,必须钉住。
+
+    前端每次切到「可介入龙头」tab 都会重新拉一次,不去重的话表会被同日重复行撑爆。
+    """
+    client, db = _actionable_app(monkeypatch, tmp_path, _actionable_payload())
+    r1 = client.get("/api/actionable-leaders")
+    assert r1.status_code == 200
+    assert r1.get_json()["data"]["signal_date"] == "2026-08-11"
+    r2 = client.get("/api/actionable-leaders")
+    assert r2.status_code == 200
+    rows = _snapshot_rows(db)
+    assert len(rows) == 1
+    row = dict(rows[0])
+    assert row["signal_date"] == "2026-08-11" and row["close_date"] == "2026-08-12"
+    assert row["total"] == 1
+    assert json.loads(row["payload"])[0]["code"] == "sh600050"
+
+
+def test_actionable_leaders_no_close_date_does_not_write(monkeypatch, tmp_path):
+    """close_date 为 None(当天无候选/数据失败)→ 不落库,不用空行遮蔽当天真实快照。"""
+    client, db = _actionable_app(
+        monkeypatch, tmp_path,
+        {"sectors_scanned": 1, "total": 0, "items": [], "skipped_sectors": [],
+         "diagnostics": {"stocks_daily_failed": 0},
+         "signal_date": None, "close_date": None})
+    r = client.get("/api/actionable-leaders")
+    assert r.status_code == 200
+    assert _snapshot_rows(db) == []
+
+
+def test_actionable_leaders_snapshot_failure_does_not_break_api(monkeypatch, tmp_path):
+    """落库失败不能拖垮接口(照抄 recommend 路由的既有做法)。"""
+    client, _ = _actionable_app(monkeypatch, tmp_path, _actionable_payload())
+    monkeypatch.setattr(store, "upsert_actionable_snapshot",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk full")))
+    r = client.get("/api/actionable-leaders")
+    assert r.status_code == 200
+    assert r.get_json()["data"]["total"] == 1

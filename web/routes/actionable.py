@@ -2,6 +2,7 @@
 """可介入龙头路由 /api/actionable-leaders。"""
 from core import data_source as ds
 from core import recommend
+from core import store
 from web import util
 
 
@@ -19,6 +20,16 @@ def register(app):
         payload, stale_cands = recommend.collect_actionable_leaders(
             summary, spot, db_path, "industry", now,
             ds.resolve_sector_constituents, ds.get_stock_daily)
+        # 快照日志:每个信号日一行(同日重建覆盖),供事后复盘「哪天推荐了什么」。
+        # close_date 为 None 恰好意味着当天没有一只有效 → 那是数据失败不是信号,
+        # 落库会用空行遮蔽当天真实快照,故不写。失败不拖垮接口(照抄 recommend 路由)。
+        try:
+            if payload["close_date"] is not None:
+                store.upsert_actionable_snapshot(
+                    db_path, payload["signal_date"], now.strftime("%Y-%m-%d %H:%M:%S"),
+                    payload["close_date"], payload["total"], payload["items"])
+        except Exception:
+            pass
         coverage = {
             "scanned": payload["sectors_scanned"],
             "total": payload["total"],
@@ -30,6 +41,8 @@ def register(app):
             coverage["skipped_by_reason"][r] = coverage["skipped_by_reason"].get(r, 0) + 1
         return util.ok({
             "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "signal_date": payload["signal_date"],
+            "close_date": payload["close_date"],
             "total": payload["total"],
             "items": payload["items"],
             "skipped_sectors": payload["skipped_sectors"],

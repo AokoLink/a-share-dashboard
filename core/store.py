@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS recommend_snapshot (
   signal_date TEXT PRIMARY KEY,
   generated_at TEXT, close_date TEXT, prev_trading_date TEXT, payload TEXT
 );
+CREATE TABLE IF NOT EXISTS actionable_snapshot (
+  signal_date TEXT PRIMARY KEY,
+  generated_at TEXT, close_date TEXT, total INTEGER, payload TEXT
+);
 """
 
 _conns = threading.local()
@@ -180,3 +184,21 @@ def get_recommend_snapshot_before(db, signal_date):
     if d and d.get("payload"):
         d["stocks"] = json.loads(d["payload"])
     return d
+
+
+def upsert_actionable_snapshot(db, signal_date, generated_at, close_date, total, items):
+    """可介入龙头的每信号日快照(完整 items)。signal_date 为主键 → 同日重建覆盖,天然去重。
+
+    items 为完整 item 列表(含当时算出的 position/composite/verdict/tier 等)。
+    这是「生成值存档」:记录当时算出了什么,不是「推荐后表现」—— 后者需另配回填脚本。
+    """
+    conn = _connect(db)
+    conn.execute(
+        """INSERT INTO actionable_snapshot(signal_date, generated_at, close_date, total, payload)
+           VALUES(?,?,?,?,?)
+           ON CONFLICT(signal_date) DO UPDATE SET
+             generated_at=excluded.generated_at, close_date=excluded.close_date,
+             total=excluded.total, payload=excluded.payload""",
+        (signal_date, generated_at, close_date, total,
+         json.dumps(items, ensure_ascii=False)))
+    conn.commit()

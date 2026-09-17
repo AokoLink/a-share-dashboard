@@ -411,6 +411,7 @@ def collect_actionable_leaders(summary_df, spot_df, db, type_key, now, resolve_f
             "signal": scored["scores"]["signal"], "composite": round(scored["composite"], 2),
             "risk": scored["scores"]["risk"],
             "bias_pct": bias_pct(daily, scored["price"]),
+            "close_date": scored["close_date"],   # 停牌股末根日期可能落后,故出参需取众数
         }, stale
 
     items, daily_failed, stale_any = [], 0, False
@@ -436,8 +437,14 @@ def collect_actionable_leaders(summary_df, spot_df, db, type_key, now, resolve_f
         unique.append(it)
     # 排序:可介入在前,观察在后;组内按综合分降序
     unique.sort(key=lambda x: (x["tier"] != "可介入", -(x["composite"] or 0)))
+    # 快照出参:与 build_recommend 同款口径(众数 close_date → _signal_date),
+    # 保证两个端点对「今天是哪个交易日」的判定一致,不会记到不同日期。
+    close_dates = [x["close_date"] for x in unique if x.get("close_date")]
+    close_date = max(close_dates, key=close_dates.count) if close_dates else None
+    signal_date = _signal_date(now, close_date) if close_date is not None else None
     return ({"sectors_scanned": len(sectors), "total": len(unique), "items": unique,
              "skipped_sectors": skipped,
+             "signal_date": signal_date, "close_date": close_date,
              "diagnostics": {"stocks_daily_failed": daily_failed}},
             stale_any)
 

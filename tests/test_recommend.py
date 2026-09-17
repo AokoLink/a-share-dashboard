@@ -408,7 +408,9 @@ def test_collect_actionable_leaders_two_tiers_and_dedupe(monkeypatch):
                 "scores": {"position": s["position"], "trend": s["trend"],
                            "volume_price": s["vp"], "signal": s["signal"],
                            "risk": s["risk"], "composite": final},
-                "composite": final, "verdict": an.stock_verdict(final)}
+                "composite": final, "verdict": an.stock_verdict(final),
+                "signal_close": round(float(daily_df["close"].iloc[-1]), 2),
+                "close_date": str(daily_df["date"].iloc[-1])}
     monkeypatch.setattr(recommend, "_score_candidate", fake_score_candidate)
     daily = make_daily([10 + i for i in range(65)])
     payload, stale = recommend.collect_actionable_leaders(
@@ -720,3 +722,69 @@ def test_score_candidate_missing_high_low_open_ok(monkeypatch):
     assert captured["high"] is None
     assert captured["low"] is None
     assert captured["open"] is None
+
+
+def _daily_with_dates(closes, last_date="2026-08-12"):
+    """自 make_daily 起,但末根日期可控(测 close_date 出参)。"""
+    d = make_daily(closes)
+    d["date"] = pd.date_range(end=last_date, periods=len(closes)).strftime("%Y-%m-%d")
+    return d
+
+
+def _collect_with_dates(monkeypatch, now, last_date="2026-08-12"):
+    """三个板块、各一只可介入/观察,日线末根日期固定。"""
+    mock_sector(monkeypatch)
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    def fake_score_candidate(row, daily_df, now, sector_composite=None):
+        final = 70.0
+        return {"code": ds.with_prefix(str(row["code"])), "name": str(row["name"]),
+                "price": row["price"], "change_pct": row["change_pct"],
+                "scores": {"position": 60, "trend": 50, "volume_price": 60,
+                           "signal": 50, "risk": 0, "composite": final},
+                "composite": final, "verdict": an.stock_verdict(final),
+                "signal_close": float(daily_df["close"].iloc[-1]),
+                "close_date": str(daily_df["date"].iloc[-1])}
+    monkeypatch.setattr(recommend, "_score_candidate", fake_score_candidate)
+    daily = _daily_with_dates([10 + i for i in range(65)], last_date)
+    return recommend.collect_actionable_leaders(
+        make_summary(), make_spot(), ":db:", "industry", now,
+        lambda name: {"ok": True, "codes": ["600050", "600100", "688981"],
+                      "match_type": "manual", "source_name": "电子信息"},
+        lambda c: (daily, False))
+
+
+def test_collect_actionable_leaders_exposes_signal_and_close_date(monkeypatch):
+    """出参带 signal_date/close_date,且 signal_date 口径与 build_recommend 完全一致。
+
+    两边若各算各的「今天是哪个交易日」,快照就会记到不同日期 —— 这条钉住一致性。
+    """
+    now = datetime.datetime(2026, 8, 11, 15, 0)          # 工作日盘中
+    payload, _ = _collect_with_dates(monkeypatch, now)
+    assert payload["close_date"] == "2026-08-12"
+    assert payload["signal_date"] == recommend._signal_date(now, "2026-08-12") == "2026-08-11"
+    assert payload["items"], "本 fixture 应产出候选"
+    # 每只 item 也带 close_date(停牌股末根日期不同,众数才代表当日)
+    assert {x["close_date"] for x in payload["items"]} == {"2026-08-12"}
+    # 快照要 json.dumps 落库:np.int64 之类不是 float/int 子类,混进来会让落库静默失败
+    # (路由按设计吞异常不拖垮接口)→ 这里钉死 items 必须可直接序列化。
+    import json
+    json.dumps(payload["items"], ensure_ascii=False)
+
+
+def test_collect_actionable_leaders_no_items_means_no_signal_date(monkeypatch):
+    """无候选(全部被档位过滤)→ close_date/signal_date 均为 None。
+
+    路由据此判断「不落库」:空快照不是信号,落库会用空行遮蔽当天真实快照。
+    """
+    mock_sector(monkeypatch)
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    monkeypatch.setattr(recommend, "_score_candidate", lambda *a, **k: None)
+    payload, _ = recommend.collect_actionable_leaders(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 11, 15, 0),
+        lambda name: {"ok": True, "codes": ["600050"], "match_type": "manual",
+                      "source_name": "电子信息"},
+        lambda c: (_daily_with_dates([10 + i for i in range(65)]), False))
+    assert payload["items"] == []
+    assert payload["close_date"] is None
+    assert payload["signal_date"] is None

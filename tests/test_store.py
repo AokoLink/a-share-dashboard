@@ -105,3 +105,30 @@ def test_close_all_reopens(tmp_path):
     store.close_all()
     c2 = store._connect(db)
     assert c1 is not c2
+
+
+def test_actionable_snapshot_upsert_dedupes_by_signal_date(tmp_path):
+    """signal_date 为主键:同日重复落库必须【覆盖】而不是新增行 —— 这是本设计的核心口径。"""
+    import json
+    db = str(tmp_path / "act_snap.db")
+    store.init_db(db)
+    items = [{"code": "sh600050", "name": "联通", "tier": "可介入", "composite": 79.0}]
+    store.upsert_actionable_snapshot(db, "2026-08-12", "2026-08-12 18:00:00",
+                                     "2026-08-12", 1, items)
+    # 同日重建(用户每次切到该 tab 都会重新拉一次)→ 覆盖
+    store.upsert_actionable_snapshot(db, "2026-08-12", "2026-08-12 19:30:00",
+                                     "2026-08-12", 1,
+                                     [{"code": "sh600050", "name": "联通", "tier": "观察",
+                                       "composite": 77.0}])
+    store.upsert_actionable_snapshot(db, "2026-08-13", "2026-08-13 18:00:00",
+                                     "2026-08-13", 0, [])
+    conn = store._connect(db)
+    rows = conn.execute("SELECT signal_date, generated_at, close_date, total, payload "
+                        "FROM actionable_snapshot ORDER BY signal_date").fetchall()
+    assert len(rows) == 2                                   # 08-12 只留一行
+    r0 = dict(rows[0])
+    assert r0["signal_date"] == "2026-08-12"
+    assert r0["generated_at"] == "2026-08-12 19:30:00"       # 覆盖生效
+    assert r0["close_date"] == "2026-08-12" and r0["total"] == 1
+    assert json.loads(r0["payload"])[0]["tier"] == "观察"     # payload 是覆盖后的完整 item
+    assert dict(rows[1])["payload"] == "[]"                  # 空 items 也如实落库
