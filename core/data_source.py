@@ -23,7 +23,7 @@ class TTLCache:
         self._max = max_entries
         self._default_ttl = default_ttl
         self._clock = clock or time.time
-        self._data = {}  # key -> (ts, ttl, value, failures)
+        self._data = {}  # key -> (last_success, ttl, value, failures, retry_after)
         self._lock = threading.Lock()
 
     def get(self, key):
@@ -32,27 +32,37 @@ class TTLCache:
             item = self._data.get(key)
             if item is None:
                 return None, False
-            ts, ttl, value, _ = item
+            ts, ttl, value, _, _ = item
             if self._clock() - ts <= ttl:
                 return value, True
             return value, False
+
+    def get_with_retry(self, key):
+        """读取数据新鲜度和重试许可；退避不能延长旧数据的有效期。"""
+        with self._lock:
+            item = self._data.get(key)
+            if item is None:
+                return None, False, True
+            ts, ttl, value, _, retry_after = item
+            now = self._clock()
+            return value, now - ts <= ttl, now >= retry_after
 
     def set(self, key, value, ttl=None):
         with self._lock:
             if len(self._data) >= self._max and key not in self._data:
                 oldest = min(self._data, key=lambda k: self._data[k][0])
                 del self._data[oldest]
-            self._data[key] = (self._clock(), ttl or self._default_ttl, value, 0)
+            self._data[key] = (self._clock(), ttl or self._default_ttl, value, 0, 0)
 
     def mark_failure(self, key):
-        """拉取失败:延长 TTL(30s×2^n 封顶 600s),保留 stale 值。"""
+        """拉取失败:只推迟下次重试(30s×2^n 封顶 600s)，不刷新旧数据。"""
         with self._lock:
             item = self._data.get(key)
             if item is None:
                 return
-            ts, _, value, n = item
+            ts, ttl, value, n, _ = item
             backoff = min(30 * (2 ** n), 600)
-            self._data[key] = (self._clock(), backoff, value, n + 1)
+            self._data[key] = (ts, ttl, value, n + 1, self._clock() + backoff)
 
 
 cache = TTLCache()
@@ -76,9 +86,7 @@ SECTOR_CONS_MAP = {
     "燃气": "new_gsgq", "塑料制品": "new_slzp", "食品加工制造": "new_sphy",
     "石油加工贸易": "new_syhy", "有色金属": "new_ysjs", "贵金属": "new_ysjs",
     "造纸": "new_zzhy", "医疗器械": "new_ylqx", "生物制品": "new_swzz",
-    "半导体": "new_dzxx", "消费电子": "new_dzxx", "通信设备": "new_dzxx",
-    "计算机设备": "new_dzxx", "软件开发": "new_dzxx",
-    "光学光电子": "new_dzqj", "元件": "new_dzqj",
+    # 细分行业不能共用一个更宽的新浪行业池；没有精确成分快照时明确报覆盖不足。
     "工程机械": "new_jxhy", "通用设备": "new_jxhy", "专用设备": "new_jxhy",
 }
 SECTOR_CONS_EXPECTED = {   # label → 预期新浪名,启动校验检测改名漂移
@@ -92,9 +100,10 @@ SECTOR_CONS_EXPECTED = {   # label → 预期新浪名,启动校验检测改名�
     "new_dzxx": "电子信息", "new_dzqj": "电子器件", "new_jxhy": "机械行业",
 }
 SECTOR_KEYWORDS = {          # THS 名 → 可接受的新浪行业名(同义词兜底,仅高置信)
-    "半导体": ["电子信息", "电子器件"],
     "白酒": ["酿酒行业"],
 }
+PRECISE_SECTORS = {"半导体", "消费电子", "通信设备", "计算机设备", "软件开发",
+                   "光学光电子", "元件"}
 
 
 def _set_updated():
@@ -104,9 +113,11 @@ def _set_updated():
 
 def _cached(key, ttl, fetch):
     """缓存取数:命中返回;过期则重拉;重拉失败 → stale 回退 + 退避;全无 → 抛 DataSourceError。"""
-    val, fresh = cache.get(key)
+    val, fresh, can_retry = cache.get_with_retry(key)
     if fresh:
         return val, False
+    if not can_retry:
+        return val, True
     try:
         data = fetch()
         cache.set(key, data, ttl)
@@ -142,6 +153,8 @@ def normalize_code(raw):
 
 def with_prefix(code):
     c = normalize_code(code)
+    if c.startswith("920"):
+        return "bj" + c
     if c.startswith(("6", "5", "9")):
         return "sh" + c
     if c.startswith(("0", "1", "2", "3")):
@@ -225,7 +238,7 @@ def get_market_spot():
         })
         for col in ("price", "change_pct", "volume", "amount", "open", "high", "low"):
             out[col] = pd.to_numeric(out[col], errors="coerce")
-        out["volume"] = out["volume"] * 100.0   # 手 → 股(与日线成交量单位一致,对齐腾讯路径 :186)
+        # stock_zh_a_spot 使用新浪来源，volume 已是股；东财日线和腾讯报价才需手→股。
         return out
 
     return _cached(_key("spot"), 60, lambda: _fetch_with_retry(fetch))
@@ -314,24 +327,41 @@ def get_stock_minute(code):
     return _cached(_key("stock_minute", symbol), 60, lambda: _fetch_with_retry(fetch))
 
 
-def get_new_stocks():
+def get_new_stocks_with_status():
     """上市≤5交易日的股票(尽力而为):取最近新股列表;接口不可用 → 空集。
-    仅缓存成功结果;失败不缓存(下次仍重试),并回退旧值。"""
+    仅缓存成功结果;失败不缓存(下次仍重试),并回退旧值且标记 stale。"""
     def fetch():
         raw = _ak.stock_zh_a_new()
         codes = _pick(raw, "代码", "code").map(normalize_code).tolist()
         return set(codes)
 
-    val, fresh = cache.get(_key("new_stocks"))
+    key = _key("new_stocks")
+    val, fresh, can_retry = cache.get_with_retry(key)
     if fresh:
-        return val
+        return val, False
+    if not can_retry:
+        return val, True
     try:
         data = _fetch_with_retry(fetch)
-        cache.set(_key("new_stocks"), data, 1800)
+        cache.set(key, data, 1800)
         _set_updated()
-        return data
+        return data, False
     except Exception:
-        return val if val is not None else set()
+        if val is not None:
+            cache.mark_failure(key)
+        return (val if val is not None else set()), True
+
+
+def get_new_stocks():
+    """兼容旧调用，同时让集合携带来源过期状态。"""
+    codes, stale = get_new_stocks_with_status()
+    result = SourceSet(codes)
+    result.stale = stale
+    return result
+
+
+class SourceSet(set):
+    """保留集合接口，供旧筛选入口读取数据质量状态。"""
 
 
 def _sina_industry_names():
@@ -365,30 +395,59 @@ def _keyword_lookup(ths_name, label_to_name):
     return uniq[0], len(uniq) > 1
 
 
+def _exact_em_constituents(name):
+    """仅接受与 THS 板块同名的东财行业；跨来源匹配须在结果中明确标注。"""
+    names, stale_names = _cached(_key("em_industry_names"), 3600,
+                                 lambda: _fetch_with_retry(_ak.stock_board_industry_name_em))
+    if name not in set(_pick(names, "板块名称", "name").astype(str)):
+        return None
+    raw, stale_codes = _cached(_key("em_industry_cons", name), 1800,
+                               lambda: _fetch_with_retry(lambda: _ak.stock_board_industry_cons_em(symbol=name)))
+    codes = _pick(raw, "代码", "code").astype(str).map(normalize_code).tolist()
+    codes = sorted({c for c in codes if c.isdigit() and len(c) == 6})
+    return (codes, bool(stale_names or stale_codes)) if codes else None
+
+
 def resolve_sector_constituents(ths_name):
     """板块名 → 成分股(手动表 → 关键词兜底)。失败原因 no_mapping/ambiguous;网络失败抛异常。"""
+    if ths_name in PRECISE_SECTORS:
+        found = _exact_em_constituents(ths_name)
+        if found is not None:
+            codes, source_stale = found
+            return {"ok": True, "codes": codes, "match_type": "exact_cross_provider",
+                    "source_name": ths_name, "source": "eastmoney_industry",
+                    "observed_at": None if source_stale else datetime.now().isoformat(),
+                    "stale": source_stale, "historical": False}
+        return {"ok": False, "reason": "coverage_insufficient",
+                "source_name": None, "historical": False}
     label = SECTOR_CONS_MAP.get(ths_name)
     if label is not None:
-        codes, _ = _fetch_sina_constituents(label)
-        names, _ = _sina_industry_names()
+        codes, stale_codes = _fetch_sina_constituents(label)
+        names, stale_names = _sina_industry_names()
+        source_stale = bool(stale_codes or stale_names)
         return {"ok": True, "codes": codes, "match_type": "manual",
-                "source_name": names.get(label, label)}
-    names, _ = _sina_industry_names()
+                "source_name": names.get(label, label), "source": "sina_industry",
+                "observed_at": None if source_stale else datetime.now().isoformat(),
+                "stale": source_stale, "historical": False}
+    names, stale_names = _sina_industry_names()
     hit = _keyword_lookup(ths_name, names)
     if hit is None:
         return {"ok": False, "reason": "no_mapping"}
     label, ambiguous = hit
     if ambiguous:
         return {"ok": False, "reason": "ambiguous"}
-    codes, _ = _fetch_sina_constituents(label)
+    codes, stale_codes = _fetch_sina_constituents(label)
+    source_stale = bool(stale_names or stale_codes)
     return {"ok": True, "codes": codes, "match_type": "keyword",
-            "source_name": names.get(label, label)}
+            "source_name": names.get(label, label), "source": "sina_industry",
+            "observed_at": None if source_stale else datetime.now().isoformat(),
+            "stale": source_stale, "historical": False}
 
 
 def validate_sector_map():
     """启动校验:手动映射的每个新浪 label 是否仍存在、名称是否漂移。失败不阻塞,仅返回报告。"""
     try:
-        names, _ = _sina_industry_names()
+        names, source_stale = _sina_industry_names()
     except Exception as e:
         return {"ok": False, "error": str(e), "total": 0, "valid": 0,
                 "stale": [], "renamed": []}
@@ -401,7 +460,8 @@ def validate_sector_map():
             if expected and names[label] != expected:
                 renamed.append({"ths": ths, "label": label,
                                 "expected": expected, "actual": names[label]})
-    return {"ok": True, "total": len(SECTOR_CONS_MAP),
+    return {"ok": not source_stale, "source_stale": source_stale,
+            "total": len(SECTOR_CONS_MAP),
             "valid": len(SECTOR_CONS_MAP) - len(stale),
             "stale": stale, "renamed": renamed}
 
@@ -467,3 +527,14 @@ def get_sector_index_history(code, type):
         })
 
     return _cached(_key("sector_index", type, symbol), 1800, lambda: _fetch_with_retry(fetch))
+
+
+def get_market_index_history():
+    """上证综指历史日线，仅作为板块相对强度的明确基准。"""
+    def fetch():
+        raw = _ak.stock_zh_index_daily(symbol="sh000001")
+        out = raw[["date", "close"]].copy()
+        out["date"] = out["date"].astype(str)
+        out["close"] = pd.to_numeric(out["close"], errors="coerce")
+        return out.dropna(subset=["close"]).sort_values("date").reset_index(drop=True)
+    return _cached(_key("market_index_history", "sh000001"), 1800, lambda: _fetch_with_retry(fetch))

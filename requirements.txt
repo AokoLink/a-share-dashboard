@@ -1,4 +1,9 @@
 akshare==1.18.84
 flask==3.1.0
 pandas>=2.0
+numpy>=2.0
+requests>=2.31
+beautifulsoup4>=4.12
+truststore>=0.10
+xlrd>=2.0
 pytest>=8.0

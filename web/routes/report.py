@@ -3,6 +3,8 @@
 import json
 import os
 
+from core import freshness
+from pipeline import simulate
 from web import config
 from web import util
 
@@ -19,4 +21,8 @@ def register(app):
                 data = json.load(f)
         except (OSError, ValueError) as e:
             return util.err("REPORT_ERROR", str(e), 500)
+        data["freshness"] = freshness.assess((data.get("data_range") or {}).get("end"))
+        data["evidence_status"] = (
+            "invalid_legacy" if data.get("module_version") != simulate.MODULE_VERSION
+            else "exploratory_unverified_inputs")
         return util.ok(data)

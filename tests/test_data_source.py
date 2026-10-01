@@ -52,16 +52,39 @@ def test_ttl_cache_mark_failure_backoff():
     clock = FakeClock()
     c = ds.TTLCache(max_entries=5, default_ttl=60, clock=clock)
     c.set("k", "v")
-    c.mark_failure("k")            # 失败1次 → 退避 30s(n 从 0 起)
-    clock.t = 30
-    assert c.get("k") == ("v", True)     # 恰好 30s 仍新鲜
-    clock.t = 31
-    assert c.get("k") == ("v", False)    # 超过 30s → stale 回退
-    c.mark_failure("k")            # 失败2次 → 退避 60s
+    clock.t = 61
+    c.mark_failure("k")            # 旧数据已过期，失败后退避 30s
+    assert c.get("k") == ("v", False)
+    assert c.get_with_retry("k") == ("v", False, False)
     clock.t = 90
-    assert c.get("k") == ("v", True)     # 距上次失败 59s < 60s 仍新鲜
-    clock.t = 92
-    assert c.get("k") == ("v", False)    # 超过 60s → stale
+    assert c.get_with_retry("k") == ("v", False, False)
+    clock.t = 91
+    assert c.get_with_retry("k") == ("v", False, True)
+    c.mark_failure("k")            # 再次失败，退避 60s
+    clock.t = 150
+    assert c.get_with_retry("k") == ("v", False, False)
+    clock.t = 151
+    assert c.get_with_retry("k") == ("v", False, True)
+
+
+def test_cached_failure_keeps_stale_until_successful_retry(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(ds, "cache", ds.TTLCache(clock=clock))
+    calls = {"n": 0}
+    def fetch():
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("source down")
+        return {"revision": calls["n"]}
+    assert ds._cached("probe", 60, fetch) == ({"revision": 1}, False)
+    clock.t = 61
+    assert ds._cached("probe", 60, fetch) == ({"revision": 1}, True)
+    clock.t = 80
+    assert ds._cached("probe", 60, fetch) == ({"revision": 1}, True)
+    assert calls["n"] == 2  # 退避期间不重拉，但始终标记为过期
+    clock.t = 91
+    assert ds._cached("probe", 60, fetch) == ({"revision": 3}, False)
+    assert ds._cached("probe", 60, fetch) == ({"revision": 3}, False)
 
 
 def test_parse_tencent_quote():
@@ -253,6 +276,32 @@ def test_new_stocks_not_cached_on_failure(monkeypatch):
     assert calls["n"] == 4                       # 2 次调用 × _fetch_with_retry 内部重试 1 次
 
 
+def test_new_stocks_status_distinguishes_failed_fallback(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(ds, "cache", ds.TTLCache(clock=clock))
+    calls = {"n": 0}
+    def fail():
+        calls["n"] += 1
+        raise RuntimeError("source down")
+    monkeypatch.setattr(ds._ak, "stock_zh_a_new", fail)
+    assert ds.get_new_stocks_with_status() == (set(), True)
+    monkeypatch.setattr(ds._ak, "stock_zh_a_new",
+                        lambda: pd.DataFrame({"code": ["920000"]}))
+    assert ds.get_new_stocks_with_status() == ({"920000"}, False)
+    clock.t = 1801
+    monkeypatch.setattr(ds._ak, "stock_zh_a_new", fail)
+    assert ds.get_new_stocks_with_status() == ({"920000"}, True)
+    failure_calls = calls["n"]
+    legacy = ds.get_new_stocks()
+    assert legacy == {"920000"}
+    assert legacy.stale is True
+    assert calls["n"] == failure_calls  # 退避期间不重复请求
+    clock.t += 31
+    monkeypatch.setattr(ds._ak, "stock_zh_a_new",
+                        lambda: pd.DataFrame({"code": ["920001"]}))
+    assert ds.get_new_stocks_with_status() == ({"920001"}, False)
+
+
 def _mock_sina_spot(monkeypatch):
     rows = [{"label": label, "板块": name} for label, name in ds.SECTOR_CONS_EXPECTED.items()]
     df = pd.DataFrame(rows)
@@ -269,11 +318,52 @@ def test_constituents_manual_mapping(monkeypatch):
                         lambda sector: pd.DataFrame({"symbol": ["sh600050", "sh600100"],
                                                      "code": ["600050", "600100"],
                                                      "name": ["中国联通", "同方股份"]}))
-    res = ds.resolve_sector_constituents("半导体")      # SECTOR_CONS_MAP 应含 半导体→new_dzxx
+    res = ds.resolve_sector_constituents("白酒")
     assert res["ok"] is True
     assert res["match_type"] == "manual"
     assert res["codes"] == ["600050", "600100"]
-    assert res["source_name"] == "电子信息"
+    assert res["source_name"] == "酿酒行业"
+    assert res["historical"] is False
+
+
+def test_constituent_fallback_is_marked_stale(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(ds, "cache", ds.TTLCache(clock=clock))
+    _mock_sina_spot(monkeypatch)
+    monkeypatch.setattr(ds._ak, "stock_sector_detail",
+                        lambda sector: pd.DataFrame({"symbol": ["sh600050"]}))
+    first = ds.resolve_sector_constituents("白酒")
+    assert first["ok"] and first["stale"] is False
+    clock.t = 1801
+    def fail(*args, **kwargs):
+        raise RuntimeError("source down")
+    monkeypatch.setattr(ds._ak, "stock_sector_spot", fail)
+    monkeypatch.setattr(ds._ak, "stock_sector_detail", fail)
+    old = ds.resolve_sector_constituents("白酒")
+    assert old["ok"] and old["stale"] is True
+    assert old["observed_at"] is None
+
+
+def test_broad_electronics_pool_is_not_sold_as_semiconductor(monkeypatch):
+    monkeypatch.setattr(ds, "_exact_em_constituents", lambda name: None)
+    monkeypatch.setattr(ds, "_fetch_sina_constituents",
+                        lambda label: pytest.fail("细分行业不可读取宽泛的新浪成分池"))
+    res = ds.resolve_sector_constituents("半导体")
+    assert res["ok"] is False
+    assert res["reason"] == "coverage_insufficient"
+
+
+def test_precise_sector_uses_exact_em_name(monkeypatch):
+    ds.cache._data.clear()
+    monkeypatch.setattr(ds._ak, "stock_board_industry_name_em",
+                        lambda: pd.DataFrame({"板块名称": ["半导体", "消费电子"]}))
+    monkeypatch.setattr(ds._ak, "stock_board_industry_cons_em",
+                        lambda symbol: pd.DataFrame({"代码": ["688981"] if symbol == "半导体" else ["002475"]}))
+    semiconductor = ds.resolve_sector_constituents("半导体")
+    electronics = ds.resolve_sector_constituents("消费电子")
+    assert semiconductor["codes"] == ["688981"]
+    assert electronics["codes"] == ["002475"]
+    assert semiconductor["source"] == "eastmoney_industry"
 
 
 def test_constituents_no_mapping_and_ambiguous(monkeypatch):
@@ -324,15 +414,17 @@ def test_market_spot_includes_open(monkeypatch):
     assert float(df.loc[0, "open"]) == pytest.approx(9.9)   # sh600000 今开 9.9
 
 
-def test_market_spot_volume_hand_to_share_and_high_low(monkeypatch):
+def test_market_spot_sina_share_units_and_high_low(monkeypatch):
     ds.cache._data.clear()                          # 避免被其他用例缓存污染
     raw = make_spot().copy()
-    raw["成交量"] = [1000, 2000, 3000, 0, 4000]       # 手
+    raw["成交量"] = [100000, 200000, 300000, 0, 400000]  # 新浪原始单位为股
+    raw["amount"] = [1e6, 2.7e8, 3.6e6, 0, 8e7]
     raw["最高"] = [10.5, 1400.0, 12.5, 45.0, 210.0]
     raw["最低"] = [9.5, 1330.0, 11.5, 44.0, 190.0]
     monkeypatch.setattr(ds._ak, "stock_zh_a_spot", lambda: raw)
     df, stale = ds.get_market_spot()
     assert stale is False
-    assert df.loc[0, "volume"] == pytest.approx(1000.0 * 100.0)   # 手 → 股
+    assert df.loc[0, "volume"] == pytest.approx(100000.0)
+    assert df.loc[0, "amount"] / df.loc[0, "volume"] == pytest.approx(10.)
     assert df.loc[0, "high"] == pytest.approx(10.5)
     assert df.loc[0, "low"] == pytest.approx(9.5)

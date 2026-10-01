@@ -443,6 +443,6 @@ def test_build_report_serializes_return_risk():
     assert payload["metrics"]["return"]["mae"] == pytest.approx(0.02)
     assert payload["metrics"]["return"]["dir_cond_mae"]["up"]["n"] == 3
     assert payload["metrics"]["risk"]["lift"] == pytest.approx(0.3)
-    assert payload["module_version"] == "1.1.0"
+    assert payload["module_version"] == "1.2.0"
     md = pr.render_markdown(payload)
     assert "return" in md and "risk" in md

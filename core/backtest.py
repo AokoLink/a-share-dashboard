@@ -43,7 +43,7 @@ def load_sector_map(path):
 
 
 def build_universe(data_dir, sector_map, tail_n=1200):
-    """加载 universe。tail_n=1200(默认,生产 5 年基线);tail_n=None 保留完整历史(regime 择时用)。"""
+    """加载有至少 61 根历史日线的股票；不按期末 1200 根门槛反向筛选上市时点。"""
     universe, codes = {}, []
     files = sorted(f for f in os.listdir(data_dir) if f.endswith(".pkl"))
     for fn in files:
@@ -51,7 +51,7 @@ def build_universe(data_dir, sector_map, tail_n=1200):
         if code not in sector_map:
             continue
         d = load_daily(data_dir, code)
-        if len(d) < 1200:
+        if len(d) < 61:
             continue
         d = d.reset_index(drop=True)
         if tail_n is not None:
@@ -184,7 +184,8 @@ def score_at(d, i, now):
     quote = {"price": float(df["close"].iloc[-1]),
              "change_pct": float(df["change_pct"].iloc[-1]),
              "volume": float(df["volume"].iloc[-1]),
-             "amount": float(df["volume"].iloc[-1]) * float(df["close"].iloc[-1]),
+             "amount": (float(df["amount"].iloc[-1]) if "amount" in df
+                        else float(df["volume"].iloc[-1]) * float(df["close"].iloc[-1])),
              "high": float(df["high"].iloc[-1]),
              "low": float(df["low"].iloc[-1]),
              "open": float(df["open"].iloc[-1])}
@@ -219,22 +220,25 @@ def build_buyable_ext(universe, pos_of, all_days, i):
     oo_m, oc_m, gap1_m, od2_m = {}, {}, {}, {}
     for c in universe:
         bar = pos_of[c].get(dt)
-        if bar is None or bar + 1 >= len(universe[c]):
+        if bar is None:
             continue
         d = universe[c]
         chg = float(d["change_pct"].iloc[bar])
         close = float(d["close"].iloc[bar])
-        nr = next_returns_ext(d, bar)
-        if nr is None:
-            continue
         th = an.limit_threshold(c)
         if chg >= th or chg <= -7.0:
             continue
-        if float(d["volume"].iloc[bar]) * close < MIN_AMOUNT:
+        if float(d["volume"].iloc[bar]) <= 0:
+            continue
+        amount = float(d["amount"].iloc[bar]) if "amount" in d else float(d["volume"].iloc[bar]) * close
+        if not math.isfinite(amount) or amount < MIN_AMOUNT:
             continue
         buy.add(c)
-        od_m[c] = nr["od"]; gap_m[c] = nr["gap"]; c1_m[c] = nr["close1"]
-        if "oo" in nr:
+        # 下一日行情只用于结果标签，不参与当日候选资格。
+        nr = next_returns_ext(d, bar)
+        if nr is not None:
+            od_m[c] = nr["od"]; gap_m[c] = nr["gap"]; c1_m[c] = nr["close1"]
+        if nr is not None and "oo" in nr:
             oo_m[c] = nr["oo"]; oc_m[c] = nr["oc"]
             gap1_m[c] = nr["gap1"]; od2_m[c] = nr["od2"]
     return buy, od_m, gap_m, c1_m, oo_m, oc_m, gap1_m, od2_m
@@ -389,7 +393,7 @@ def run(data_dir, sector_map_path):
     sector_map = load_sector_map(sector_map_path)
     universe, codes = build_universe(data_dir, sector_map)
     if not universe:
-        raise RuntimeError(f"no usable daily pkl (code in sector map and >=1200 bars) in {data_dir}")
+        raise RuntimeError(f"no usable daily pkl (code in sector map and >=61 bars) in {data_dir}")
     sector_members = build_sector_members(sector_map, universe)
     all_days, pos_of = build_calendar(universe, codes)
     start = max(61, len(all_days) - 1 - EVAL_DAYS)
@@ -515,10 +519,12 @@ def build_report(results, system_version=None, generated_at=None):
         "module_version": MODULE_VERSION,
         "generated_at": generated_at,
         "data_range": results["data_range"],
+        "membership_basis": "static_snapshot_no_effective_dates",
+        "universe_basis": "available_pkl_only_delisted_unverified",
         "n_eval": results["n_eval"],
         "step": results["step"],
         "window": results["window"],
-        "sector_heat_note": "median-5-day-gain proxy (daily pkl 无 amount,生产板块 composite 不可复现)",
+        "sector_heat_note": "median-5-day-gain proxy;当前日线有 amount，但该回测尚未按生产板块 composite 重建",
         "rows": rows,
         "by_year": by_year,
         "welch": results["welch"],
@@ -553,16 +559,16 @@ def render_markdown(payload):
     lines += ["", "## 篮子 A 代理声明", ""]
     lines.append(payload["sector_heat_note"])
     lines.append("")
-    lines.append("因日线 pkl 无 amount(成交额),生产 collect_sector_metrics 所需 turnover_ratio(emotion 25%)与 activity(strength 30%)无法历史复现。篮子 A 与生产 recommend.py 管线存在以下代理差异:")
+    lines.append("现有日线含 amount(成交额)，但仍缺可靠的历史板块成分和与生产链路完全相同的历史输入。篮子 A 与生产 recommend.py 管线存在以下代理差异:")
     lines += ["", "| 维度 | 生产 recommend.py | 基线篮 A(代理) |", "|---|---|---|",
               "| 板块选择 | select_sectors verdict∈{建议关注, 跟踪(热点延续)} + composite 降序 + top3 | hot = 板块中位数 5 日涨幅 top3 |",
               "| 个股加成 | sector_bonus(68/60/50,+8/+4/-5) | composite 分档 8/4/0(无 -5) |",
               "| 热权重重算 | _apply_hot_weights(composite>=68 改用 HOT_SIGNAL_WEIGHTS) | 无(恒 V3_WEIGHTS) |",
-              "| 个股硬过滤 | filter_candidates ST/新股/停牌/涨停/<=-7%/amount<1e8 | buyable 涨停/<=-7%/volume*close>=1e8 |",
+              "| 个股硬过滤 | filter_candidates ST/新股/停牌/涨停/<=-7%/amount<1e8 | buyable 涨停/<=-7%/amount<1e8(缺列时以量×价代理) |",
               "| 加成×风险折扣位置 | (quality+bonus)*(1-risk/100) 加成在折扣内 | quality*(1-risk/100)+bonus 加成在折扣外 |",
               "| verdict 过滤 | rank_candidates 剔 verdict==回避(<42) | 仅 risk<70 |",
               ""]
-    lines.append("结论:基线篮 A 的准确率是「代理管线」的准确率,作为当前版本可复现的近似基线;真正的生产口径基线须待 amount 数据补齐(后续切片)。")
+    lines.append("结论:篮 A 的准确率仅代表此代理管线；历史成分、ST/退市覆盖与板块生产评分重建前，不可视作正式基线。")
     diag = payload.get("diag", {})
     if diag:
         lines += ["", "## 诊断(P0-quote-highlowopen 生效计数)", ""]

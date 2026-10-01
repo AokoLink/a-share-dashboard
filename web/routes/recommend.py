@@ -4,6 +4,7 @@ from flask import request
 
 from core import data_source as ds
 from core import environment as env
+from core import freshness
 from core import recommend
 from core import store
 from web import config
@@ -77,8 +78,12 @@ def register(app):
         for s in payload["skipped_sectors"]:
             r = s["reason"]
             coverage["skipped_by_reason"][r] = coverage["skipped_by_reason"].get(r, 0) + 1
+        signal_state = freshness.assess(payload.get("close_date") or payload.get("signal_date"), now=now)
+        historical = (signal_state["status"] != "current" or stale1 or stale2 or stale_cands)
         return util.ok({
             "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "historical" if historical else "current",
+            "signal_freshness": signal_state,
             "sectors": payload["sectors"],
             "skipped_sectors": payload["skipped_sectors"],
             "diagnostics": payload["diagnostics"],
@@ -86,7 +91,7 @@ def register(app):
             "close_date": payload["close_date"],
             "prev_trading_date": payload["prev_trading_date"],
             "prev_snapshot": prev_snapshot,
-            "regime": env.load_cached_regime(config.REGIME_CACHE),
+            "regime": freshness.mark_regime(env.load_cached_regime(config.REGIME_CACHE), now=now),
         }, stale=stale1 or stale2 or stale_cands,
            extra_meta={"coverage": coverage,
                        "mapping_health": app.config.get("SECTOR_MAP_HEALTH", {})})

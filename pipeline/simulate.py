@@ -18,10 +18,10 @@ import numpy as np
 from core import backtest as bt
 from pipeline import predict
 
-MODULE_VERSION = "1.0.0"
+MODULE_VERSION = "1.1.0"
 
 NOTES = [
-    "入场价=close[T](信号收盘后生成,次日成交近似 close[T],不虚构分钟成交)",
+    "信号在 T 收盘后生成；T+1 开盘买入，最早 T+2 开盘可卖出(A 股 T+1)",
     "保守日内假设:open 跳空越过 stop/target 价位按 open 成交;同日内 low<=stop 且 high>=target 同时触及,保守取 stop 先(先损)",
     "max_fav/max_adv 为持有窗口全程路径极值(机会口径,与 compare.py 的 max_high3/min_low3 一致),与止损止盈退出价解耦",
     "净收益 = ret_gross - 2*cost_bps/10000(双边成本)",
@@ -34,7 +34,7 @@ NOTES = [
 def simulate_trade(d, bar, holding_days, stop_pct, take_pct):
     """单笔交易模拟(保守日内假设)。
 
-    entry = close[bar];窗口 = holding_window(d, bar, holding_days)。
+    entry = open[bar+1];窗口 = holding_window(d, bar, holding_days+1)。
     逐日:open 跳空越过 stop/target 价 -> 按 open 成交;
          否则 low<=stop 且 high>=target 同触 -> 保守取 stop 先;
          否则 low<=stop -> stop 价平;high>=target -> target 价平;
@@ -43,15 +43,12 @@ def simulate_trade(d, bar, holding_days, stop_pct, take_pct):
     返回 {entry, exit, exit_reason(hold/stop/target), holding_days_actual,
           ret_gross, max_fav, max_adv} 或 None(无 T+1 可交易)。
     """
-    try:
-        entry = float(d["close"].iloc[bar])
-    except (TypeError, ValueError, IndexError):
+    if holding_days < 1:
         return None
-    if entry <= 0:
+    w = bt.holding_window(d, bar, holding_days + 1)
+    if w is None or w["n"] < 2:
         return None
-    w = bt.holding_window(d, bar, holding_days)
-    if w is None:
-        return None
+    entry = w["open"][0]
     stop_price = entry * (1.0 + stop_pct) if stop_pct is not None else None
     target_price = entry * (1.0 + take_pct) if take_pct is not None else None
 
@@ -60,20 +57,21 @@ def simulate_trade(d, bar, holding_days, stop_pct, take_pct):
 
     exit_price = None
     exit_reason = "hold"
-    held = w["n"]
-    for k in range(w["n"]):
+    held = w["n"] - 1
+    # T+1 买入当天不得卖出；首个可卖出交易日为 T+2。
+    for k in range(1, w["n"]):
         o = w["open"][k]; hi = w["high"][k]; lo = w["low"][k]; c = w["close"][k]
         if stop_price is not None and o <= stop_price:
-            exit_price, exit_reason, held = o, "stop", k + 1
+            exit_price, exit_reason, held = o, "stop", k
             break
         if target_price is not None and o >= target_price:
-            exit_price, exit_reason, held = o, "target", k + 1
+            exit_price, exit_reason, held = o, "target", k
             break
         if stop_price is not None and lo <= stop_price:
-            exit_price, exit_reason, held = stop_price, "stop", k + 1
+            exit_price, exit_reason, held = stop_price, "stop", k
             break
         if target_price is not None and hi >= target_price:
-            exit_price, exit_reason, held = target_price, "target", k + 1
+            exit_price, exit_reason, held = target_price, "target", k
             break
     if exit_price is None:
         exit_price = w["close"][-1]
@@ -344,6 +342,9 @@ def build_report(results, system_version=None, generated_at=None):
     return {
         "system_version": system_version,
         "module_version": MODULE_VERSION,
+        "entry_basis": "next_open_t_plus_one",
+        "price_basis": "daily_pkl_unverified_adjustment",
+        "membership_basis": "static_snapshot_no_effective_dates",
         "generated_at": generated_at,
         "config": results["config"],
         "data_range": results["data_range"],
@@ -404,6 +405,9 @@ def build_ab_report(results, system_version=None, generated_at=None):
     return {
         "system_version": system_version,
         "module_version": MODULE_VERSION,
+        "entry_basis": "next_open_t_plus_one",
+        "price_basis": "daily_pkl_unverified_adjustment",
+        "membership_basis": "static_snapshot_no_effective_dates",
         "generated_at": generated_at,
         "config": results["config"],
         "data_range": results["data_range"],

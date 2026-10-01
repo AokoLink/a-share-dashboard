@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """持久化层:SQLite 每日快照。db 参数为数据库文件路径。"""
 import json
+import hashlib
 import os
 import sqlite3
 import threading
@@ -25,6 +26,37 @@ CREATE TABLE IF NOT EXISTS actionable_snapshot (
   signal_date TEXT PRIMARY KEY,
   generated_at TEXT, close_date TEXT, total INTEGER, payload TEXT
 );
+CREATE TABLE IF NOT EXISTS strategy_signal_snapshot (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  signal_date TEXT NOT NULL,
+  strategy TEXT NOT NULL,
+  version TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  frozen_at TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  UNIQUE(signal_date, strategy, version, content_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_signal_day
+  ON strategy_signal_snapshot(signal_date, strategy, version, id);
+CREATE TABLE IF NOT EXISTS strategy_observation (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  snapshot_id INTEGER NOT NULL REFERENCES strategy_signal_snapshot(id),
+  tracker_version TEXT NOT NULL,
+  input_sha256 TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  UNIQUE(snapshot_id, tracker_version, input_sha256)
+);
+CREATE TABLE IF NOT EXISTS strategy_status_event (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy TEXT NOT NULL,
+  version TEXT NOT NULL,
+  status TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  changed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_observation_snapshot_id ON strategy_observation(snapshot_id,id);
+CREATE INDEX IF NOT EXISTS idx_status_strategy_version ON strategy_status_event(strategy,version,id);
 """
 
 _conns = threading.local()
@@ -73,6 +105,149 @@ def close_all():
 
 def _row_to_dict(row):
     return dict(row) if row else None
+
+
+def _canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                      allow_nan=False)
+
+
+def freeze_strategy_signal(db, signal_date, strategy, version, frozen_at, payload):
+    """内容相同幂等；内容变化另存修订，首次快照绝不覆盖。"""
+    body = _canonical(payload)
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    conn = _connect(db)
+    with conn:
+        conn.execute("""INSERT OR IGNORE INTO strategy_signal_snapshot
+            (signal_date, strategy, version, content_sha256, frozen_at, payload)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (signal_date, strategy, version, digest, frozen_at, body))
+        row = conn.execute("""SELECT id FROM strategy_signal_snapshot
+            WHERE signal_date=? AND strategy=? AND version=? AND content_sha256=?""",
+            (signal_date, strategy, version, digest)).fetchone()
+    return {"id": row[0], "sha256": digest}
+
+
+def list_strategy_signals(db, strategy=None, version=None, signal_date=None, limit=500):
+    clauses, args = [], []
+    if strategy:
+        clauses.append("strategy=?")
+        args.append(strategy)
+    if version:
+        clauses.append("version=?")
+        args.append(version)
+    if signal_date:
+        clauses.append("signal_date=?")
+        args.append(signal_date)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    rows = _connect(db).execute("SELECT * FROM strategy_signal_snapshot" + where
+        + " ORDER BY id DESC LIMIT ?", (*args, limit)).fetchall()
+    return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
+
+
+def get_strategy_signal(db, snapshot_id):
+    row = _connect(db).execute("SELECT * FROM strategy_signal_snapshot WHERE id=?",
+                                    (snapshot_id,)).fetchone()
+    return {**dict(row), "payload": json.loads(row["payload"])} if row else None
+
+
+def save_strategy_observation(db, snapshot_id, tracker_version, input_sha256,
+                              observed_at, payload):
+    body = _canonical(payload)
+    conn = _connect(db)
+    with conn:
+        conn.execute("""INSERT OR IGNORE INTO strategy_observation
+            (snapshot_id, tracker_version, input_sha256, observed_at, payload)
+            VALUES (?, ?, ?, ?, ?)""",
+            (snapshot_id, tracker_version, input_sha256, observed_at, body))
+
+
+def list_strategy_observations(db, limit=500):
+    rows = _connect(db).execute("SELECT * FROM strategy_observation ORDER BY id DESC LIMIT ?",
+                                     (limit,)).fetchall()
+    return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
+
+
+def monitor_watermark(db):
+    return {table: dict(_connect(db).execute(f"SELECT COUNT(*) AS count,COALESCE(MAX(id),0) AS last_id FROM {table}").fetchone())
+            for table in ("strategy_signal_snapshot", "strategy_observation", "strategy_status_event")}
+
+
+def monitor_page(db, *, day=None, strategy=None, version=None, before=None, limit=30):
+    clauses, args = [], []
+    for field, value in (("signal_date", day), ("strategy", strategy), ("version", version)):
+        if value:
+            clauses.append("s." + field + "=?")
+            args.append(value)
+    if before:
+        clauses.append("s.id<?")
+        args.append(before)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    rows = _connect(db).execute("SELECT s.* FROM strategy_signal_snapshot s" + where + " ORDER BY s.id DESC LIMIT ?",
+                               (*args, limit + 1)).fetchall()
+    more = len(rows) > limit
+    rows = rows[:limit]
+    snapshots = [{**dict(r), "payload": json.loads(r["payload"])} for r in rows]
+    ids = [r["id"] for r in snapshots]
+    observations = []
+    if ids:
+        marks = ",".join("?" for _ in ids)
+        observations = _connect(db).execute(f"SELECT o.* FROM strategy_observation o WHERE o.snapshot_id IN ({marks}) "
+            "AND o.id=(SELECT MAX(n.id) FROM strategy_observation n WHERE n.snapshot_id=o.snapshot_id) ORDER BY o.id DESC", ids).fetchall()
+    events = _connect(db).execute("SELECT * FROM strategy_status_event ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return {"snapshots": snapshots, "observations": [{**dict(r), "payload": json.loads(r["payload"])} for r in observations],
+            "status_events": [dict(r) for r in events], "next_cursor": rows[-1]["id"] if more else None}
+
+
+def add_strategy_status_event(db, strategy, version, status, reason, changed_at):
+    from core.strategy_lifecycle import ALLOWED_STATES, review_versions
+    if status not in ALLOWED_STATES:
+        raise ValueError("unknown strategy status")
+    if not reason.strip():
+        raise ValueError("status transition requires reason")
+    events = list_strategy_status_events(db)
+    prior = next((row["status"] for row in reversed(events)
+                  if row["strategy"] == strategy and row["version"] == version), "exploratory")
+    transitions = {
+        "exploratory": {"historical_validated", "paused", "retired"},
+        "historical_validated": {"forward_observation", "paused", "retired"},
+        "forward_observation": {"formal", "paused", "retired"},
+        "formal": {"paused", "retired"},
+        "paused": {"exploratory", "historical_validated", "forward_observation", "retired"},
+        "retired": set(),
+    }
+    if status not in transitions[prior]:
+        raise ValueError(f"invalid status transition: {prior} -> {status}")
+    matching = list_strategy_signals(db, strategy=strategy, version=version, limit=1)
+    if not matching:
+        raise ValueError("strategy/version has no frozen signal")
+    if status == "formal":
+        review = review_versions(list_strategy_signals(db, strategy=strategy, version=version,
+                                                      limit=100000),
+                                 list_strategy_observations(db, limit=100000), events)
+        if not review or review[0]["blockers_to_formal"]:
+            raise ValueError("formal status blocked by evidence gates")
+    with _connect(db) as conn:
+        conn.execute("""INSERT INTO strategy_status_event
+            (strategy, version, status, reason, changed_at) VALUES (?, ?, ?, ?, ?)""",
+            (strategy, version, status, reason, changed_at))
+
+
+def list_strategy_status_events(db):
+    return [dict(row) for row in _connect(db).execute(
+        "SELECT * FROM strategy_status_event ORDER BY id")]
+
+
+def get_strategy_statuses(db, version, strategies):
+    """只读取指定版本的最终状态，未出现过的策略处于探索研究。"""
+    keys = tuple(strategies)
+    statuses = {key: "exploratory" for key in keys}
+    for row in _connect(db).execute(
+            "SELECT strategy, status FROM strategy_status_event WHERE version=? ORDER BY id",
+            (version,)):
+        if row["strategy"] in statuses:
+            statuses[row["strategy"]] = row["status"]
+    return statuses
 
 
 def upsert_market_daily(db, date, up_count, down_count, flat_count, limit_up, limit_down,
@@ -150,8 +325,15 @@ def get_sector_change_3d(db, type, code, date):
 def get_consecutive_days(db, type, code, date, top_n=20):
     conn = _connect(db)
     cur = conn.execute(
-        "SELECT rank FROM sector_daily WHERE type=? AND code=? AND date <= ? "
-        "ORDER BY date DESC", (type, code, date))
+        """WITH ranked AS (
+             SELECT date, code,
+                    CASE WHEN COUNT(*) OVER (PARTITION BY date, type) > 1
+                         THEN ROW_NUMBER() OVER (PARTITION BY date, type
+                                                 ORDER BY change_pct DESC, code)
+                         ELSE rank END AS actual_rank
+             FROM sector_daily WHERE type=? AND date<=?)
+           SELECT actual_rank FROM ranked WHERE code=? ORDER BY date DESC""",
+        (type, date, code))
     days = 0
     for (r,) in cur:
         if r is not None and r <= top_n:
@@ -159,6 +341,23 @@ def get_consecutive_days(db, type, code, date, top_n=20):
         else:
             break
     return days
+
+
+def get_sector_observations(db, type, code, limit=60):
+    """仅返回应用实际保存的板块排名/成交快照，不填补缺失交易日。"""
+    conn = _connect(db)
+    rows = conn.execute(
+        """WITH ranked AS (
+             SELECT date, type, code, up_ratio, turnover,
+                    ROW_NUMBER() OVER (PARTITION BY date, type
+                                       ORDER BY change_pct DESC, code) AS actual_rank
+             FROM sector_daily WHERE type=?)
+           SELECT s.date, s.actual_rank AS rank, s.up_ratio, s.turnover,
+                  CASE WHEN m.total_turnover > 0 THEN s.turnover / m.total_turnover END AS amount_share
+           FROM ranked s LEFT JOIN market_daily m ON m.date=s.date
+           WHERE s.code=? ORDER BY s.date DESC LIMIT ?""",
+        (type, code, limit)).fetchall()
+    return [dict(row) for row in reversed(rows)]
 
 
 def upsert_recommend_snapshot(db, signal_date, generated_at, close_date, prev_trading_date, stocks):

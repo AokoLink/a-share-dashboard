@@ -6,6 +6,7 @@
 """
 from core import data_source as ds
 from core import environment as env
+from core import freshness
 from core import recommend
 from web import config
 from web import util
@@ -19,11 +20,12 @@ def register(app):
         except ds.DataSourceError as e:
             return util.err("SOURCE_FAIL", str(e), 500)
         now = util.now()
-        regime = env.load_cached_regime(config.REGIME_CACHE)
+        regime = freshness.mark_regime(env.load_cached_regime(config.REGIME_CACHE), now=now)
         regime_block = None
         if regime:
             regime_block = {"as_of": regime.get("as_of"), "label": regime.get("label"),
-                            "advice": regime.get("advice"), "swing": regime.get("swing")}
+                            "advice": regime.get("advice"), "swing": regime.get("swing"),
+                            "freshness": regime.get("freshness")}
         payload, stale_cands = recommend.collect_low_position(
             spot, ds.get_stock_daily, now, regime_block, resolve_sectors_fn=ds.resolve_code_sectors)
         # 空表不是真实市况:任何时点都必然有股票处于 60 日区间低位。产出为空

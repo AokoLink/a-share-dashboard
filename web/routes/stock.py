@@ -5,6 +5,7 @@ from flask import request
 from core import analysis as an
 from core import data_source as ds
 from core import environment as env
+from core import freshness
 from core import recommend
 from core import store
 from web import config
@@ -56,13 +57,15 @@ def register(app):
             verdict = an.stock_verdict(final)
             tier = recommend.tier_for_verdict(verdict)
         indicators = an.compute_technical_indicators(daily, quote, now)
-        regime = env.load_cached_regime(config.REGIME_CACHE)
+        regime = freshness.mark_regime(env.load_cached_regime(config.REGIME_CACHE), now=now)
         regime_block = None
         if regime:
             swing = regime.get("swing") or {}
-            regime_block = {"label": regime.get("label"),
+            stale_regime = regime.get("freshness", {}).get("status") != "current"
+            label = regime.get("label")
+            regime_block = {"label": ("历史状态:" + label) if stale_regime and label else label,
                             "action": swing.get("action"),
-                            "message": swing.get("message")}
+                            "message": "市场环境数据过期" if stale_regime else swing.get("message")}
         hold = an.build_hold_advice(regime_block, scores["risk"], scores["pos60"])
         kline = [{"date": str(x["date"]), "open": float(x["open"]), "high": float(x["high"]),
                   "low": float(x["low"]), "close": float(x["close"]), "volume": float(x["volume"])}

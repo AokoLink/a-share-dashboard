@@ -1,0 +1,18 @@
+{
+  "initial_cash": 1000000,
+  "mode": "research_proxy",
+  "lot_size": 100,
+  "cash_reserve": 0.1,
+  "strategy_budgets": {
+    "breakout": 0.3,
+    "pullback": 0.3,
+    "rebound": 0.3
+  },
+  "max_stock_weight": 0.1,
+  "max_industry_weight": 0.4,
+  "max_theme_weight": 0.3,
+  "participation": 0.01,
+  "fee": 0.001,
+  "slippage": 0.001,
+  "max_entry_gap": 0.05
+}

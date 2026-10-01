@@ -22,7 +22,7 @@ from core import analysis as an
 from core import backtest as bt
 from core.calibration import N_BINS, Calibrator, _fit_calibrator, _bin_index
 
-MODULE_VERSION = "1.0.0"
+MODULE_VERSION = "1.1.0"
 HORIZONS = (1, 3, 5, 10, 20)
 MAX_H = max(HORIZONS)
 EVAL_DAYS = 1200
@@ -84,7 +84,8 @@ def _forward_universe(universe, pos_of, all_days):
         close = float(d["close"].iloc[bar])
         if chg >= an.limit_threshold(c) or chg <= -7.0:
             continue
-        if float(d["volume"].iloc[bar]) * close < bt.MIN_AMOUNT:
+        amount = float(d["amount"].iloc[bar]) if "amount" in d else float(d["volume"].iloc[bar]) * close
+        if not np.isfinite(amount) or amount < bt.MIN_AMOUNT:
             continue
         out[c] = bar
     return out
@@ -120,12 +121,16 @@ def _iter_forward(universe, pos_of, all_days, days):
                    "risk": risk, "fwd": fwd}
 
 
-def _collect_samples(universe, pos_of, all_days, days):
-    """返回 (samples, bench)。samples[h] = {direction/return/tail 的 (x, label) 列表};bench[h] = oo 列表。"""
+def _collect_samples(universe, pos_of, all_days, days, label_end_before=None):
+    """采样；验证时按各 h 的标签结束日清除跨边界训练样本。"""
     samples = {h: {"direction": [], "return": [], "tail": []} for h in HORIZONS}
     bench = {h: [] for h in HORIZONS}
+    day_index = {day: i for i, day in enumerate(all_days)}
     for rec in _iter_forward(universe, pos_of, all_days, days):
         for h in HORIZONS:
+            # 信号 T 的标签读到 T+1+h；边界当天及以后均属于验证区。
+            if label_end_before is not None and day_index[rec["date"]] + 1 + h >= label_end_before:
+                continue
             oo, tail = rec["fwd"][h]
             if oo is None:
                 continue
@@ -315,7 +320,9 @@ def run_fit(data_dir, sector_map_path):
     n_train = int(TRAIN_FRAC * n)
     train_days = eval_days[:n_train]
     valid_days = eval_days[n_train:]
-    samples, bench = _collect_samples(universe, pos_of, all_days, train_days)
+    first_valid = valid_days[0]
+    samples, bench = _collect_samples(universe, pos_of, all_days, train_days,
+                                      label_end_before=first_valid)
     cals = _fit_all(samples)
     benchmarks = _benchmarks(bench)
     metrics = _evaluate(universe, pos_of, all_days, valid_days, cals)
@@ -324,6 +331,9 @@ def run_fit(data_dir, sector_map_path):
         "benchmarks": benchmarks,
         "metrics": metrics,
         "n_samples": {h: len(samples[h]["direction"]) for h in HORIZONS},
+        "train_label_end_before": str(all_days[first_valid]),
+        "train_signal_end_by_horizon": {
+            h: str(all_days[max(0, first_valid - h - 2)]) for h in HORIZONS},
         "data_range": {"start": str(all_days[0]), "end": str(all_days[-1])},
         "train_window": {"start": str(all_days[train_days[0]]), "end": str(all_days[train_days[-1]])},
         "valid_window": {"start": str(all_days[valid_days[0]]), "end": str(all_days[valid_days[-1]])},
@@ -394,6 +404,8 @@ def build_payload(results, system_version=None, generated_at=None):
         "module_version": MODULE_VERSION,
         "generated_at": generated_at,
         "mode": "fit",
+        "membership_basis": "static_snapshot_no_effective_dates",
+        "universe_basis": "available_pkl_only_delisted_unverified",
         "horizons": list(HORIZONS),
         "cost": COST,
         "tail_threshold": TAIL_THRESHOLD,
@@ -404,6 +416,8 @@ def build_payload(results, system_version=None, generated_at=None):
         "n_eval": results["n_eval"], "step": results["step"],
         "n_train": results["n_train"], "n_valid": results["n_valid"],
         "n_samples": results["n_samples"],
+        "train_label_end_before": results.get("train_label_end_before"),
+        "train_signal_end_by_horizon": results.get("train_signal_end_by_horizon"),
         "benchmarks": benchmarks,
         "calibrators": calibrators,
         "metrics": metrics,
@@ -418,6 +432,7 @@ def build_snapshot(results, system_version=None, generated_at=None):
         "module_version": MODULE_VERSION,
         "generated_at": generated_at,
         "mode": "predict",
+        "membership_basis": "static_snapshot_no_effective_dates",
         "horizons": list(HORIZONS),
         "cost": COST,
         "as_of_date": results["as_of_date"],

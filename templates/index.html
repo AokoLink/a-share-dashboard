@@ -30,7 +30,13 @@
 <main id="layout">
   <section id="left" class="panel">
     <div class="tabs">
-      <button class="tab active" data-type="industry" data-view="sectors">行业板块</button>
+      <button class="tab" data-view="market">市场环境</button>
+      <button class="tab active" data-type="industry" data-view="sectors">板块方向</button>
+      <button class="tab" data-view="strategy-candidates">策略候选</button>
+      <button class="tab" data-view="portfolio">组合风险</button>
+      <button class="tab" data-view="strategy-monitor">验证记录</button>
+    </div>
+    <details class="research-tools"><summary>其他研究工具</summary><div class="tabs">
       <button class="tab" data-view="recommend">推荐</button>
       <button class="tab" data-view="themevol">主题策略</button>
       <button class="tab" data-view="actionable">可介入龙头</button>
@@ -43,7 +49,9 @@
       <div class="sector-tools">
         <input id="sector-search" placeholder="板块搜索,如 半导">
         <button id="btn-sector-search">搜索</button>
+        <button id="btn-sector-rotation">轮动矩阵</button>
       </div>
+      <div id="sector-rotation" class="hidden"></div>
       <table id="sector-table">
         <thead><tr><th>板块</th><th>涨幅%</th><th>情绪</th><th>强度</th><th>风险</th><th>综合</th><th>结论</th></tr></thead>
         <tbody></tbody>
@@ -104,6 +112,34 @@
       </div>
       <div class="muted">持仓诊断给出 1/3/5/10/20 日 P(涨) 与期望收益,并标注是否超过成本;测不到会明说「信号不足,无法判断」。不构成买卖建议。</div>
       <div id="diagnose-results"></div>
+    </div><div class="muted">推荐用于旧综合评分；可介入龙头描述当前板块交易特征；波段管理自选与旧候选。它们均为研究工具，独立策略的前向证据在“验证记录”查看。</div></details>
+    <div id="workflow-market" class="hidden"><h3>市场环境 → 板块方向 → 策略候选 → 组合风险 → 验证记录</h3><div class="muted">先查看上方环境与市场广度，再查看板块扩散和候选理由。研究候选需要数据与执行核查；账户模拟及已验证的使用等级分开呈现。</div></div>
+    <div id="strategy-candidates-panel" class="hidden">
+      <div class="muted">读取后台保存的独立策略研究候选，查看入选、失效、执行时间与已有持仓重复情况。</div>
+      <button id="btn-strategy-freeze">读取候选</button>
+      <div id="strategy-freeze-message" class="muted"></div>
+      <div id="strategy-candidate-evidence"></div>
+    </div>
+    <div id="portfolio-panel" class="hidden">
+      <h3>现金持仓账户</h3>
+      <div class="muted">冻结信号的共享资金模拟；未成交保留现金，退出失败继续持仓。数据未核实的结果仅供研究。</div>
+      <button id="btn-account-refresh">刷新账户账本</button>
+      <div id="account-results"></div>
+      <h3>自选组合风险</h3>
+      <div class="muted">按自选股等权做风险透视；如需实际现金与权重，可调用 /api/portfolio-insights 传入每只股票的账户权重。只描述集中风险，不生成目标仓位。</div>
+      <button id="btn-portfolio-refresh">分析自选组合</button>
+      <label>实际持仓权重（每行：6位代码、百分比；留空使用自选等权）<textarea id="portfolio-weights" rows="3" placeholder="600001 30&#10;600002 50"></textarea></label>
+      <label>实际现金百分比 <input id="portfolio-cash" type="number" min="0" max="100" step="0.01" placeholder="20"></label>
+      <div id="portfolio-results"></div>
+    </div>
+    <div id="strategy-monitor-panel" class="hidden">
+      <div class="muted">收盘后运行每日任务，采集、冻结并更新观察进度。此页显示已保存的候选、数据覆盖和运行结果。</div>
+      <button id="btn-strategy-monitor-refresh">刷新验证记录</button>
+      <button id="btn-monitor-more" class="hidden">更早的冻结记录</button>
+      <div id="pipeline-health"></div>
+      <div id="daily-run-status"></div>
+      <div id="strategy-progress-results"></div>
+      <div id="strategy-monitor-results"></div>
     </div>
     <div id="tradesim-panel" class="hidden">
       <div id="tradesim-meta" class="muted"></div>
@@ -123,6 +159,8 @@
       <div id="detail-title" class="muted">点击左侧板块行,或输入股票代码查看个股</div>
       <div id="chart-sector" class="chart hidden"></div>
       <div id="sector-scores" class="score-cards hidden"></div>
+      <div id="sector-insights" class="hidden"></div>
+      <div id="chart-sector-relative" class="chart hidden"></div>
       <div id="sector-leaders" class="hidden"></div>
       <div id="chart-stock" class="chart hidden"></div>
       <div id="chart-intraday" class="chart hidden"></div>

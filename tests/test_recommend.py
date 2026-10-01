@@ -177,6 +177,21 @@ def test_build_recommend_stale_aggregation(monkeypatch):
     assert stale is True                        # 任一候选股 stale → 整包 stale
 
 
+def test_build_recommend_new_stock_source_stale(monkeypatch):
+    mock_sector(monkeypatch)
+    excluded = ds.SourceSet()
+    excluded.stale = True
+    monkeypatch.setattr(ds, "get_new_stocks", lambda: excluded)
+    monkeypatch.setattr(ds, "resolve_sector_constituents",
+                        lambda name: {"ok": True, "codes": ["600050"],
+                                      "match_type": "manual", "source_name": "电子信息"})
+    monkeypatch.setattr(ds, "get_stock_daily", lambda c: (make_consolidated(), False))
+    _, stale = recommend.build_recommend(
+        make_summary(), make_spot(), ":db:", "industry",
+        datetime.datetime(2026, 8, 11, 15, 0), top_sectors=1, per_sector=5)
+    assert stale is True
+
+
 def test_build_recommend_mapping_failure_skipped_with_score(monkeypatch):
     mock_sector(monkeypatch)
     monkeypatch.setattr(ds, "get_new_stocks", lambda: set())

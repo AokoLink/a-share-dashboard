@@ -26,49 +26,50 @@ def test_simulate_trade_hold_to_end():
     d = _df([100, 101, 103, 102], [100, 101, 103, 102],
             [100, 105, 104, 103], [100, 99, 98, 97])
     t = sim.simulate_trade(d, 0, 3, None, None)
-    assert t["entry"] == pytest.approx(100.0)
+    assert t["entry"] == pytest.approx(101.0)
     assert t["exit"] == pytest.approx(102.0)
     assert t["exit_reason"] == "hold"
-    assert t["holding_days_actual"] == 3
-    assert t["ret_gross"] == pytest.approx(0.02)
-    assert t["max_fav"] == pytest.approx(105.0 / 100.0 - 1.0)
-    assert t["max_adv"] == pytest.approx(97.0 / 100.0 - 1.0)
+    assert t["holding_days_actual"] == 2
+    assert t["ret_gross"] == pytest.approx(102.0 / 101.0 - 1.0)
+    assert t["max_fav"] == pytest.approx(105.0 / 101.0 - 1.0)
+    assert t["max_adv"] == pytest.approx(97.0 / 101.0 - 1.0)
 
 
 def test_simulate_trade_stop_hit_intraday():
     d = _df([100, 98, 99, 100], [100, 99, 99, 100],
-            [100, 99, 99, 100], [100, 96, 98, 99])
+            [100, 99, 99, 100], [100, 96, 94, 99])
     t = sim.simulate_trade(d, 0, 3, -0.03, None)
-    assert t["exit"] == pytest.approx(97.0)
+    assert t["entry"] == pytest.approx(99.0)
+    assert t["exit"] == pytest.approx(99.0 * 0.97)
     assert t["exit_reason"] == "stop"
     assert t["holding_days_actual"] == 1
-    assert t["ret_gross"] == pytest.approx(97.0 / 100.0 - 1.0)
+    assert t["ret_gross"] == pytest.approx(-0.03)
 
 
 def test_simulate_trade_target_hit_intraday():
     d = _df([100, 102, 104, 101], [100, 101, 103, 101],
-            [100, 105, 105, 101], [100, 100, 102, 100])
+            [100, 105, 106, 101], [100, 100, 102, 100])
     t = sim.simulate_trade(d, 0, 3, None, 0.04)
-    assert t["exit"] == pytest.approx(104.0)
+    assert t["exit"] == pytest.approx(101.0 * 1.04)
     assert t["exit_reason"] == "target"
     assert t["holding_days_actual"] == 1
     assert t["ret_gross"] == pytest.approx(0.04)
 
 
 def test_simulate_trade_gap_open_through_stop():
-    d = _df([100, 95, 96, 97], [100, 94, 96, 97],
-            [100, 96, 97, 97], [100, 94, 95, 96])
+    d = _df([100, 95, 88, 97], [100, 94, 88, 97],
+            [100, 96, 90, 97], [100, 92, 87, 96])
     t = sim.simulate_trade(d, 0, 3, -0.05, None)
-    assert t["exit"] == pytest.approx(94.0)  # open 跳空成交,非 95
+    assert t["exit"] == pytest.approx(88.0)
     assert t["exit_reason"] == "stop"
     assert t["holding_days_actual"] == 1
-    assert t["ret_gross"] == pytest.approx(94.0 / 100.0 - 1.0)
+    assert t["ret_gross"] == pytest.approx(88.0 / 94.0 - 1.0)
 
 
 def test_simulate_trade_same_day_stop_before_target():
     # 同日内 low<=stop 且 high>=target 双触,保守取 stop 先
     d = _df([100, 99, 100, 100], [100, 100, 100, 100],
-            [100, 105, 100, 100], [100, 96, 100, 100])
+            [100, 105, 105, 100], [100, 96, 96, 100])
     t = sim.simulate_trade(d, 0, 3, -0.03, 0.04)
     assert t["exit"] == pytest.approx(97.0)
     assert t["exit_reason"] == "stop"
@@ -85,13 +86,13 @@ def test_simulate_trade_truncated_at_tail():
     d = _df([100, 101, 102, 103, 104], [100, 101, 102, 103, 104],
             [100, 101, 102, 103, 104], [100, 100, 101, 102, 103])
     t = sim.simulate_trade(d, 2, 3, None, None)
-    assert t["holding_days_actual"] == 2  # 尾部只剩 2 根
+    assert t["holding_days_actual"] == 1  # T+1 买入，T+2 收盘退出
     assert t["exit"] == pytest.approx(104.0)
-    assert t["ret_gross"] == pytest.approx(104.0 / 102.0 - 1.0)
+    assert t["ret_gross"] == pytest.approx(104.0 / 103.0 - 1.0)
 
 
 def test_simulate_trade_nonpositive_entry_none():
-    d = _df([-5, 101, 102], [100, 101, 102], [100, 101, 102], [99, 100, 101])
+    d = _df([100, -5, 102], [100, -5, 102], [100, 101, 102], [99, 100, 101])
     assert sim.simulate_trade(d, 0, 3, None, None) is None
 
 

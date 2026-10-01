@@ -80,23 +80,45 @@ def load_market_mdd(days):
     return mdd
 
 
-def load_series(code, col, days):
+def load_series(code, col, days, forward_fill=True):
     p = os.path.join(DATA_DIR, code + ".pkl")
     if not os.path.exists(p):
         return pd.Series(np.nan, index=days)
     d = pd.read_pickle(p)[["date", col]].copy()
     d["date"] = pd.to_datetime(d["date"])
     d = d.sort_values("date").drop_duplicates("date").set_index("date")
-    return d[col].reindex(days).ffill()
+    series = d[col].reindex(days)
+    return series.ffill() if forward_fill else series
 
 
 def build_theme_series(days):
+    """用于动量的等初始资金主题指数；不同股价不影响初始权重。"""
     idx = pd.DatetimeIndex(days)
-    close = {n: pd.concat({c: load_series(c, "close", idx) for c in cs}, axis=1)
-                .mean(axis=1, skipna=True) for n, cs in THEMES.items()}
-    open_ = {n: pd.concat({c: load_series(c, "open", idx) for c in cs}, axis=1)
-                .mean(axis=1, skipna=True) for n, cs in THEMES.items()}
+    close, open_ = {}, {}
+    for name, codes in THEMES.items():
+        c = pd.concat({code: load_series(code, "close", idx) for code in codes}, axis=1)
+        o = pd.concat({code: load_series(code, "open", idx) for code in codes}, axis=1)
+        # 只在所有成员都有合法价格后建指数；避免缺失成员令权重意外变化。
+        valid = (c.gt(0) & o.gt(0)).all(axis=1)
+        if not valid.any():
+            close[name] = pd.Series(np.nan, index=idx)
+            open_[name] = pd.Series(np.nan, index=idx)
+            continue
+        first = valid[valid].index[0]
+        close[name] = c.div(c.loc[first]).mean(axis=1).where(valid)
+        open_[name] = o.div(o.loc[first]).mean(axis=1).where(valid)
     return close, open_
+
+
+def build_theme_baskets(days):
+    """逐股价格面板，供股数与现金账本核算；不替缺失开盘价虚构成交。"""
+    idx = pd.DatetimeIndex(days)
+    return {
+        field: {name: pd.concat({code: load_series(code, field, idx, forward_fill=False)
+                                  for code in codes}, axis=1)
+                for name, codes in THEMES.items()}
+        for field in ("open", "close")
+    }
 
 
 def theme_navs(close):
@@ -105,8 +127,9 @@ def theme_navs(close):
 
 def month_end_flags(days):
     flags = set()
-    for i in range(len(days)):
-        if i == len(days) - 1 or days[i].month != days[i + 1].month:
+    # 数据末日不等于已确认的月末；只有观察到下月交易日才可确认。
+    for i in range(len(days) - 1):
+        if days[i].month != days[i + 1].month:
             flags.add(i)
     return flags
 
@@ -131,6 +154,14 @@ def run_strategy(close, open_, navs, days, labels, topn=1, regime_mode="exit",
     pos = None
 
     for i in range(start_idx, end_idx):
+        # 先记 i 日开盘时的旧仓权益，再处理收盘后生成、i+1 开盘执行的指令。
+        # 此后任何 i+1 行情变化都不能反写 i 日净值。
+        if pos is not None:
+            cur = port_val(open_, pos["themes"], i)
+            e = pos["entry_equity"] * (cur / pos["entry_open"]) if cur == cur else equity
+        else:
+            e = equity
+        daily_equity.append(float(e))
         exited_today = False
         # ---- 1. 出场检查(close of i 决策, open of i+1 执行) ----
         if pos is not None:
@@ -192,21 +223,13 @@ def run_strategy(close, open_, navs, days, labels, topn=1, regime_mode="exit",
                 "top3_mom": ranking[:3],
                 "past_ret": {k: round(float(past[k]), 4) for k in ranking[:3]},
             })
-        # ---- 3. 记当日权益(mark-to-market) ----
-        if pos is not None:
-            cur = port_val(open_, pos["themes"], i)
-            e = pos["entry_equity"] * (cur / pos["entry_open"]) if cur == cur else equity
-        else:
-            e = equity
-        daily_equity.append(float(e))
-
     if pos is not None:
         xopen = port_val(open_, pos["themes"], end_idx)
         equity = pos["entry_equity"] * (xopen / pos["entry_open"]) * (1 - COST_SIDE)
         trades.append({"themes": pos["themes"], "entry": str(days[pos["entry_idx"]].date()),
                        "exit": str(days[end_idx].date()), "reason": "end",
                        "ret": round(float((xopen / pos["entry_open"]) * (1 - COST_SIDE) - 1), 4)})
-        daily_equity[-1] = float(equity)
+    daily_equity.append(float(equity))
 
     eq = np.array(daily_equity)
     run_peak = np.maximum.accumulate(eq)

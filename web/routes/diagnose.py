@@ -9,6 +9,7 @@ from flask import request
 from core import backtest as bt
 from core import data_source as ds
 from core import forward as fw
+from core import freshness
 from web import config
 from web import util
 
@@ -34,6 +35,12 @@ def register(app):
                             "持仓诊断校准器未生成:请先运行 `python -m core.forward` "
                             f"生成 {config.FORWARD_CALIB} ({e})", 503)
 
+        data_state = freshness.assess(meta.get("data_range", {}).get("end"))
+        model_state = freshness.assess(meta.get("generated_at"), max_sessions=21)
+        model_version_ok = meta.get("module_version") == fw.MODULE_VERSION
+        current = (data_state["status"] == "current" and model_state["status"] == "current"
+                   and model_version_ok)
+
         results = []
         errors = []
         for c6 in parsed:
@@ -56,10 +63,19 @@ def register(app):
             except Exception:
                 name = None
             dg["name"] = name
+            if not current:
+                dg["historical_confidence"] = dg.get("confidence")
+                dg["confidence"] = "历史校准(不可作当前判断)"
+                dg["best_horizon"] = None
             results.append(dg)
 
         return util.ok({
             "as_of": meta.get("data_range", {}).get("end"),
+            "status": "current" if current else "historical",
+            "data_freshness": data_state,
+            "model_freshness": model_state,
+            "model_version_ok": model_version_ok,
+            "model_train_end": meta.get("train_window", {}).get("end"),
             "horizons": meta.get("horizons", list(fw.HORIZONS)),
             "cost": meta.get("cost", fw.COST),
             "min_signal_band": meta.get("min_signal_band", fw.MIN_SIGNAL_BAND),

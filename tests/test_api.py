@@ -66,15 +66,18 @@ def client_factory(monkeypatch, db_path=None):
     monkeypatch.setattr(ds, "validate_sector_map",
                         lambda: {"ok": True, "total": 0, "valid": 0, "stale": [], "renamed": []})
     app = app_mod.create_app(db_path=db_path)
+    app.config["DAILY_PIPELINE_ROOT"] = os.path.join(os.path.dirname(db_path), "daily_pipeline")
     monkeypatch.setattr(ds, "get_market_spot", lambda: (make_spot(), False))
     monkeypatch.setattr(ds, "get_index_realtime", lambda: (
         [{"code": "sh000001", "name": "上证指数", "price": 3456.78, "change_pct": 0.45}], False))
     monkeypatch.setattr(ds, "get_sector_summary", lambda t: (make_summary(), False))
     monkeypatch.setattr(ds, "get_sector_index_history", lambda c, t: (make_daily(), False))
+    monkeypatch.setattr(ds, "get_market_index_history", lambda: (make_daily(), False))
     monkeypatch.setattr(ds, "get_stock_daily", lambda c: (make_daily(), False))
     monkeypatch.setattr(ds, "get_stock_minute", lambda c: (make_minute(), False))
     monkeypatch.setattr(ds, "get_stock_quote", lambda c: (make_quote(), False))
     monkeypatch.setattr(ds, "get_new_stocks", lambda: set())
+    monkeypatch.setattr(ds, "get_new_stocks_with_status", lambda: (set(), False))
     monkeypatch.setattr(ds, "resolve_sector_constituents",
                         lambda name: {"ok": True, "codes": ["600519", "600000"],
                                       "match_type": "manual", "source_name": "电子信息"})
@@ -209,12 +212,9 @@ def test_sector_detail(client):
     assert d["index_history"][0]["date"].startswith("2026-")
     assert d["scores"]["composite"] is None or 0 <= d["scores"]["composite"] <= 100
     assert "overheated" in d and d["overheated"] is False         # Task 13:徽章字段可到达
-    assert d["leaders_status"] == "ok"
-    # fixture resolve → 600519/600000,均在 spot;600519 金额最大(9.2e8)→ 龙头池首位
-    assert d["leaders"][0]["code"] == "600519"
-    assert d["leaders"][0]["tag"] == "龙头+强势"
-    assert "price" in d["leaders"][0] and "change_pct" in d["leaders"][0]
-    assert d["leaders_source"] == "电子信息"
+    assert d["leaders_status"] == "unknown"
+    assert d["leaders"] == []  # 没有后台证据时，不临时构造当前归属
+    assert d["insights"]["status"] == "not_run"
 
 
 def test_api_sector_leaders_no_mapping(client, monkeypatch):
@@ -223,7 +223,7 @@ def test_api_sector_leaders_no_mapping(client, monkeypatch):
     r = client.get("/api/sector?code=industry:885887")
     d = r.get_json()["data"]
     assert d["leaders"] == []
-    assert d["leaders_status"] == "no_mapping"
+    assert d["leaders_status"] == "unknown"
     assert d["leaders_source"] is None
     assert d["index_history"]                     # 板块图表不阻塞
 
@@ -236,7 +236,7 @@ def test_api_sector_leaders_source_fail(client, monkeypatch):
     d = r.get_json()["data"]
     assert r.status_code == 200
     assert d["leaders"] == []
-    assert d["leaders_status"] == "source_fail"
+    assert d["leaders_status"] == "unknown"  # 页面不访问成分来源
     assert d["index_history"]                     # 核心视图仍正常
 
 
@@ -351,7 +351,8 @@ def test_regime_endpoint(client, monkeypatch):
     body = r.get_json()
     assert body["ok"] is True
     assert body["data"]["label"] == "恐慌"
-    assert body["data"]["advice"]["action"] == "buy_dip"
+    assert body["data"]["freshness"]["status"] == "historical"
+    assert body["data"]["advice"] is None
 
 
 def test_regime_endpoint_no_data(client, monkeypatch):
@@ -373,7 +374,8 @@ def test_recommend_includes_regime(client, monkeypatch):
     r = client.get("/api/recommend")
     d = r.get_json()["data"]
     assert d["regime"]["label"] == "高潮"
-    assert d["regime"]["advice"]["action"] == "avoid"
+    assert d["regime"]["freshness"]["status"] == "historical"
+    assert d["regime"]["advice"] is None
 
 
 def test_recommend_regime_none_when_no_cache(client, monkeypatch):
@@ -646,6 +648,7 @@ def test_report_trade_sim_serves_fixture(tmp_path, monkeypatch):
     assert body["ok"] is True
     assert body["data"]["baskets"]["A"]["n_trades"] == 5658
     assert body["data"]["baskets"]["A"]["win_rate"] == pytest.approx(0.402)
+    assert body["data"]["evidence_status"] == "invalid_legacy"
 
 
 def test_report_trade_sim_missing(tmp_path, monkeypatch):
@@ -705,16 +708,25 @@ def test_theme_vol_endpoint_serves_fixture(tmp_path, monkeypatch):
     assert body["ok"] is True
     d = body["data"]
     assert d["signal_date"] == "2026-07-31"
-    assert d["total_pos"] == pytest.approx(0.5727)
-    assert d["cash"] == pytest.approx(0.4273, abs=1e-4)
-    assert len(d["positions"]) == 2
+    assert d["status"] == "historical"
+    assert d["total_pos"] is None and d["cash"] is None
+    assert d["positions"] == []
+    assert len(d["historical_positions"]) == 2
     # 按权重降序:封测 0.2988 > MLCC 0.2739
-    assert d["positions"][0]["theme"] == "封测"
-    assert d["positions"][0]["weight"] == pytest.approx(0.2988)
-    assert d["positions"][0]["stocks"][0]["name"] == "长电科技"
-    assert d["positions"][1]["theme"] == "MLCC"
+    assert d["historical_positions"][0]["theme"] == "封测"
+    assert d["historical_positions"][0]["weight"] == pytest.approx(0.2988)
+    assert d["historical_positions"][0]["stocks"][0]["name"] == "长电科技"
+    assert d["historical_positions"][1]["theme"] == "MLCC"
     assert d["vol_target"]["mdd"] == pytest.approx(-0.3665)
     assert d["params"]["topn"] == 2
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    payload.update({"data_as_of": datetime.date.today().isoformat(),
+                    "accounting_version": "shares-cash-v1", "price_basis": "raw_verified",
+                    "baseline_status": "exploratory"})
+    report.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    unverified = c.get("/api/theme-vol").get_json()["data"]
+    assert unverified["freshness"]["status"] == "current"
+    assert unverified["status"] == "historical" and unverified["positions"] == []
 
 
 def test_theme_vol_missing(tmp_path, monkeypatch):
@@ -723,6 +735,79 @@ def test_theme_vol_missing(tmp_path, monkeypatch):
     r = c.get("/api/theme-vol")
     assert r.status_code == 404
     assert r.get_json()["error"]["code"] == "NO_REPORT"
+
+
+def test_stage2_strategy_endpoint_reads_saved_candidates_without_fetch(tmp_path, monkeypatch):
+    from core.stage1_data import _write_json
+    from core.strategy_service import generate
+    c = client_factory(monkeypatch, db_path=str(tmp_path / "api.db"))
+    _freeze_now_weekday(monkeypatch)
+    root = tmp_path / "daily"
+    c.application.config["DAILY_PIPELINE_ROOT"] = str(root)
+    now = app_mod.datetime.now()
+    closes = [10.] * 65 + [10.8]
+    bars = pd.DataFrame({"date": pd.date_range(end=now.date(), periods=66, freq="B").strftime("%Y-%m-%d"),
+        "open": closes, "high": [10.1] * 65 + [10.9], "low": [9.9] * 65 + [10.7],
+        "close": closes, "volume": [100000] * 61 + [200000] * 5, "amount": [2e8] * 66})
+    result = generate(c.application.config["DB"], [{"code": "600001", "name": "测试股", "amount": 2e8}],
+                      {"600001": bars}, {"600001": bars}, {}, None, now)
+    _write_json(root / "candidates" / f"{now.date()}.json", result)
+    monkeypatch.setattr(ds, "get_market_spot", lambda: (_ for _ in ()).throw(AssertionError("must not fetch")))
+    monkeypatch.setattr(ds, "get_stock_daily", lambda code: (_ for _ in ()).throw(AssertionError("must not fetch")))
+    data = c.get("/api/strategy-candidates").get_json()["data"]
+    assert data["status"] == "exploratory" and data["read_only"] is True
+    assert data["groups"]["breakout"][0]["code"] == "sh600001"
+    assert len(store.list_strategy_signals(c.application.config["DB"])) == 3
+    assert c.get("/api/daily-runs").get_json()["data"]["status"] == "not_run"
+    assert c.get("/api/daily-runs?run_id=../../secret").status_code == 400
+
+
+def test_stage2_strategy_endpoint_waits_for_confirmed_close(tmp_path, monkeypatch):
+    c = client_factory(monkeypatch, db_path=str(tmp_path / "api.db"))
+    class BeforeClose(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 9, 30, 14, 30)
+    monkeypatch.setattr(app_mod, "datetime", BeforeClose)
+    monkeypatch.setattr(ds, "get_market_spot", lambda: (_ for _ in ()).throw(AssertionError("must not fetch")))
+    data = c.get("/api/strategy-candidates").get_json()["data"]
+    assert data["status"] == "waiting_for_close"
+    assert all(not items for items in data["groups"].values())
+
+
+def test_phase3_sector_evidence_and_portfolio_api(client):
+    rotation = client.get("/api/sector-rotation?top=2")
+    assert rotation.status_code == 200
+    matrix = rotation.get_json()["data"]
+    assert matrix["benchmark"] == "sh000001" and matrix["rows"] == []
+    assert matrix["status"] == "not_run" and matrix["read_only"]
+    assert matrix["version"] == "dated-sector-features-v2"
+    assert all("relative20_pct" in row and "up_ratio" in row for row in matrix["rows"])
+    sector = client.get("/api/sector?code=industry:885887")
+    assert sector.status_code == 200
+    insight = sector.get_json()["data"]["insights"]
+    assert insight["relative_strength"]["benchmark"] == "sh000001"
+    assert insight["version"] == "dated-sector-features-v2"
+    assert insight["state_basis"] == "descriptive_not_predictive"
+    assert insight["roles"]["industrial_core_status"] == "fundamentals_unavailable"
+    portfolio = client.post("/api/portfolio-insights", json={"holdings": [
+        {"code": "600519"}, {"code": "000001"}]})
+    assert portfolio.status_code == 200
+    data = portfolio.get_json()["data"]
+    assert data["weight_assumption"] == "equal_weight_watchlist"
+    assert data["version"] == "stage3-portfolio-v1"
+    assert data["cash_weight"] == 0.0 and data["status"] == "exploratory"
+    invalid = client.post("/api/portfolio-insights", json={"holdings": [
+        {"code": "600519", "weight": 0.8}, {"code": "000001", "weight": 0.4}]})
+    assert invalid.status_code == 400
+    repeated = client.post("/api/portfolio-insights", json={"holdings": [
+        {"code": "600519", "weight": 0.2, "strategy": "breakout"},
+        {"code": "600519", "weight": 0.3, "strategy": "pullback"},
+        {"code": "000001", "weight": 0.2, "strategy": "rebound"}]})
+    merged = repeated.get_json()["data"]
+    assert merged["deduplicated_entries"] == 1
+    assert merged["cross_strategy_codes"] == ["600519"]
+    assert merged["cash_weight"] == pytest.approx(0.3)
 
 
 def test_stock_indicators_and_hold(client, monkeypatch):
@@ -741,8 +826,8 @@ def test_stock_indicators_and_hold(client, monkeypatch):
     assert ind["kdj"]["k"] is not None
     assert "rsi" in ind and "bias" in ind and "pos60" in ind and "volume_price" in ind
     hold = d["hold"]
-    assert hold["regime"]["label"] == "震荡"
-    assert hold["regime"]["action"] == "hold"
+    assert hold["regime"]["label"] == "历史状态:震荡"
+    assert hold["regime"]["action"] is None
     assert set(hold["stock"]) == {"risk", "risk_note", "pos60", "pos_note"}
     # 方向中性:hold 块(及其 stock 子块)不含 verdict/tier/composite
     for key in ("verdict", "tier", "composite"):
@@ -865,8 +950,10 @@ def test_diagnose_endpoint(client, monkeypatch):
     res = d["results"][0]
     assert res["code"] == "600519"
     assert res["name"] == "贵州茅台"            # ds.get_stock_quote mocked in client_factory
-    assert res["confidence"] == "有正向期望(超过成本)"
-    assert res["best_horizon"] == 3
+    assert d["status"] == "historical"
+    assert res["confidence"] == "历史校准(不可作当前判断)"
+    assert res["historical_confidence"] == "有正向期望(超过成本)"
+    assert res["best_horizon"] is None
     assert res["horizons"]["1"]["exceeds_cost"] is True
     assert d["errors"] == []
 

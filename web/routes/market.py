@@ -33,4 +33,5 @@ def register(app):
                 breadth["limit_up"], breadth["limit_down"], breadth["total_turnover"],
                 index_close, now.strftime("%Y-%m-%d %H:%M:%S"))
         return util.ok({"indices": indices, "breadth": breadth,
-                        "volume_vs_yesterday": {"pct": volume_pct}}, stale=spot_stale or idx_stale)
+                        "volume_vs_yesterday": {"pct": volume_pct}},
+                       stale=spot_stale or idx_stale or bool(getattr(exclude, "stale", False)))

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """市场情绪择时路由 /api/regime(regime gate)。"""
 from core import environment as env
+from core import freshness
 from web import config
 from web import util
 
@@ -15,4 +16,4 @@ def register(app):
             return util.err("NO_DATA", f"regime 计算失败(缺 daily pkl 或 sector map): {e}", 500)
         except Exception as e:                      # 其它异常不拖垮服务,按错误码上报
             return util.err("REGIME_FAIL", str(e), 500)
-        return util.ok(regime)
+        return util.ok(freshness.mark_regime(regime))

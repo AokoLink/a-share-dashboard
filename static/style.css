@@ -14,7 +14,10 @@ body { font: 14px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif; background: var
 #indices, #breadth { display: flex; gap: 20px; flex-wrap: wrap; }
 #layout { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media (max-width: 900px) { #layout { grid-template-columns: 1fr; } }
-.tabs { display: flex; gap: 8px; margin-bottom: 8px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+#sector-rotation, #portfolio-results { margin-top: 10px; overflow-x: auto; }
+#sector-insights .panel > div { margin-top: 6px; }
+#sector-leaders > div { width: 100%; }
 .tab { padding: 6px 12px; border: 1px solid var(--line); background: var(--panel); border-radius: 6px; cursor: pointer; }
 .tab.active { background: var(--text); color: var(--bg); }
 .sector-tools, .stock-tools { display: flex; gap: 8px; margin-bottom: 8px; }

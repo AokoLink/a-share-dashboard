@@ -311,7 +311,7 @@ def build_recommend(summary_df, spot_df, db, type_key, now, top_sectors=3, per_s
     new_codes = ds.get_new_stocks()
     sectors, skipped = [], []
     all_dates, close_dates = set(), []
-    stale_any = False
+    stale_any = bool(getattr(new_codes, "stale", False))
     diagnostics = {"stocks_not_in_spot": 0, "stocks_daily_failed": 0}
     for s in strong:
         if len(sectors) >= top_sectors:
@@ -326,6 +326,7 @@ def build_recommend(summary_df, spot_df, db, type_key, now, top_sectors=3, per_s
             skipped.append({"name": s["name"], "verdict": s["verdict"],
                             "composite_score": s["composite"], "reason": res["reason"]})
             continue
+        stale_any = stale_any or bool(res.get("stale"))
         kept, not_in_spot = filter_candidates(res["codes"], spot_df, new_codes)
         diagnostics["stocks_not_in_spot"] += not_in_spot
         ranked, daily_failed, any_stale, s_dates = _score_sector_stocks(
@@ -374,7 +375,7 @@ def collect_actionable_leaders(summary_df, spot_df, db, type_key, now, resolve_f
     sectors = score_all_sectors(summary_df, db, type_key, store, _market_turnover(spot_df), now)
     new_codes = ds.get_new_stocks()
     spot_index = {str(r["code"]): r for r in spot_df.to_dict("records")}
-    tasks, skipped = [], []
+    tasks, skipped, mapping_stale = [], [], bool(getattr(new_codes, "stale", False))
     for i, s in enumerate(sectors):
         try:
             res = resolve_fn(s["name"])
@@ -384,6 +385,7 @@ def collect_actionable_leaders(summary_df, spot_df, db, type_key, now, resolve_f
         if not res["ok"]:
             skipped.append({"name": s["name"], "reason": res.get("reason", "source_fail")})
             continue
+        mapping_stale = mapping_stale or bool(res.get("stale"))
         leaders = pick_leaders([spot_index[c] for c in res.get("codes", []) if c in spot_index],
                                total=5, exclude_codes=new_codes)
         for L in leaders:
@@ -414,7 +416,7 @@ def collect_actionable_leaders(summary_df, spot_df, db, type_key, now, resolve_f
             "close_date": scored["close_date"],   # 停牌股末根日期可能落后,故出参需取众数
         }, stale
 
-    items, daily_failed, stale_any = [], 0, False
+    items, daily_failed, stale_any = [], 0, mapping_stale
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = {ex.submit(work, i, s, L, row): 1 for i, s, L, row in tasks}
         for fut in as_completed(futures):
@@ -507,7 +509,7 @@ def collect_swing_candidates(spot_df, get_daily_fn, now, regime,
     if resolve_sectors_fn is None:
         resolve_sectors_fn = ds.resolve_code_sectors
     pool = swing_pool(spot_df, exclude_codes, MIN_AMOUNT, pool_n)
-    items, daily_failed, stale_any = [], 0, False
+    items, daily_failed, stale_any = [], 0, bool(getattr(exclude_codes, "stale", False))
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = {ex.submit(get_daily_fn, str(r["code"])): r for r in pool}
         for fut in as_completed(futures):
@@ -597,7 +599,7 @@ def collect_low_position(spot_df, get_daily_fn, now, regime=None, exclude_codes=
     if resolve_sectors_fn is None:
         resolve_sectors_fn = ds.resolve_code_sectors
     pool = swing_pool(spot_df, exclude_codes, MIN_AMOUNT, pool_n)
-    items, daily_failed, stale_any = [], 0, False
+    items, daily_failed, stale_any = [], 0, bool(getattr(exclude_codes, "stale", False))
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = {ex.submit(get_daily_fn, str(r["code"])): r for r in pool}
         for fut in as_completed(futures):

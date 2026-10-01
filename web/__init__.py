@@ -17,6 +17,7 @@ from web.routes import register_routes
 def create_app(db_path=None):
     app = Flask(__name__, template_folder=config.TEMPLATE_DIR, static_folder=config.STATIC_DIR)
     app.config["DB"] = db_path or config.DEFAULT_DB
+    app.config["DAILY_PIPELINE_ROOT"] = config.DAILY_PIPELINE_ROOT
     os.makedirs(os.path.dirname(os.path.abspath(app.config["DB"])), exist_ok=True)
     store.init_db(app.config["DB"])
     register_routes(app)

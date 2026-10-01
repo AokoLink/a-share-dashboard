@@ -11,6 +11,7 @@
 import json
 import os
 
+from core import freshness
 from web import config
 from web import util
 
@@ -45,13 +46,26 @@ def register(app):
 
         total_pos = latest.get("total_pos")
         cash = None if total_pos is None else round(1.0 - float(total_pos), 4)
+        state = freshness.assess(data.get("data_as_of") or latest.get("date"))
+        current = (state["status"] == "current"
+                   and data.get("accounting_version") == "shares-cash-v1"
+                   and data.get("price_basis") == "raw_verified"
+                   and data.get("baseline_status") == "formal")
 
         return util.ok({
             "generated_at": data.get("generated_at"),
             "signal_date": latest.get("date"),
-            "total_pos": total_pos,
-            "cash": cash,
-            "positions": positions,
+            "freshness": state,
+            "status": "current" if current else "historical",
+            "data_as_of": data.get("data_as_of"),
+            "accounting_version": data.get("accounting_version", "legacy_unverified"),
+            "price_basis": data.get("price_basis", "unknown"),
+            "baseline_status": data.get("baseline_status", "exploratory"),
+            "input_readiness": data.get("input_readiness"),
+            "total_pos": total_pos if current else None,
+            "cash": cash if current else None,
+            "positions": positions if current else [],
+            "historical_positions": positions if not current else [],
             "vol_target": data.get("vol_target"),
             "full_baseline": data.get("full_baseline"),
             "params": {

@@ -70,7 +70,7 @@ def limit_threshold(code: str) -> float:
     c = str(code)
     if c.startswith(("30", "688")):
         return 19.9
-    if c.startswith(("8", "4")):
+    if c.startswith(("8", "4", "920")):
         return 29.9
     return 9.9
 

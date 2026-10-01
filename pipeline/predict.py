@@ -18,7 +18,7 @@ from core import analysis as an
 from core import backtest as bt
 from core.calibration import N_BINS, Calibrator, _fit_calibrator, _bin_index
 
-MODULE_VERSION = "1.1.0"
+MODULE_VERSION = "1.2.0"
 EVAL_DAYS = 1200
 TRAIN_FRAC = 0.8
 DIRECTION_BAND = 0.05
@@ -68,7 +68,8 @@ def forward_universe(universe, pos_of, all_days):
         th = an.limit_threshold(c)
         if chg >= th or chg <= -7.0:
             continue
-        if float(d["volume"].iloc[bar]) * close < bt.MIN_AMOUNT:
+        amount = float(d["amount"].iloc[bar]) if "amount" in d else float(d["volume"].iloc[bar]) * close
+        if not np.isfinite(amount) or amount < bt.MIN_AMOUNT:
             continue
         out[c] = bar
     return out
@@ -167,14 +168,19 @@ def _iter_scored(universe, pos_of, all_days, days):
                    "risk": risk, "close1": nr["close1"], "lbl": lbl}
 
 
-def _collect_samples(universe, pos_of, all_days, days):
+def _collect_samples(universe, pos_of, all_days, days, label_end_before=None):
     samples = {"direction": [], "gap": [], "od": [], "trend3": [], "return": [], "risk": []}
+    day_index = ({day: i for i, day in enumerate(all_days)}
+                 if label_end_before is not None else None)
     for rec in _iter_scored(universe, pos_of, all_days, days):
+        i = day_index[rec["date"]] if day_index is not None else None
+        if i is not None and i + 1 >= label_end_before:
+            continue
         lbl = rec["lbl"]
         samples["direction"].append((rec["composite"], lbl["close1"]))
         samples["gap"].append((rec["composite"], lbl["gap"]))
         samples["od"].append((rec["composite"], lbl["od"]))
-        if lbl["trend3"] is not None:
+        if lbl["trend3"] is not None and (label_end_before is None or i + 3 < label_end_before):
             samples["trend3"].append((rec["composite"], lbl["trend3"]))
         samples["return"].append((rec["composite"], rec["close1"]))
         if rec["risk"] is not None:
@@ -380,12 +386,15 @@ def run_backtest(data_dir, sector_map_path):
     n_train = int(TRAIN_FRAC * n)
     train_days = eval_days[:n_train]
     valid_days = eval_days[n_train:]
-    samples = _collect_samples(universe, pos_of, all_days, train_days)
+    first_valid = valid_days[0]
+    samples = _collect_samples(universe, pos_of, all_days, train_days,
+                               label_end_before=first_valid)
     cals = _fit_all(samples)
     metrics, valid_records = _evaluate(universe, pos_of, all_days, valid_days, cals)
     return {
         "calibrators": cals,
         "n_samples": {name: len(samples[name]) for name in samples},
+        "train_label_end_before": str(all_days[first_valid]),
         "metrics": metrics,
         "valid_records": valid_records,
         "data_range": {"start": str(all_days[0]), "end": str(all_days[-1])},
@@ -470,8 +479,11 @@ def build_report(results, system_version=None, generated_at=None):
         "module_version": MODULE_VERSION,
         "generated_at": generated_at,
         "mode": "backtest",
+        "membership_basis": "static_snapshot_no_effective_dates",
+        "universe_basis": "available_pkl_only_delisted_unverified",
         "data_range": results["data_range"],
         "train_window": results["train_window"],
+        "train_label_end_before": results.get("train_label_end_before"),
         "valid_window": results["valid_window"],
         "n_eval": results["n_eval"], "step": results["step"],
         "n_train": results["n_train"], "n_valid": results["n_valid"],

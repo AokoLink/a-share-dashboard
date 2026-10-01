@@ -114,6 +114,11 @@ def build_series(universe, pos_of, all_days):
                      "up_ratio": (up / n) if n else None,
                      "limit_up": lu, "limit_down": ld,
                      "turnover": turnover})
+    return classify_market_rows(rows)
+
+
+def classify_market_rows(rows):
+    """以已留档的全市场每日截面复用同一七态计算，不能用研究池充当全市场。"""
     df = pd.DataFrame(rows)
     # 规格 §5:turnover_ratio = turnover / mean(turnover[i-5..i-1]);i<5 或分母 0 → None。
     # 分母 0 直接除会得 inf(inf >= CLIMAX_TURNOVER 误触发高潮),故 0 替换为 NaN(规格 §72 NaN/None 同义)。
