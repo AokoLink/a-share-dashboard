@@ -136,6 +136,8 @@ def test_sw_and_sina_catalog_keep_native_integer_counts_in_mixed_frame():
     frame, _ = source.catalog()
     assert frame["provider"].tolist() == ["sw", "sw", "sina"]
     assert type(frame.iloc[-1]["expected_members"]) is int
+    assert frame.iloc[-1]["taxonomy_level"] is None
+    json.dumps(frame.to_dict("records"), allow_nan=False)
 
 
 @pytest.mark.parametrize("problem", [None, "future", "invalid_code", "missing_column"])

@@ -14,7 +14,8 @@ import pandas as pd
 from core import strategies
 from core.stage1_data import load_calendar, sha256
 
-TRACKER_VERSION = "forward-observation-v3"
+TRACKER_VERSION = "forward-observation-v4-gap-risk"
+EXECUTION_POLICY_VERSION = "open-gap-up5-down3-v1"
 FEE_PER_SIDE = 0.001
 SLIPPAGE_PER_SIDE = 0.001
 COST_MODEL_VERSION = "fee10bp-slippage10bp-per-side-v1"
@@ -25,13 +26,16 @@ SCREENING_PIPELINE_VERSION = "shared-daily-screen-v5"
 
 def screening_identity():
     """策略身份只依赖筛选规则及参数；接口展示改动不会重置观察期。"""
-    from core import screening_engine, sector_relations, sector_insights, sector_service, analysis, environment
+    from core import screening_engine, sector_relations, sector_insights, sector_service, analysis, environment, strategy_risk, momentum_strategy
     parameters = {"top_n": 20, "pool_n": 200, "min_bars": strategies.MIN_BARS,
-                  "min_amount": strategies.MIN_AMOUNT, "max_entry_gap": 0.05}
+                  "min_amount": strategies.MIN_AMOUNT, "max_entry_gap": 0.05,
+                  "max_entry_down_gap": 0.03, "risk_policy": strategy_risk.POLICY,
+                  "momentum_policy": momentum_strategy.POLICY}
     strategy_code = sha256(Path(strategies.__file__))
     pool_code = sha256(screening_engine.__file__)
     manifest = {"pipeline": SCREENING_PIPELINE_VERSION, "strategy_code": strategy_code,
-                "pool_code": pool_code, "parameters": parameters,
+                "pool_code": pool_code, "parameters": parameters, "risk_code": sha256(strategy_risk.__file__),
+                "momentum_code": sha256(momentum_strategy.__file__),
                 "sector_relations_code": sha256(sector_relations.__file__),
                 "sector_features_code": sha256(sector_insights.__file__),
                 "sector_service_code": sha256(sector_service.__file__),
@@ -289,6 +293,7 @@ def evaluate_snapshot(snapshot, sessions, bars_by_code, basis_by_code=None, as_o
             "pool_control_gross": market_gross, "pool_control_net": market_net,
             "sector_control_gross": sector_gross, "sector_control_net": sector_net,
             "cost_model_version": COST_MODEL_VERSION,
+            "execution_policy_version": EXECUTION_POLICY_VERSION,
             "attribution": attribution, "selected": selected,
             "pool_count": len(pool), "pool_missing": missing, "price_bases": basis,
             "sector_membership_basis": payload.get("membership_basis"),
@@ -317,6 +322,7 @@ def review_versions(snapshots, observations, events):
         measured = [obs[row["id"]] for row in first.values() if row["id"] in obs]
         complete = [row for row in measured if row.get("status") == "observed"]
         comparable = [row for row in complete if row.get("cost_model_version") == COST_MODEL_VERSION
+                      and row.get("execution_policy_version") == EXECUTION_POLICY_VERSION
                       and "pool_control_net" in row and "sector_control_net" in row]
         comparable_ids = {row.get("snapshot_id") for row in comparable}
         candidates = sum(row.get("candidates", 0) for row in comparable)

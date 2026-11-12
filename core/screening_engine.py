@@ -5,9 +5,9 @@ import json
 import numpy as np
 import pandas as pd
 
-from core import strategies, sector_relations
+from core import strategies, sector_relations, strategy_risk, momentum_strategy
 
-VERSION = "daily-screening-engine-v1"
+VERSION = "daily-screening-engine-v3-momentum"
 POOL_N = 200
 TOP_N = 20
 
@@ -54,10 +54,10 @@ def day_view(frame, day):
     return view.reset_index(drop=True), None
 
 
-def eligibility(view, code, name=None):
+def eligibility(view, code, name=None, *, allow_limit_up=False):
     if not {"close", "high", "volume", "amount"}.issubset(view.columns):
         return False, "missing_daily_fields", []
-    ok, reason, caveats = strategies.base_eligibility(view, code, name)
+    ok, reason, caveats = strategies.base_eligibility(view, code, name, allow_limit_up=allow_limit_up)
     if not ok:
         return ok, reason, caveats
     tail = view.tail(65)
@@ -73,6 +73,7 @@ def prepare(day, technical, rows=None, *, excluded=(), pool_n=POOL_N):
     if len({r["code"] for r in records}) != len(records):
         raise ValueError("duplicate_universe_codes")
     decisions, views, eligible = {}, {}, []
+    momentum_decisions, momentum_pool = {}, []
     excluded = set(excluded)
     for original in sorted(records, key=lambda r: str(r["code"])):
         code, name = str(original["code"]), original.get("name")
@@ -86,16 +87,40 @@ def prepare(day, technical, rows=None, *, excluded=(), pool_n=POOL_N):
         else:
             ok, reason, caveats = eligibility(view, code, name)
         record = {"code": code, "name": name, "eligible": ok, "reason": reason, "caveats": caveats,
-                  "data_status": "unavailable" if failure or reason in ("invalid_history", "missing_daily_fields") else "available", "as_of": day,
+                  "data_status": "unavailable" if failure or reason in ("invalid_history", "missing_daily_fields", "risk_inputs_unavailable") else "available", "as_of": day,
                   "amount": float(view["amount"].iloc[-1]) if ok else None}
         record["vol20"] = float(pd.to_numeric(view["close"].tail(21)).pct_change().dropna().std(ddof=0)) if ok else None
         decisions[code] = record
+        record["risk"] = strategy_risk.assess(view, code)
         if ok:
             views[code] = view
             eligible.append(record)
+        watch_ok, watch_reason, watch_caveats = ok, reason, caveats
+        if reason == "limit_up":
+            watch_ok, watch_reason, watch_caveats = eligibility(view, code, name, allow_limit_up=True)
+        setup = momentum_strategy.technical_setup(view, code) if watch_ok else None
+        watch = {**record, "eligible": bool(watch_ok and setup),
+                 "reason": watch_reason if not watch_ok else None if setup else "momentum_setup_not_matched",
+                 "caveats": watch_caveats,
+                 "amount": float(view["amount"].iloc[-1]) if watch_ok else None,
+                 "vol20": float(pd.to_numeric(view["close"].tail(21)).pct_change().dropna().std(ddof=0)) if watch_ok else None}
+        momentum_decisions[code] = watch
+        if watch["eligible"]:
+            views[code] = view
+            momentum_pool.append(watch)
     eligible.sort(key=lambda r: (-r["amount"], r["code"]))
     pool = eligible[:pool_n]
-    return {"day": day, "pool_n": pool_n, "eligibility": decisions, "views": views, "eligible": eligible, "pool": pool, "records": records}
+    return {"day": day, "pool_n": pool_n, "eligibility": decisions, "views": views, "eligible": eligible,
+            "pool": pool, "records": records, "momentum_eligibility": momentum_decisions,
+            "momentum_pool": momentum_pool}
+
+
+def input_pool(decision):
+    """Union for data quality/freeze only; each strategy keeps its own control pool."""
+    pools = [decision["pool"], *decision.get("strategy_pools", {}).values()]
+    if "momentum_pool" in decision:
+        pools.append(decision["momentum_pool"])
+    return sorted({r["code"]: r for rows in pools for r in rows}.values(), key=lambda r: r["code"])
 
 
 def select(day, technical, rows=None, *, excluded=(), regime=None, sector_snapshot=None,
@@ -122,6 +147,15 @@ def select(day, technical, rows=None, *, excluded=(), regime=None, sector_snapsh
                 "sector_evidence": evidence[code], "sector_condition": "not_applicable"
                     if signal["strategy"] != "breakout" or variant == "breakout_no_sector" else
                     "applied" if evidence[code]["status"] == "ok" else "unverified"})
+    watch_pool = prepared["momentum_pool"]
+    for record in watch_pool:
+        code = record["code"]
+        if code not in evidence:
+            evidence[code] = sector_relations.feature_for(sector_snapshot, code, day)
+        signal = momentum_strategy.screen(views[code], code, record["name"], day, sector_snapshot)
+        if signal:
+            groups["momentum"].append({**signal, "code": code, "name": record["name"],
+                                       "sector_evidence": evidence[code]})
     for key, signals in groups.items():
         signals.sort(key=lambda r: (-r["score"], r["code"]))
         groups[key] = signals[:top_n]
@@ -129,10 +163,13 @@ def select(day, technical, rows=None, *, excluded=(), regime=None, sector_snapsh
     for r in eligible:
         decisions[r["code"]]["pool_status"] = "selected" if r["code"] in selected else "below_pool_cutoff"
     payload = {"engine_version": VERSION, "strategy_version": strategies.VERSION, "day": day,
-               "variant": variant, "parameters": {"pool_n": pool_n, "top_n": top_n},
+               "variant": variant, "parameters": {"pool_n": pool_n, "top_n": top_n, "risk_policy": strategy_risk.POLICY,
+                   "momentum_policy": momentum_strategy.POLICY},
                "market_state": state, "eligibility": decisions, "pool": pool, "groups": groups,
+               "strategy_pools": {"momentum": watch_pool}, "momentum_eligibility": prepared["momentum_eligibility"],
                "sector_evidence": evidence, "scope": {"expected": len(records), "eligible": len(eligible),
-                   "selected": len(pool), "missing_codes": [c for c,r in decisions.items() if r["data_status"] == "unavailable"]}}
+                   "selected": len(pool), "momentum_price_qualified": len(watch_pool),
+                   "missing_codes": [c for c,r in decisions.items() if r["data_status"] == "unavailable"]}}
     payload["decision_sha256"] = hashlib.sha256(json.dumps(payload, sort_keys=True,
         ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
     return payload
@@ -140,7 +177,8 @@ def select(day, technical, rows=None, *, excluded=(), regime=None, sector_snapsh
 
 def compare(left, right):
     differences = []
-    for key in ("day", "variant", "parameters", "market_state", "eligibility", "pool", "groups", "sector_evidence"):
+    for key in ("day", "variant", "parameters", "market_state", "eligibility", "pool", "groups", "sector_evidence",
+                "strategy_pools", "momentum_eligibility"):
         if left.get(key) != right.get(key):
             differences.append({"field": key, "left": left.get(key), "right": right.get(key)})
     return {"status": "identical" if not differences else "different", "differences": differences,

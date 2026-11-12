@@ -1,5 +1,7 @@
 """后台计算完整板块集合；页面、选股和组合读取同一不可变证据。"""
 from concurrent.futures import ThreadPoolExecutor
+import math
+from numbers import Real
 
 import pandas as pd
 
@@ -9,12 +11,22 @@ from core.stage1_data import sha256
 VERSION = "sector-service-v1"
 
 
+def optional_metadata(value):
+    """Pandas missing scalar metadata is unknown, never a JSON NaN."""
+    if value is None or isinstance(value, (dict, list, tuple)):
+        return value
+    return None if pd.isna(value) or isinstance(value, Real) and not math.isfinite(value) else value
+
+
 def assemble(day, rows, spot, technical, benchmark, calendar, *, previous=None, generated_at=None,
              input_artifacts=None):
     indexed = {str(row["code"]): row for row in spot.to_dict("records")}
     out, links = [], []
     for original in rows:
         row = dict(original)
+        for key in ("taxonomy", "parent_mapping", "taxonomy_level", "expected_members"):
+            if key in row:
+                row[key] = optional_metadata(row[key])
         row.setdefault("category", "unknown")
         row["code"] = str(row.get("code", ""))
         row["id"] = f"{row['category']}:{row['code']}"
@@ -80,7 +92,8 @@ def collect(day, summaries, sources, spot, technical, benchmark, calendar, archi
     def inspect(original):
         row = {"code": str(original["code"]), "name": str(original["name"]),
                "category": original.get("category", "industry"), "status": "unavailable",
-               "taxonomy": original.get("taxonomy"), "parent_mapping": original.get("parent_mapping"),
+               "taxonomy": optional_metadata(original.get("taxonomy")),
+               "parent_mapping": optional_metadata(original.get("parent_mapping")),
                "observed_at": day, "valid_from": day, "valid_to": day, "errors": []}
         if row["category"] not in relations.CATEGORIES:
             row["errors"].append("unknown_category")

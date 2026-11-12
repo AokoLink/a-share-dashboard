@@ -14,10 +14,11 @@ from web import config
 from web.routes import register_routes
 
 
-def create_app(db_path=None):
+def create_app(db_path=None, *, start_daily_scheduler=False):
     app = Flask(__name__, template_folder=config.TEMPLATE_DIR, static_folder=config.STATIC_DIR)
     app.config["DB"] = db_path or config.DEFAULT_DB
     app.config["DAILY_PIPELINE_ROOT"] = config.DAILY_PIPELINE_ROOT
+    app.config["DAILY_AUTO_RUN_ENABLED"] = False
     os.makedirs(os.path.dirname(os.path.abspath(app.config["DB"])), exist_ok=True)
     store.init_db(app.config["DB"])
     register_routes(app)
@@ -25,4 +26,7 @@ def create_app(db_path=None):
     app.config["SECTOR_MAP_HEALTH"] = health
     if not health.get("ok") or health.get("stale") or health.get("renamed"):
         logging.getLogger(__name__).warning("sector map health: %s", health)
+    if start_daily_scheduler:
+        from core.daily_jobs import start_scheduler
+        start_scheduler(app)
     return app

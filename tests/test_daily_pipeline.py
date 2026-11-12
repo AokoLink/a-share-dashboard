@@ -74,17 +74,84 @@ def test_daily_complete_repeat_and_readonly_outputs(tmp_path):
     assert first["steps"]["account"]["status"] == "success"
     assert not (job.root / "accounts" / "latest.json").exists()  # 注入账户不冒充真实前向最新结果
     rows = store.list_strategy_signals(job.db)
-    assert len(rows) == 3 and rows[0]["payload"]["price_basis"] == "verified_unadjusted_raw"
-    assert rows[0]["payload"]["pool"][0]["sector_evidence"]["sector_rel20"] == 5.
-    assert rows[0]["payload"]["sector_snapshot_ref"]["as_of"] == "2026-09-30"
+    assert len(rows) == 4 and rows[0]["payload"]["price_basis"] == "verified_unadjusted_raw"
+    breakout = next(row for row in rows if row["strategy"] == "breakout")
+    assert breakout["payload"]["pool"][0]["sector_evidence"]["sector_rel20"] == 5.
+    assert breakout["payload"]["sector_snapshot_ref"]["as_of"] == "2026-09-30"
     assert all(row["payload"]["status"] == "pending_entry" for row in store.list_strategy_observations(job.db))
     assert job.run()["status"] == "success"
-    assert len(store.list_strategy_signals(job.db)) == 3
-    assert len(store.list_strategy_observations(job.db)) == 3
+    assert len(store.list_strategy_signals(job.db)) == 4
+    assert len(store.list_strategy_observations(job.db)) == 4
     assert len(list((job.root / "runs").glob("*/report.json"))) == 2
     result = daily_data.read_json(job.root / "candidates" / "2026-09-30.json")
     assert result["groups"]["breakout"][0]["code"] == "sh600001"
     assert daily_data.read_json(job.root / "regime_cache.json")["label"] is None
+
+
+def test_environment_survives_sector_failure_and_unready_adjusted_prices(tmp_path, monkeypatch):
+    source = Sources()
+    source.old = True
+    job = runner(tmp_path, source)
+    monkeypatch.setattr(daily_runner.sector_service, "collect", lambda *a, **k:
+                        (_ for _ in ()).throw(ValueError("sector failure")))
+    report = job.run()
+    assert report["steps"]["features"]["status"] == "failed"
+    assert report["steps"]["quality"]["result"]["freeze_ready"] is False
+    checkpoint = report["steps"]["features"]["environment_checkpoint"]["regime_artifact"]
+    assert daily_data.intact(checkpoint)
+    regime = daily_data.read_json(checkpoint["path"])
+    assert regime["status"] == "insufficient_daily_history"
+    assert regime["observed_sessions"] == 1 and regime["label"] is None
+    assert daily_data.read_json(job.root / "market_daily" / "2026-09-30.json")["r1"] == .08
+    assert not store.list_strategy_signals(job.db)
+
+
+def test_environment_is_saved_before_price_collection_can_fail(tmp_path, monkeypatch):
+    job = runner(tmp_path)
+    def fail_prices():
+        assert (job.root / "market_daily" / "2026-09-30.json").exists()
+        raise RuntimeError("price provider unavailable")
+    monkeypatch.setattr(job, "step_prices", fail_prices)
+    result = job.run()
+    assert result["steps"]["features"]["status"] == "skipped"
+    env = result["steps"]["environment"]["result"]
+    assert env["status"] == "success" and env["regime"]["label"] is None
+    assert env["regime"]["readiness"]["contiguous_sessions"] == 1
+    assert env["regime"]["readiness"]["window_verified_sessions"] == 1
+    assert daily_data.intact(env["regime_artifact"])
+    assert not store.list_strategy_signals(job.db)
+
+
+def test_repair_saved_environment_preserves_original_run_and_verifies_inputs(tmp_path):
+    from pipeline.repair_market_environment import run as repair
+    job = runner(tmp_path)
+    report = job.run()
+    before = (job.work / "run.json").read_bytes()
+    later = NOW + dt.timedelta(days=1)
+    repaired = repair(job.root, report["run_id"], now=later)
+    assert repaired["day"] == "2026-09-30" and repaired["forward_signal"] is False
+    assert daily_data.intact(repaired["regime_artifact"])
+    assert (job.work / "run.json").read_bytes() == before
+    with pytest.raises(ValueError, match="past_saved_session"):
+        repair(job.root, report["run_id"], now=NOW)
+    (job.work / "spot.csv").write_text("tampered", encoding="utf-8")
+    with pytest.raises(ValueError, match="inputs_unconfirmed_or_hash_mismatch"):
+        repair(job.root, report["run_id"], now=later)
+
+
+def test_empty_active_market_does_not_archive_nan_environment(tmp_path):
+    source = Sources()
+    original = source.market
+    def inactive():
+        frame, new = original()
+        frame["volume"] = 0
+        return frame, new
+    source.market = inactive
+    job = runner(tmp_path, source)
+    report = job.run()
+    regime = report["steps"]["features"]["result"]["regime"]
+    assert regime["status"] == "source_data_unconfirmed"
+    assert not (job.root / "market_daily" / "2026-09-30.json").exists()
 
 
 def test_resume_retries_only_failed_price_input(tmp_path):
@@ -101,9 +168,9 @@ def test_resume_retries_only_failed_price_input(tmp_path):
     assert source.calls["market"] == 1
     assert source.calls[("600001", "qfq")] == 1
     assert source.calls[("600001", "")] == 2
-    assert len(store.list_strategy_signals(job.db)) == 3
+    assert len(store.list_strategy_signals(job.db)) == 4
     job.run(resume=first["run_id"])
-    assert len(store.list_strategy_signals(job.db)) == 3
+    assert len(store.list_strategy_signals(job.db)) == 4
 
 
 def test_resume_detects_tampering_and_recollects(tmp_path):
@@ -115,7 +182,7 @@ def test_resume_detects_tampering_and_recollects(tmp_path):
     second = job.run(first["run_id"])
     assert second["status"] == "success"
     assert source.calls["market"] == 2
-    assert len(store.list_strategy_signals(job.db)) == 3
+    assert len(store.list_strategy_signals(job.db)) == 4
 
 
 @pytest.mark.parametrize("now,reason", [(NOW.replace(hour=14), "waiting_for_close"),
@@ -261,6 +328,7 @@ def test_completed_observation_is_preserved_when_source_files_are_missing(tmp_pa
     row = _snapshot()
     frozen = store.freeze_strategy_signal(db, row["signal_date"], row["strategy"], row["version"], "2025-01-02T16:00", row["payload"])
     old = {"snapshot_id": frozen["id"], "status": "observed", "cost_model_version": life.COST_MODEL_VERSION,
+           "execution_policy_version": life.EXECUTION_POLICY_VERSION,
            "filled": 1, "mean_net_return": .05, "pool_control_net": .04, "sector_control_net": .04}
     store.save_strategy_observation(db, frozen["id"], "forward-observation-v2", "old", "2025-01-07", old)
     calendar = tmp_path / "calendar.json"
@@ -327,3 +395,39 @@ def test_primary_source_failure_switches_provider_once(monkeypatch):
         source.daily(code, "2026-01-01", "2026-09-30", "")
     assert calls == {"primary": 1, "secondary": 2}
     assert source.price_provider == "tencent"
+
+
+@pytest.mark.parametrize("raw_current,factor_ok", [(True, True), (False, True), (True, False)])
+def test_lagging_qfq_needs_current_raw_and_verified_factors(monkeypatch, raw_current, factor_ok):
+    calls = []
+    def secondary(code, start, end, adjust, **kwargs):
+        calls.append(adjust)
+        return pd.DataFrame({"date": [end if not adjust and raw_current else "2026-09-29"], "close": [10.]})
+    def factors(raw, code, end, **kwargs):
+        calls.append("factors")
+        if not factor_ok:
+            raise ValueError("incomplete_adjustment_factors")
+        result = raw.copy()
+        result["close"] = 5.
+        return result
+    monkeypatch.setattr(daily_data, "tencent_daily", secondary)
+    monkeypatch.setattr(daily_data, "sina_factor_adjusted", factors)
+    source = daily_data.LiveSources()
+    source.price_provider = "tencent"
+    if not factor_ok:
+        with pytest.raises(ValueError, match="incomplete_adjustment_factors"):
+            source.daily("600001", "2026-09-01", "2026-09-30", "qfq")
+    else:
+        result = source.daily("600001", "2026-09-01", "2026-09-30", "qfq")
+        assert result.iloc[-1]["date"] == ("2026-09-30" if raw_current else "2026-09-29")
+        assert result.iloc[-1]["close"] == (5. if raw_current else 10.)
+    assert calls == (["qfq", "", "factors"] if raw_current else ["qfq", ""])
+
+
+def test_daily_mixed_catalog_missing_metadata_does_not_skip_candidates(tmp_path):
+    source = Sources()
+    source.sectors = lambda: (pd.DataFrame([{"code": "885001", "name": "A", "category": "industry",
+                                          "taxonomy": float("nan"), "parent_mapping": float("nan")}]), False)
+    report = runner(tmp_path, source).run()
+    assert report["steps"]["features"]["status"] != "failed"
+    assert report["steps"]["freeze"]["result"]["candidate_counts"]["breakout"] == 1

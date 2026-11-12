@@ -2,6 +2,8 @@
 """第一阶段研究输入：保留来源、观察时间和可审计的覆盖边界。"""
 import hashlib
 import json
+import time
+import uuid
 from datetime import date, datetime
 from pathlib import Path
 
@@ -24,10 +26,26 @@ def _day(value):
 
 
 def _write_json(path, value):
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    temporary.replace(path)
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        for attempt in range(8):
+            try:
+                temporary.replace(path)
+                break
+            except PermissionError as exc:
+                # Windows readers and antivirus can briefly deny rename/delete.
+                # Keep the previous complete document while retrying replacement.
+                if getattr(exc, "winerror", None) not in (5, 32) or attempt == 7:
+                    raise
+                time.sleep(min(.02 * 2 ** attempt, .5))
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def save_calendar(frame, path=DATA_ROOT / "trading_calendar.json", collected_at=None):

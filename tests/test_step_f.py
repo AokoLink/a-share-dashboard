@@ -26,7 +26,7 @@ def test_frozen_inputs_and_archived_code_replay_without_current_function(tmp_pat
     result = signal_replay.replay(ref, tmp_path / "work")
     assert result["identical"], result
     assert result["network"] == "disabled"
-    assert len(store.list_strategy_signals(db)) == 3
+    assert len(store.list_strategy_signals(db)) == 4
     inputs = signal_replay.verified(signal_replay.verified(ref)["inputs"])
     assert len(inputs["technical"]["600001"]["data"]) == 66
 
@@ -109,7 +109,7 @@ def test_sqlite_backup_restore_preserves_snapshots_and_replay_relocations(tmp_pa
     ref = backup(db, root, tmp_path / "backups")
     destination = tmp_path / "restored"
     checked = restore(ref["path"], destination)
-    assert checked["database_counts"]["strategy_signal_snapshot"] == 3
+    assert checked["database_counts"]["strategy_signal_snapshot"] == 4
     with pytest.raises(ValueError, match="must_be_new"):
         restore(ref["path"], destination)
     mappings = daily_data.read_json(destination / "restore-map.json")

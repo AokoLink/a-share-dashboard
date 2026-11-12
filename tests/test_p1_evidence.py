@@ -255,7 +255,7 @@ def test_prospective_registry_is_immutable_and_live_snapshot_bound_before_result
     later_policy, later_ref = fv.register(tmp_path, now="2026-10-01T10:00:00+08:00")
     assert (later_policy, later_ref) == (policy, ref)
     report = forward_report.run(db, tmp_path, as_of=NOW)
-    assert report["accepted_snapshots"] == 3 and not report["formal"]
+    assert report["accepted_snapshots"] == 4 and not report["formal"]
     assert report["validated_account_return"] is None
     assert report["negative_results_retained"]
 
@@ -303,7 +303,7 @@ def test_forward_api_is_read_only_and_rejects_changed_report(tmp_path):
     before = store.monitor_watermark(db)
     result = client.get("/api/forward-validation")
     assert result.status_code == 200 and result.json["data"]["read_only"]
-    assert result.json["data"]["accepted_snapshots"] == 3
+    assert result.json["data"]["accepted_snapshots"] == 4
     assert store.monitor_watermark(db) == before
     from pathlib import Path
     Path(report["report_ref"]["path"]).write_text('{}', encoding="utf-8")

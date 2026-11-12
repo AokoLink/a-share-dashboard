@@ -6,7 +6,7 @@ import pandas as pd
 
 from core import strategies, strategy_lifecycle as life
 
-VERSION = "same-day-research-v1"
+VERSION = "same-day-research-v2-gap-risk"
 
 
 def _mean(values):
@@ -48,7 +48,7 @@ def execution_record(code, execution, day, calendar, horizon, as_of=None, cost_s
     close, entered = price(day, "close"), price(entry_day, "open")
     allowed, reason = strategies.execution_check(close, entered)
     if not allowed:
-        return {**record, "status": "cancelled_gap" if reason == "gap_above_5pct" else "missing_entry_price",
+        return {**record, "status": "cancelled_gap" if reason in ("gap_above_5pct", "gap_below_down_limit") else "missing_entry_price", "reason": reason,
                 "entry_price": entered, "signal_close": close}
     record.update(entry_price=entered, signal_close=close)
     if exit_day > as_of:
@@ -79,11 +79,12 @@ def arm(records):
 def evaluate_selection(selection, execution, calendar, *, as_of=None, random_draws=50, seed=17,
                        cost_scale=1., benchmark=None, indexed=None, event_cache=None):
     day = selection["day"]
-    pool = [r["code"] for r in selection["pool"]]
-    sectors = {c: {r["id"] for r in selection["sector_evidence"][c]["relations"]} for c in pool}
     results = {}
     for key, horizon in strategies.HORIZONS.items():
-        candidates = selection["groups"][key]
+        pool = [r["code"] for r in selection.get("strategy_pools", {}).get(key, selection["pool"])]
+        sectors = {c: {r["id"] for r in selection["sector_evidence"][c]["relations"]} for c in pool}
+        eligibility = selection.get("momentum_eligibility", selection["eligibility"]) if key == "momentum" else selection["eligibility"]
+        candidates = selection["groups"].get(key, [])
         selected = [r["code"] for r in candidates]
         cache_key = (day, horizon, as_of, cost_scale, tuple(pool))
         event = event_cache.get(cache_key) if event_cache is not None else None
@@ -112,8 +113,8 @@ def evaluate_selection(selection, execution, calendar, *, as_of=None, random_dra
             "data_complete": bool(random_arms) and all(a["data_complete"] for a in random_arms),
             "status_counts": dict(Counter(r["status"] for a in random_arms for r in a["events"]))}
         def exposure(codes):
-            return {"amount": _mean([selection["eligibility"][c]["amount"] for c in codes]),
-                    "vol20": _mean([selection["eligibility"][c].get("vol20") for c in codes]),
+            return {"amount": _mean([eligibility[c]["amount"] for c in codes]),
+                    "vol20": _mean([eligibility[c].get("vol20") for c in codes]),
                     "count": len(codes)}
         wide = execution_record("sh000001", {"sh000001": benchmark}, day, calendar, horizon, as_of, cost_scale) if benchmark is not None else None
         results[key] = {"candidates": len(candidates), "ranked_codes": selected,

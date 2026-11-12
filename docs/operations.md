@@ -14,7 +14,11 @@ python app.py
 
 ## 日常运行与恢复
 
-收盘后执行 `python -m pipeline.run_daily`，流程为日历、收盘门槛、行情、资格范围、双价格、质量、环境与板块、冻结、逐股跟踪、账户核算。单实例锁防止两个每日任务同时写入。此实现不创建定时任务。
+缺失的过去日期可单独做历史研究补算，不能补记为当时已封印的前向信号。10 月 8 日的补算入口、范围限制及查看方式见 [历史候选补算](candidate-recovery-2026-10-08.md)。策略页可选择日期查看；“生成今日候选”仍仅处理实际当天。
+
+使用 `python app.py` 启动看板后，应用内调度在交易日 15:05 后自动启动每日任务；当天较晚启动时，23:00 前补执行。应用内调度需要看板服务运行；已安装的独立系统调度可在看板关闭时检查并启动任务。策略候选页的“生成今日候选”按钮是手动保底，后台运行并显示进度，失败后可重试。详情见 [自动生成与按钮说明](daily-candidate-automation.md)。
+
+命令行 `python -m pipeline.run_daily` 继续保留。流程为日历、收盘门槛、行情、资格范围、双价格、质量、环境与板块、冻结、逐股跟踪、账户核算。应用任务与命令行共用单实例锁，不同时写入。2026-11-11 新增独立系统调度入口及安装脚本，配置、验收及限制见 [每日运行与历史口径修订](p0-reliability-2026-11-11.md)。
 
 - “无候选”是正常计算结果；“来源失败”“部分覆盖”“等待收盘”有各自状态。
 - 同交易日、相同代码、输入清单、账户预算和运行模式，执行 `python -m pipeline.run_daily --resume <运行编号>`。成功且哈希完整的采集可复用，失败步骤重试；冻结重放包的代码和输入也检查完整性。
@@ -68,4 +72,22 @@ python -m pipeline.backup_workspace --restore <备份ZIP路径> --target <尚不
 
 `python -m pipeline.execution_evidence --import-file <证据包>` 校验、留档执行输入；不带导入参数时只审计覆盖。需要原文哈希、明确来源、知悉时间及实际接收时间；缺失或冲突不按已核实处理。当前严格执行输入为零。
 
-2026-10-01 实施与验收见 [P1 记录](p1-evidence-and-validation.md)，机器验收索引为 `_analysis/daily_pipeline/p1_acceptance/latest.json`。当前验证起始日 2026-10-22、有效前向样本为零。没有创建新的定时任务。
+2026-10-01 实施与验收见 [P1 记录](p1-evidence-and-validation.md)，机器验收索引为 `_analysis/daily_pipeline/p1_acceptance/latest.json`。原登记验证起始日为 2026-10-22、有效前向样本为零。P2 核查发现当前代码已与该登记失配，接口会标明需要重新登记；原起始日不代表当前代码已获登记。没有创建新的定时任务。
+
+## P2 查询与页面维护
+
+2026-10-08 补修主页面空状态，见 [市场环境与候选显示修复](workflow-empty-state-fix.md)。新主流程的环境读取 `/api/market-environment` 的后台校验留档，旧 `/api/regime` 计算使用独立缓存。候选收盘前保持等待状态，通过 `?history=1` 显式查看上次留档；历史候选不进入前向证据。
+
+`/api/daily-runs` 默认仅返回运行摘要；需要全部步骤结果、逐代码输入时使用 `?detail=1`，与 `run_id` 参数可组合。故障监控缓存分页结果，大型完整记录不进入内存缓存；带预期 SHA256 的报告仍逐次校验字节。
+
+页面 GET 请求合并尚未完成的重复请求，读取超时为 30 秒。手动和自动刷新共享执行；隐藏页面跳过自动刷新。部署新增 `static/request_runtime.js` 时，与 `app.js` 同步发布并重启应用、重新加载页面。
+
+回归检查增加无需额外 npm 包的前端测试：
+
+```powershell
+node --test --test-isolation=none tests/js/*.test.cjs
+node --check static/app.js
+node --check static/request_runtime.js
+```
+
+当前 Node 支持 `--test-isolation=none`，此模式避免受限 Windows 环境的子进程权限问题；其他 Node 版本可按其支持情况运行 `node --test tests/js/*.test.cjs`。实际性能、身份核对及留档见 [P2 记录](p2-engineering-and-performance.md)。

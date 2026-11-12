@@ -757,7 +757,7 @@ def test_stage2_strategy_endpoint_reads_saved_candidates_without_fetch(tmp_path,
     data = c.get("/api/strategy-candidates").get_json()["data"]
     assert data["status"] == "exploratory" and data["read_only"] is True
     assert data["groups"]["breakout"][0]["code"] == "sh600001"
-    assert len(store.list_strategy_signals(c.application.config["DB"])) == 3
+    assert len(store.list_strategy_signals(c.application.config["DB"])) == 4
     assert c.get("/api/daily-runs").get_json()["data"]["status"] == "not_run"
     assert c.get("/api/daily-runs?run_id=../../secret").status_code == 400
 

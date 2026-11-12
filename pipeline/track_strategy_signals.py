@@ -25,7 +25,8 @@ def run(db, raw_dir, legacy_dir, calendar_path, *, persist=True, as_of=None, rec
     saved_before = store.list_strategy_observations(db, limit=100000)
     latest_before = {row["snapshot_id"]: row["payload"] for row in reversed(saved_before)}
     completed = {key: row for key, row in latest_before.items() if row.get("status") == "observed"
-                 and row.get("cost_model_version") == lifecycle.COST_MODEL_VERSION} if not recompute else {}
+                 and row.get("cost_model_version") == lifecycle.COST_MODEL_VERSION
+                 and row.get("execution_policy_version") == lifecycle.EXECUTION_POLICY_VERSION} if not recompute else {}
     # 相同代码的日线只读取一次；结果本身仍按每个冻结版本单独存档。
     codes = {item["code"][-6:] for row in snapshots if row["id"] not in completed
              for item in row["payload"].get("pool", [])}

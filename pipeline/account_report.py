@@ -112,6 +112,7 @@ def load_inputs(db, root, as_of):
               "benchmark": benchmark, "sector_returns": sector_returns,
               "status_events": store.list_strategy_status_events(db)}
     inputs["execution_rules"] = _dated(imported["execution_rules"])
+    inputs["announcement_reviews"] = _dated(imported["announcement_reviews"])
     return inputs, {"calendar_basis": calendar.get("source"), "price_artifacts": artifacts,
                     "source_errors": errors, "execution_status_file": str(status_path) if status_path.exists() else None,
                     "corporate_action_file": str(action_path) if action_path.exists() else None,

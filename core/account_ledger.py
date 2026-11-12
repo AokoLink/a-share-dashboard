@@ -4,18 +4,18 @@ import hashlib
 import json
 import math
 from collections import Counter, defaultdict
-from datetime import time
+from datetime import time, timedelta
 
 from core import strategies, strategy_lifecycle as life
 
-VERSION = "cash-shares-ledger-v2"
+VERSION = "cash-shares-ledger-v3-risk"
 DEFAULTS = {
     "initial_cash": 1_000_000., "mode": "research_proxy", "lot_size": 100,
     "cash_reserve": .1, "max_stock_weight": .1,
     "strategy_budgets": {"breakout": .3, "pullback": .3, "rebound": .3},
     "max_industry_weight": .4, "max_theme_weight": .3,
     "participation": .01, "fee": life.FEE_PER_SIDE,
-    "slippage": life.SLIPPAGE_PER_SIDE, "max_entry_gap": .05,
+    "slippage": life.SLIPPAGE_PER_SIDE, "max_entry_gap": .05, "max_entry_down_gap": .03,
 }
 UNKNOWN_ENTRY_REASONS = {
     "unverified_execution_inputs", "industry_theme_budget_unverified", "existing_holding_sector_budget_unknown",
@@ -42,7 +42,7 @@ def config(values=None):
         or not life._finite(out["initial_cash"])):
         raise ValueError("invalid_initial_cash")
     for key in ("cash_reserve", "max_stock_weight", "max_industry_weight", "max_theme_weight",
-                "participation", "fee", "slippage", "max_entry_gap"):
+                "participation", "fee", "slippage", "max_entry_gap", "max_entry_down_gap"):
         v = out[key]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v < 1:
             raise ValueError("invalid_" + key)
@@ -129,7 +129,7 @@ def _snapshot_orders(snapshots, calendar, clock, budgets):
 
 def replay(snapshots, bars, calendar, *, as_of, settings=None, bases=None, trade_status=None,
            corporate_actions=None, corporate_coverage=None, relations=None, benchmark=None,
-           sector_returns=None, status_events=None, execution_rules=None):
+           sector_returns=None, status_events=None, execution_rules=None, announcement_reviews=None):
     """Inputs are dated: bars[code][day], trade_status[day][code], coverage[day][code].
 
     Verified open evidence: verified/source/known_at, halted, buy_open_allowed,
@@ -140,6 +140,7 @@ def replay(snapshots, bars, calendar, *, as_of, settings=None, bases=None, trade
     cfg = config(settings)
     from core import execution_evidence as execution
     execution_rules = execution_rules or {}
+    announcement_reviews = announcement_reviews or {}
     clock = life.observation_clock(as_of)
     if calendar != sorted(set(calendar)):
         raise ValueError("calendar_must_be_unique_sorted")
@@ -186,6 +187,18 @@ def replay(snapshots, bars, calendar, *, as_of, settings=None, bases=None, trade
             if row.get(side + "_open_allowed") is False:
                 return "verified_open_execution_blocked", [], 0
         unknown = evidence(code, day, cutoff)
+        if side == "buy":
+            review = announcement_reviews.get(day, {}).get(code, {})
+            if _known(review, cutoff) and review.get("risk_flags"):
+                return "announcement_risk_blocked", [], 0
+            try:
+                through = life.observation_clock(review["reviewed_through"])
+                fresh = cutoff - timedelta(minutes=30) <= through <= cutoff
+            except (KeyError, ValueError, TypeError):
+                fresh = False
+            if not (_known(review, cutoff) and review.get("complete") is True
+                    and review.get("risk_flags") == [] and fresh):
+                unknown.append("announcement_review_unknown")
         if not _known(execution_rules.get(day, {}).get(code, {}), cutoff):
             unknown.append("order_quantity_and_fee_rules_unknown")
         if not _known(row, cutoff) or row.get("halted") is not False or row.get(side + "_open_allowed") is not True:
@@ -357,8 +370,11 @@ def replay(snapshots, bars, calendar, *, as_of, settings=None, bases=None, trade
                 failure = "signal_raw_price_missing_or_mismatch"
             if not failure and not price:
                 failure = "missing_entry_open_not_inferred_halt"
-            if not failure and price / frozen_close - 1 > cfg["max_entry_gap"]:
-                failure = "entry_gap_above_limit"
+            if not failure:
+                allowed, gap_reason = strategies.execution_check(frozen_close, price,
+                    cfg["max_entry_gap"], cfg["max_entry_down_gap"])
+                if not allowed:
+                    failure = "entry_gap_above_limit" if gap_reason == "gap_above_5pct" else "entry_gap_below_limit"
             if not failure and (not opening_complete or target is None):
                 failure = "account_valuation_incomplete"
             rels = _relations(relations, code, prev_day) if prev_day else []

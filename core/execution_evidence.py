@@ -8,7 +8,7 @@ from core import account_ledger as ledger, daily_data as data, strategy_lifecycl
 from core.stage1_data import _write_json, sha256
 
 VERSION = "execution-evidence-v1"
-KINDS = ("trade_status", "corporate_coverage", "corporate_actions", "execution_rules")
+KINDS = ("trade_status", "corporate_coverage", "corporate_actions", "execution_rules", "announcement_reviews")
 
 
 def validate(kind, row, clock):
@@ -43,6 +43,16 @@ def validate(kind, row, clock):
             cap = row.get("max_" + side + "_shares")
             if cap is not None and (type(cap) is not int or cap < 0):
                 raise ValueError("invalid_execution_capacity")
+    elif kind == "announcement_reviews":
+        if type(row.get("complete")) is not bool or not isinstance(row.get("risk_flags"), list):
+            raise ValueError("announcement_requires_completeness_and_flags")
+        if not all(isinstance(flag, str) and flag.strip() for flag in row["risk_flags"]):
+            raise ValueError("invalid_announcement_risk_flag")
+        through = row.get("reviewed_through", "")
+        if (not re.search(r"(?:Z|[+-]\d{2}:\d{2})$", through)
+                or life.observation_clock(through) > life.observation_clock(timestamp)
+                or life.observation_clock(through).date().isoformat() != row["date"]):
+            raise ValueError("invalid_announcement_review_time")
     elif kind == "corporate_coverage":
         if type(row.get("complete")) is not bool:
             raise ValueError("coverage_requires_explicit_completeness")

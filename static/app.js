@@ -5,18 +5,21 @@ const state = {
   sectors: [],
   current: null, // {kind:'sector'|'stock', code}
   regime: null,
+  regimeError: null,
   swingEdit: false,
   autoTimer: null,
+  detailGeneration: 0,
+  jobTimer: null,
+  jobActive: false,
+  jobLastStatus: null,
 };
 const GAP_WARN_PCT = -0.682;  // P1 探针定稿:个股次日 gap 分布 P20(原 provisional -1.5)
 
 const $ = (s) => document.querySelector(s);
+const requests = RequestRuntime.create(window.fetch.bind(window));
 
 function api(path) {
-  return fetch(path).then((r) => r.json()).then((b) => {
-    if (!b.ok) throw new Error((b.error && b.error.message) || "请求失败");
-    return b;
-  });
+  return requests.get(path);
 }
 
 function apiPost(path, payload) {
@@ -86,20 +89,44 @@ function regimeLine(d) {
 
 function renderRegime() {
   const bar = $("#regime-bar");
-  if (!state.regime || state.regime.label == null) {
-    bar.classList.add("hidden");
-    return;
-  }
   bar.classList.remove("hidden");
+  const d = state.regime;
+  const statuses = {not_run: "尚未运行每日任务", insufficient_daily_history: "历史不足，暂不能分类",
+    source_data_unconfirmed: "来源数据尚未确认", current: "已保存环境"};
+  const readiness = (d && d.readiness) || {};
+  const notice = state.regimeError ? `读取失败：${state.regimeError}` : !d ? "尚无市场环境记录" :
+    `${statuses[d.status] || "已保存环境"}；数据截止 ${d.as_of || "未知"}；状态 ${d.label || "数据不足"}` +
+    (d.observed_sessions != null ? `；已积累 ${d.observed_sessions}/${d.required_sessions || 61} 个交易日` : "") +
+    (readiness.contiguous_sessions != null ? `；连续记录 ${readiness.contiguous_sessions}/${readiness.required_sessions || 61} 日` : "") +
+    (readiness.window_verified_sessions != null ? `；来源已核验 ${readiness.window_verified_sessions}/${readiness.required_sessions || 61} 日` : "") +
+    ((readiness.unverified_source_dates || []).length ? `；${readiness.unverified_source_dates.length} 日来源证据待核实` : "") +
+    ((readiness.missing_dates || []).length ? `；窗口内缺 ${readiness.missing_dates.length} 日：${readiness.missing_dates.slice(-10).join("、")}${readiness.missing_dates.length > 10 ? "等" : ""}` : "") +
+    (d.freshness && d.freshness.status !== "current" ? "；历史或新鲜度未知，不能作为当前环境" : "");
+  $("#market-environment-status").textContent = notice;
   $("#regime-indicator").innerHTML =
-    regimeLine(state.regime) + `<span class="muted">(${esc(state.regime.as_of || "—")})</span>`;
+    regimeLine(d) + `<span class="muted">${esc(notice)}</span>`;
+  const metrics = (d && d.metrics) || {};
+  const definitions = [["r1", "1日收益", true], ["r5", "5日收益", true], ["r20", "20日收益", true],
+    ["up_ratio", "上涨占比", true], ["limit_up", "涨停家数"], ["limit_down", "跌停家数"], ["turnover_ratio", "成交额比"]];
+  $("#market-environment-metrics").innerHTML = `<table class="actionable-table"><thead><tr><th>指标</th><th>保存值</th></tr></thead><tbody>` +
+    definitions.map(([key, name, pct]) => `<tr><td>${name}</td><td>${metrics[key] == null ? "暂无" : pct ? fmtPct(metrics[key] * 100) : esc(metrics[key])}</td></tr>`).join("") + `</tbody></table>`;
+  if (d && d.saved_observation) {
+    const row = d.saved_observation;
+    $("#market-environment-metrics").innerHTML += `<h4>单日市场留档（${esc(row.date)}）</h4>` +
+      `<div class="muted">以下是该日已保存的描述数据；单日记录不等于环境分类完成，也不是当前盘中数据。</div>` +
+      `<div class="breadth"><span>个股涨幅中位数 ${row.r1 == null ? "暂无" : fmtPct(row.r1 * 100)}</span>` +
+      `<span>上涨占比 ${row.up_ratio == null ? "暂无" : fmtPct(row.up_ratio * 100)}</span>` +
+      `<span>涨停 ${row.limit_up ?? "暂无"} / 跌停 ${row.limit_down ?? "暂无"}</span>` +
+      `<span>总成交额 ${row.turnover == null ? "暂无" : (row.turnover / 1e8).toFixed(2) + "亿"}</span></div>`;
+  }
 }
 
 async function loadRegime() {
   try {
-    state.regime = (await api("/api/regime")).data;
+    state.regime = (await api("/api/market-environment")).data;
+    state.regimeError = null;
   } catch (e) {
-    // best-effort:初次失败保持 null(隐藏 banner);已有旧值则不覆盖
+    state.regimeError = e.message;
   }
   renderRegime();
 }
@@ -121,8 +148,10 @@ async function loadSectors() {
 function scoreCell(v) { return v === null ? "…" : v.toFixed(0); }
 
 async function openSector(code) {
+  const generation = ++state.detailGeneration;
   state.current = { kind: "sector", code };
   const b = await api("/api/sector?code=" + encodeURIComponent(code));
+  if (generation !== state.detailGeneration) return;
   $("#detail-title").classList.add("hidden");
   $("#chart-sector").classList.remove("hidden");
   $("#sector-scores").classList.remove("hidden");
@@ -262,8 +291,10 @@ function renderSectorLeaders(d) {
 }
 
 async function openStock(code) {
+  const generation = ++state.detailGeneration;
   state.current = { kind: "stock", code };
   const b = await api("/api/stock?code=" + encodeURIComponent(code));
+  if (generation !== state.detailGeneration) return;
   $("#detail-title").classList.add("hidden");
   $("#chart-sector").classList.add("hidden");
   $("#sector-scores").classList.add("hidden");
@@ -955,9 +986,14 @@ async function loadDiagnose() {
   else $("#diagnose-results").innerHTML = `<div class="muted">自选为空:输入 6 位代码点「诊断」,或先加入自选再点「诊断自选」。</div>`;
 }
 
-async function loadStrategyMonitor(cursor = null) {
+function loadStrategyMonitor(cursor = null) {
+  return requests.run("monitor-view", () => renderStrategyMonitor(cursor));
+}
+
+async function renderStrategyMonitor(cursor = null) {
   if (typeof cursor !== "number") cursor = null;
   const target = $("#strategy-monitor-results");
+  $("#btn-monitor-more").disabled = true;
   try {
     const [monitor, daily, forward] = await Promise.all([api("/api/strategy-monitor?limit=30" + (cursor ? "&cursor=" + cursor : "")), api("/api/daily-runs"), api("/api/forward-validation")]);
     const d = monitor.data;
@@ -997,52 +1033,197 @@ async function loadStrategyMonitor(cursor = null) {
       target.innerHTML = `<div class="muted">尚无真实冻结信号。收盘后生成候选，且当日日线新鲜时才会开始记录。</div>`;
       return;
     }
-    const labels = {breakout: "趋势突破", pullback: "强势回调", rebound: "超跌反弹"};
+    const labels = {breakout: "趋势突破", pullback: "强势回调", rebound: "超跌反弹", momentum: "热点延续／修复转强"};
     const rows = d.versions.map((v) => `<tr><td>${esc(labels[v.strategy] || v.strategy)}</td>` +
       `<td>${esc(v.version)}</td><td>${esc(v.status)}</td><td>${v.frozen_days}</td>` +
       `<td>${v.revisions}</td><td>${v.comparable_observed_days || 0}</td><td>${v.event_clusters}</td>` +
       `<td>${v.mean_net_excess_vs_pool == null ? "—" : fmtPct(v.mean_net_excess_vs_pool * 100)}</td>` +
       `<td>${esc(v.recommendation)}</td></tr>`).join("");
-    const latest = d.snapshots.slice(0, 10).map((s) => `<tr><td>${esc(s.signal_date)}</td>` +
+    const latest = d.snapshots.map((s) => `<tr><td>${esc(s.signal_date)}</td>` +
       `<td>${esc(labels[s.strategy] || s.strategy)}</td><td>${s.candidates}</td>` +
       `<td><a href="/api/strategy-snapshot/${s.id}" target="_blank" rel="noopener">#${s.id}</a></td></tr>`).join("");
-    target.innerHTML = (cursor ? target.innerHTML : "") + `<div class="muted">评审摘要：${esc(d.summary_status || "未知")}；过期或缺失摘要等待后台任务更新。</div><table class="actionable-table"><thead><tr><th>策略</th><th>版本</th><th>状态</th>` +
+    const reviews = `<div class="muted">评审摘要：${esc(d.summary_status || "未知")}；过期或缺失摘要等待后台任务更新。</div><table class="actionable-table"><thead><tr><th>策略</th><th>版本</th><th>状态</th>` +
       `<th>冻结日</th><th>修订</th><th>可比较观察日</th><th>事件簇</th><th>成本后超额</th><th>建议</th></tr></thead>` +
-      `<tbody>${rows}</tbody></table><div class="muted">正式使用仍受数据、成交状态与前向证据门槛限制。</div>` +
+      `<tbody>${rows}</tbody></table><div class="muted">正式使用仍受数据、成交状态与前向证据门槛限制。</div>`;
+    target.innerHTML = (cursor ? target.innerHTML : reviews) +
       `<table class="actionable-table"><thead><tr><th>日期</th><th>策略</th><th>候选数</th><th>快照</th></tr></thead>` +
       `<tbody>${latest}</tbody></table>`;
-  } catch (e) { target.textContent = `验证记录读取失败：${e.message}`; }
+  } catch (e) {
+    if (cursor) $("#daily-run-status").textContent = `后续记录读取失败，可重试：${e.message}`;
+    else target.textContent = `验证记录读取失败：${e.message}`;
+  } finally { $("#btn-monitor-more").disabled = false; }
 }
 
-async function loadStrategyCandidates() {
+async function loadStrategyCandidates(history = false, selectedDate = null) {
+  history = history === true;
+  const view = history && $("#strategy-candidate-view").value === "revised" ? "revised" : "original";
+  $("#strategy-candidate-view").value = view;
+  state.candidateQuery = {history, selectedDate};
+  const requestId = state.candidateRequestId = (state.candidateRequestId || 0) + 1;
   const message = $("#strategy-freeze-message");
   message.textContent = "正在读取每日任务保存的候选…";
   try {
-    const d = (await api("/api/strategy-candidates")).data;
-    const counts = Object.entries(d.groups).map(([key, rows]) => `${key} ${rows.length}`).join(" / ");
-    message.textContent = d.status === "not_run" ? "尚未运行每日任务。请运行 python -m pipeline.run_daily 后刷新。" :
-      `数据截止 ${d.data_as_of || "未知"}；任务状态 ${d.freeze_status || d.status}；候选 ${counts}。`;
+    const d = (await api("/api/strategy-candidates" + (history ? "?history=1" : "") +
+      (selectedDate ? (history ? "&" : "?") + "date=" + encodeURIComponent(selectedDate) : "") +
+      (view === "revised" ? "&view=revised" : ""))).data;
+    if (requestId !== state.candidateRequestId) return;
+    const dateInput = $("#strategy-history-date");
+    if (history && !selectedDate) state.candidateQuery.selectedDate = d.data_as_of || (d.alternative_view || {}).date || null;
+    if (selectedDate) dateInput.value = selectedDate;
+    else if (!dateInput.value) dateInput.value = (d.previous_report || {}).data_as_of || d.data_as_of || (d.available_dates || []).at(-1) || ((d.available_views || {}).revised || []).at(-1) || "";
+    state.candidateAlternativeDate = (d.alternative_view || {}).date;
+    $("#btn-strategy-revised").classList.toggle("hidden", !d.alternative_view);
+    $("#btn-strategy-history").classList.toggle("hidden", !d.previous_report && !((d.available_views || {}).revised || []).length && d.data_freshness !== "historical" && !history);
+    $("#strategy-candidate-cards").innerHTML = Object.entries(d.cards || {}).map(([key, card]) =>
+      `<div class="detail-card"><b>${esc(card.name || key)}</b><div>${esc(card.hypothesis || "")}</div>` +
+      `<div class="muted">${esc(card.scope || "")}；${esc(card.entry || "")}</div></div>`).join("");
+    const counts = Object.entries(d.groups).map(([key, rows]) => `${(d.cards && d.cards[key] && d.cards[key].name) || key} ` +
+      ((d.strategy_blockers || {})[key] === "missing_dated_market_environment" ? "未评估（缺目标日环境证据）" :
+       (d.strategy_blockers || {})[key] === "not_evaluated_in_archive" ? "未评估（旧留档无此策略）" : rows.length)).join(" / ");
+    const freezeLabels = {skipped_day_changed: "跨日未封印", skipped_stale: "输入过期未封印", not_run: "尚未运行", retrospective_not_frozen: "历史补算，未冻结实时信号"};
+    message.textContent = ["waiting_for_close", "market_closed"].includes(d.status) ?
+      (d.status === "market_closed" ? "今日休市，不生成今日候选。" : "今日候选等待 15:05 后的后台每日任务生成。") +
+      (d.previous_report ? `上次留档为 ${d.previous_report.data_as_of || "未知日期"}，可点击查看历史；不是今日信号。` : "尚无上次留档。") :
+      d.status === "missing_original" ? `${d.requested_date || (d.alternative_view || {}).date || "所选日期"} 没有当日原始留档，已有复核／历史补算；请切换口径查看。这不表示当时已生成信号，也不表示当日零入选。` :
+      d.status === "missing_date" ? `${d.requested_date} 没有候选留档；这不表示当日筛选后零入选。可查日期：${(d.available_dates || []).join("、") || "暂无"}。` :
+      d.status === "not_run" ? "尚无所选口径的候选记录。今日可在收盘后查看自动任务状态或点击生成按钮。" :
+      `${d.retrospective ? "历史补算研究，实际生成于 " + d.generated_at + "；不属于当日已封印信号。" : history || d.data_freshness === "historical" ? "历史留档，仅供回顾；不是今日信号。" : ""}数据截止 ${d.data_as_of || "未知"}；任务状态 ${freezeLabels[d.freeze_status] || d.freeze_status || d.status}；候选 ${counts}。`;
+    if (d.retrospective) message.textContent += `采集范围 ${(d.scope || {}).expected || 0}；可用且合资格 ${(d.scope || {}).eligible || 0}；缺失 ${(d.diagnostics || {}).daily_failed || 0}。历史股票范围、ST变化及环境／板块证据未完整核实。`;
+    if (d.origin) message.textContent += ` 查看口径：${d.view === "revised" ? "复核／补算，仅供研究，不计入原始信号收益" : "当日原始留档，名单及评分未按新规则改写"}；规则 ${d.source_frozen_version || d.source_version || d.version || "未知"}；原记录生成于 ${d.source_generated_at || d.generated_at || "未知"}。`;
+    if (d.reviewed_at) message.textContent += ` 本次风险复核时间 ${d.reviewed_at}；风险规则 ${d.review_version || "未知"}。`;
+    const riskReview = d.risk_review || {};
+    if (riskReview.status === "archived_candidates_reviewed") message.textContent +=
+      ` 当前展示原候选经新版风控复核后的名单：排除 ${(riskReview.blocked || []).length} 项，输入待核实 ${(riskReview.unknown || []).length} 项。旧分数未重算，未重新筛选整个股票池；原始留档保留。`;
+    message.textContent += " 分数仅用于技术匹配排序，不是上涨概率。风控参数待独立验证；公告风险尚未核实，入场前须复核。";
     const candidateRows = Object.entries(d.groups).flatMap(([strategy, rows]) => rows.map((row) => {
       const sector = row.sector_evidence || {};
       const names = (sector.relations || []).map((item) => item.name).join("、") || "未知";
-      const condition = {applied: "已应用", unverified: "待核实", not_applicable: "不适用"}[row.sector_condition] || "待核实";
-      return `<tr><td>${esc(row.name)}(${esc(row.code)})</td><td>${esc(strategy)}</td><td>${row.score}</td>` +
+      let condition = {applied: "已应用", unverified: "待核实", not_applicable: "不适用"}[row.sector_condition] || "待核实";
+      if (strategy === "momentum") {
+        const hot = row.momentum_sector || {};
+        const selected = hot.selected || {};
+        condition = hot.status === "confirmed" ? `当日行业共振：${selected.name || ""}，上涨占比 ${fmtPct(selected.up_ratio * 100)}，中位涨幅 ${fmtPct(selected.median_change_pct)}` : "当日行业热度待核实";
+      }
+      const risk = row.risk || {};
+      const metrics = risk.metrics || {};
+      const ratioPct = v => fmtPct(v == null ? null : v * 100);
+      const riskText = `10日涨幅 ${ratioPct(metrics.return10)}；偏离20日均线 ${ratioPct(metrics.bias20)}；换手 ${ratioPct(metrics.turnover)}；风险扣分 ${row.risk_penalty == null ? "未重算" : row.risk_penalty}`;
+      return `<tr><td>${esc(row.name)}(${esc(row.code)})</td><td>${esc((d.cards && d.cards[strategy] && d.cards[strategy].name) || strategy)}</td><td>${esc(String(row.score))}${row.score_basis === "archived_score_not_recomputed" ? "（旧版）" : ""}</td>` +
+        `<td>${esc(riskText)}；公告待核实${strategy === "momentum" ? "；新闻／财报／龙虎榜未评分" : ""}</td>` +
         `<td>${esc(names)}</td><td>${fmtPct(sector.sector_rel20)}</td><td>${esc(condition)}</td>` +
         `<td>${esc(sector.as_of || "—")}</td><td>${esc((row.reasons || []).join("；"))}</td>` +
         `<td>${esc(row.invalidation || "待核实")}</td><td>${esc(row.earliest_execution || "待核实")}</td>` +
-        `<td>${row.existing_account_holding == null ? "持仓未知" : row.existing_account_holding ? "已有同代码持仓" : "未重复"}</td><td>研究候选</td></tr>`;
+        `<td>${row.existing_account_holding == null ? "持仓未知" : row.existing_account_holding ? "已有同代码持仓" : "未重复"}</td><td>${d.view === "revised" ? "复核／补算研究" : d.retrospective ? "历史补算研究" : row.candidate_kind === "observation" ? "观察候选，非买入信号" : "研究候选"}</td>` +
+        `<td>${d.view !== "revised" && Number.isInteger(row.snapshot_id) ? `<a href="/api/strategy-snapshot/${row.snapshot_id}" target="_blank" rel="noopener">#${row.snapshot_id}</a>` : "未关联原始冻结快照"}</td></tr>`;
     }));
     $("#strategy-candidate-evidence").innerHTML = candidateRows.length ?
-      `<table class="actionable-table"><thead><tr><th>候选</th><th>策略</th><th>分数</th><th>板块归属</th>` +
-      `<th>20日板块超额</th><th>板块条件</th><th>证据日期</th><th>入选原因</th><th>失效条件</th><th>最早执行</th><th>持仓重复</th><th>证据等级</th></tr></thead>` +
-      `<tbody>${candidateRows.join("")}</tbody></table>` : "";
-  } catch (e) { message.textContent = `读取失败：${e.message}`; }
+      `<table class="actionable-table"><thead><tr><th>候选</th><th>策略</th><th>技术匹配分（非胜率）</th><th>风险复核</th><th>板块归属</th>` +
+      `<th>20日板块超额</th><th>板块条件</th><th>证据日期</th><th>入选原因</th><th>失效条件</th><th>最早执行</th><th>持仓重复</th><th>证据等级</th><th>原始快照</th></tr></thead>` +
+      `<tbody>${candidateRows.join("")}</tbody></table>` : `<div class="muted">${d.status === "market_closed" ? "今日休市，可查看历史候选，不表示筛选后零入选。" : d.status === "waiting_for_close" ? "等待今日候选，不表示筛选后零入选。" : d.status === "missing_original" ? "未找到当日原始名单；可通过上方入口查看复核／补算，不能替代原始信号。" : d.status === "missing_date" ? "所选日期未留档，不能用其他日期替代。" : d.status === "not_run" ? "暂无后台候选记录。" : d.status === "suspended" ? "策略已暂停，不显示新候选。" : "本次记录没有入选股票；查看上方策略条件和任务状态。"}</div>`;
+    const removed = [...(riskReview.blocked || []), ...(riskReview.unknown || [])];
+    if (removed.length) $("#strategy-candidate-evidence").innerHTML +=
+      `<details><summary>风险排除或待核实：${removed.length} 项（原始入选记录保留）</summary>` +
+      removed.map(row => `<div>${esc(row.name)}（${esc(row.code)}）：${esc((row.risk_messages || []).join("；"))}；旧分 ${esc(String(row.score))}</div>`).join("") + "</details>";
+  } catch (e) {
+    if (requestId !== state.candidateRequestId) return;
+    message.textContent = `读取失败：${e.message}`;
+    $("#strategy-candidate-evidence").textContent = "候选记录暂时不可用，请稍后重试。";
+  }
 }
 $("#btn-strategy-freeze").addEventListener("click", loadStrategyCandidates);
+$("#btn-strategy-history").addEventListener("click", () => loadStrategyCandidates(true));
+$("#btn-strategy-date").addEventListener("click", () => {
+  const day = $("#strategy-history-date").value;
+  if (day) loadStrategyCandidates(true, day);
+  else $("#strategy-freeze-message").textContent = "请先选择要查看的历史日期。";
+});
+$("#strategy-candidate-view").addEventListener("change", () => loadStrategyCandidates(true, $("#strategy-history-date").value || null));
+$("#btn-strategy-revised").addEventListener("click", () => {
+  $("#strategy-candidate-view").value = "revised";
+  loadStrategyCandidates(true, state.candidateAlternativeDate || $("#strategy-history-date").value || null);
+});
 $("#btn-strategy-monitor-refresh").addEventListener("click", loadStrategyMonitor);
+
+function renderDailyJob(d) {
+  const labels = {idle: "尚未启动", queued: "已排队，后台准备中", running: "正在生成", success: "生成完成",
+    no_candidates: "任务完成，本次没有入选股票", suspended: "任务完成，策略已暂停", already_completed: "今日任务已完成",
+    partial: "部分完成，可重试", failed: "生成失败，可重试", interrupted: "任务中断，可重试",
+    waiting_for_close: "等待 15:05 收盘确认", market_closed: "休市，不生成候选",
+    calendar_unavailable: "交易日历待确认", calendar_uncovered: "交易日历未覆盖", collection_window_closed: "已过当天采集窗口"};
+  const auto = d.automation || {};
+  state.jobActive = d.status === "queued" || d.status === "running";
+  const finished = ["success", "no_candidates", "suspended", "already_completed"].includes(d.status) && d.day === auto.day;
+  const blocked = ["waiting_for_close", "market_closed", "collection_window_closed"].includes(auto.gate_reason);
+  const button = $("#btn-strategy-generate");
+  button.disabled = state.jobActive || finished || blocked;
+  const blockedLabels = {waiting_for_close: "等待 15:05（今日候选）", market_closed: "今日休市", collection_window_closed: "当天采集窗口已结束"};
+  button.textContent = state.jobActive ? "生成中…" : finished ? "今日已完成" : blocked ? blockedLabels[auto.gate_reason] : ["partial", "failed", "interrupted"].includes(d.status) ? "重试生成今日候选" : "生成今日候选";
+  button.title = blocked ? "今日候选使用完整收盘数据，15:05 前不启动生成。此前只能查看已经保存的历史候选。" : "启动后台采集、筛选并保存实际当天的候选";
+  const displayStatus = d.status === "idle" && auto.gate_reason ? auto.gate_reason : d.status;
+  const recovery = d.historical_recovery;
+  const resultLabel = recovery ? "原任务失败或部分完成；历史研究候选已补算" : labels[displayStatus] || displayStatus;
+  const scheduleNotice = auto.enabled ? "已启用，交易日 15:05 后触发；服务启动较晚时当天 23:00 前补执行" :
+    d.scheduler && d.scheduler.fresh ? "独立系统调度最近检查正常" :
+    d.scheduler ? "独立系统调度最近检查已过期，请查看任务状态" : "网页内调度未启用，独立系统调度尚无检查记录";
+  $("#daily-job-status").textContent = `自动任务：${scheduleNotice}。` +
+    (auto.server_time ? `服务器时间（上海）：${auto.server_time.slice(0, 19).replace("T", " ")}。` : "") +
+    `后台任务 ${d.day || auto.day || "—"}：${resultLabel}。` +
+    (recovery ? `补算于 ${recovery.generated_at}；请选历史日期 ${recovery.day} 查看，不是当日实时信号。` : "") +
+    (auto.gate_reason ? `当前条件：${labels[auto.gate_reason] || auto.gate_reason}。` : "") +
+    (auto.gate_reason === "waiting_for_close" ? "生成按钮暂不可用；它处理今日收盘数据，不补算昨日。" : "") +
+    (d.error ? `原因：${d.error}。` : "");
+  const retry = d.retry || {};
+  const retryLabels = {waiting: "等待自动重试", eligible: "可自动重试", exhausted: "自动重试次数已用尽，可手动重试", suppressed: "本次不自动重试"};
+  if (retryLabels[retry.status]) $("#daily-job-status").textContent += ` ${retryLabels[retry.status]}（${retry.automatic_attempts || 0}/${retry.max_automatic_attempts || 3}）${retry.next_retry_at ? "，下次 " + retry.next_retry_at : ""}。`;
+  if (retry.reason === "candidate_already_frozen") $("#daily-job-status").textContent += " 候选已完成冻结，保留原结果；其余未完成项目可在运行记录中查看。";
+  if ((d.heartbeat || {}).status === "delayed") $("#daily-job-status").textContent += " 后台心跳延迟，正在等待任务恢复或状态确认。";
+  if (d.scheduler && d.scheduler.scheduler === "windows_task_or_cli") $("#daily-job-status").textContent += ` 独立调度最近检查 ${d.scheduler.checked_at || "未知"}，状态 ${d.scheduler.status || "未知"}。`;
+  const gaps = d.gaps || {};
+  if ((gaps.missing_original_dates || []).length) $("#daily-job-status").textContent += ` 最近交易日缺少原始候选：${gaps.missing_original_dates.join("、")}；历史补算单独展示。`;
+  const missingEnvironment = (gaps.rows || []).filter(row => row.market_snapshot_status !== "available").map(row => row.day);
+  if (missingEnvironment.length) $("#daily-job-status").textContent += ` 缺少有效市场快照：${missingEnvironment.join("、")}。`;
+  if ((gaps.missing_environment_dates || []).length) $("#daily-job-status").textContent += ` 缺少环境计算留档：${gaps.missing_environment_dates.join("、")}。`;
+  const names = {calendar: "交易日历", gate: "收盘检查", inputs: "市场行情", universe: "股票范围", prices: "个股价格",
+    environment: "市场环境", quality: "数据质量", features: "板块特征", freeze: "筛选与留档", track: "跟踪观察", account: "账户核算", report: "运行报告"};
+  const statuses = {running: "进行中", success: "完成", skipped: "跳过", failed: "失败", partial: "部分完成"};
+  $("#daily-job-progress").textContent = Object.entries((d.progress || {}).steps || {}).map(([step, value]) =>
+    `${names[step] || step}：${statuses[value.status] || value.status}${value.error || value.reason ? "（" + (value.error || value.reason) + "）" : ""}`).join("；");
+  const justFinished = state.jobLastStatus === "running" || state.jobLastStatus === "queued";
+  state.jobLastStatus = d.status;
+  if (justFinished && !state.jobActive) {
+    if (!(state.candidateQuery || {}).history) loadStrategyCandidates();
+    loadRegime();
+  }
+}
+
+async function loadDailyJob() {
+  if (!state.jobTimer && state.view === "strategy-candidates") {
+    state.jobTimer = setInterval(() => { if (!document.hidden && state.view === "strategy-candidates") loadDailyJob(); }, 5000);
+  }
+  try { renderDailyJob((await api("/api/daily-job")).data); }
+  catch (e) { $("#daily-job-status").textContent = `后台任务状态读取失败：${e.message}。请稍后重试。`; }
+}
+
+async function generateDailyCandidates() {
+  const button = $("#btn-strategy-generate");
+  if (button.disabled || state.jobActive) return;
+  button.disabled = true;
+  $("#daily-job-status").textContent = "正在启动后台采集和选股…";
+  try {
+    renderDailyJob((await apiPost("/api/daily-job", {})).data);
+    await loadDailyJob();
+    if (!state.jobActive) await loadStrategyCandidates();
+  } catch (e) {
+    $("#daily-job-status").textContent = `启动失败：${e.message}；可再次点击重试。`;
+    button.disabled = false;
+  }
+}
+$("#btn-strategy-generate").addEventListener("click", generateDailyCandidates);
 
 function switchView(view) {
   state.view = view;
+  $("#layout").classList.toggle("candidate-wide", view === "strategy-candidates");
+  if (view !== "strategy-candidates" && state.jobTimer) { clearInterval(state.jobTimer); state.jobTimer = null; }
   $("#workflow-market").classList.toggle("hidden", view !== "market");
   $("#strategy-candidates-panel").classList.toggle("hidden", view !== "strategy-candidates");
   $("#sector-view").classList.toggle("hidden", view !== "sectors");
@@ -1058,9 +1239,18 @@ function switchView(view) {
 }
 
 // ---- 刷新 ----
-async function refreshAll() {
+function refreshAll() {
+  return requests.run("page-refresh", async () => {
+    $("#btn-refresh").disabled = true;
+    try { await refreshView(); }
+    catch (e) { $("#stale-flag").classList.remove("hidden"); }
+    finally { $("#btn-refresh").disabled = false; }
+  });
+}
+
+async function refreshView() {
   try { await loadMarket(); } catch (e) { $("#stale-flag").classList.remove("hidden"); }
-  try { await loadSectors(); } catch (e) { /* 沿用旧列表 */ }
+  if (state.view === "sectors") { try { await loadSectors(); } catch (e) { /* 沿用旧列表 */ } }
   await loadRegime();
   if (state.view === "recommend") { try { await loadRecommend(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "actionable") { try { await loadActionableLeaders(); } catch (e) { /* 沿用旧 */ } }
@@ -1070,7 +1260,10 @@ async function refreshAll() {
   else if (state.view === "diagnose") { try { await loadDiagnose(); } catch (e) { /* 沿用旧 */ } }
   else if (state.view === "portfolio") { await loadPortfolio(); }
   else if (state.view === "strategy-monitor") { await loadStrategyMonitor(); }
-  else if (state.view === "strategy-candidates") { await loadStrategyCandidates(); }
+  else if (state.view === "strategy-candidates") {
+    const query = state.candidateQuery || {};
+    await loadStrategyCandidates(query.history, query.selectedDate); await loadDailyJob();
+  }
   else if (state.view === "tradesim") { try { await loadTradeSim(); } catch (e) { /* 沿用旧 */ } }
   if (state.current) {
     try {
@@ -1082,7 +1275,8 @@ async function refreshAll() {
 $("#btn-refresh").addEventListener("click", refreshAll);
 $("#auto-refresh").addEventListener("change", (e) => {
   if (e.target.checked) {
-    state.autoTimer = setInterval(refreshAll, 60000);
+    if (state.autoTimer) clearInterval(state.autoTimer);
+    state.autoTimer = setInterval(() => { if (!document.hidden) refreshAll(); }, 60000);
   } else if (state.autoTimer) {
     clearInterval(state.autoTimer);
     state.autoTimer = null;
@@ -1104,7 +1298,7 @@ document.querySelectorAll(".tab").forEach((t) =>
     else if (view === "diagnose") loadDiagnose();              // 内部已处理失败态
     else if (view === "portfolio") loadPortfolio();            // 内部已处理失败态
     else if (view === "strategy-monitor") loadStrategyMonitor();
-    else if (view === "strategy-candidates") loadStrategyCandidates();
+    else if (view === "strategy-candidates") { loadStrategyCandidates(); loadDailyJob(); }
     else if (view === "market") loadRegime();
     else if (view === "tradesim") loadTradeSim();              // 内部已处理失败态
     else { state.type = t.dataset.type || "industry"; loadSectors(); }

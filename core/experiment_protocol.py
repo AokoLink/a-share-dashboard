@@ -3,7 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from core import strategies, screening_engine, research_evaluation, sector_relations
+from core import strategies, screening_engine, research_evaluation, sector_relations, strategy_risk, momentum_strategy
 from core import strategy_lifecycle as life
 from core.stage1_data import _write_json, sha256
 
@@ -27,10 +27,12 @@ def register(root, start, end, step, validation_start="2026-10-01"):
                        "purge_by": "label_end", "embargo_sessions": 10,
                        "rolling_windows": "expanding_development_then_monthly_validation_no_optimization"},
         "parameters": {"pool_n": screening_engine.POOL_N, "top_n": screening_engine.TOP_N,
-            "random_draws": 50, "seed": 17, "entry": "T+1_open", "exit": "T+h+1_open"},
+            "random_draws": 50, "seed": 17, "entry": "T+1_open", "exit": "T+h+1_open",
+            "risk_policy": strategy_risk.POLICY, "max_entry_down_gap": .03, "momentum_policy": momentum_strategy.POLICY},
         "hypotheses": {"breakout": "sector, buffer and volume conditions may improve cost-adjusted same-day selection",
             "pullback": "depth and shrinking volume conditions may improve trend pullback selection",
             "rebound": "stock selection may outperform same-day basket across independent panic events",
+            "momentum": "strong close and volume with dated industry breadth may continue; limit-up allowed for observation only",
             "allocation": "blocked until publication-date fundamentals and valuation history exist"},
         "variants": {"base": "current declared conditions", **removed},
         "primary_metric": "event_cluster_equal_weight_fixed_slot_net_excess_vs_same_day_pool",
@@ -47,7 +49,8 @@ def register(root, start, end, step, validation_start="2026-10-01"):
             "retain_negative_and_missing_results", "no_claim_from_day_or_cluster_count_alone"],
         "unresolved_exposures": ["historical_market_cap", "historical_delisted_universe", "historical_ST_halts_limits"],
         "code_sha256": {"strategies": sha256(strategies.__file__), "engine": sha256(screening_engine.__file__),
-            "evaluation": sha256(research_evaluation.__file__), "relations": sha256(sector_relations.__file__)}}
+            "evaluation": sha256(research_evaluation.__file__), "relations": sha256(sector_relations.__file__),
+            "risk_policy": sha256(strategy_risk.__file__), "momentum": sha256(momentum_strategy.__file__)}}
     protocol["code_sha256"]["experiment_runner"] = sha256(ROOT / "pipeline" / "strategy_experiments.py")
     protocol["code_sha256"]["protocol_code"] = sha256(__file__)
     digest = hashlib.sha256(json.dumps(protocol, sort_keys=True, ensure_ascii=False).encode()).hexdigest()

@@ -25,11 +25,13 @@ def signal(sid=1, day=None, codes=None, strategy="breakout", horizon=2, version=
 
 
 def inputs(signals=None):
-    status, coverage, relations, rules = {}, {}, {}, {}
+    status, coverage, relations, rules, announcements = {}, {}, {}, {}, {}
     for day in DAYS:
         known = {"verified": True, "source": "manual_fixture", "known_at": day + "T08:00:00+08:00"}
         status[day] = {c: {**known, "halted": False, "buy_open_allowed": True, "sell_open_allowed": True} for c in CODES}
         coverage[day] = {c: {**known, "complete": True} for c in CODES}
+        announcements[day] = {c: {**known, "known_at": day + "T09:15:00+08:00", "complete": True,
+            "risk_flags": [], "reviewed_through": day + "T09:15:00+08:00"} for c in CODES}
         rules[day] = {c: {**known, "buy_min": 100, "buy_step": 100, "sell_min": 100, "sell_step": 100,
             "odd_lot_sell_all": True, "commission_rate": 0., "minimum_commission": 0.,
             "sell_tax_rate": 0., "transfer_rate": 0.} for c in CODES}
@@ -40,7 +42,7 @@ def inputs(signals=None):
             "bases": {c: "verified_unadjusted_raw" for c in CODES}, "trade_status": status,
             "corporate_coverage": coverage, "corporate_actions": [], "relations": relations,
             "benchmark": {d: 100. for d in DAYS}, "sector_returns": {d: {"industry:A": 0.} for d in DAYS},
-            "status_events": [], "execution_rules": rules}
+            "status_events": [], "execution_rules": rules, "announcement_reviews": announcements}
 
 
 def run(data=None, end=None, **changes):

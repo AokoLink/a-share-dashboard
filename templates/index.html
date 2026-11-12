@@ -44,7 +44,7 @@
       <button class="tab" data-view="lowpos">低位透视</button>
       <button class="tab" data-view="diagnose">持仓诊断</button>
       <button class="tab" data-view="tradesim">交易回测</button>
-    </div>
+    </div><div class="muted">推荐用于旧综合评分；可介入龙头描述当前板块交易特征；波段管理自选与旧候选。它们均为研究工具，独立策略的前向证据在“验证记录”查看。</div></details>
     <div id="sector-view">
       <div class="sector-tools">
         <input id="sector-search" placeholder="板块搜索,如 半导">
@@ -112,13 +112,28 @@
       </div>
       <div class="muted">持仓诊断给出 1/3/5/10/20 日 P(涨) 与期望收益,并标注是否超过成本;测不到会明说「信号不足,无法判断」。不构成买卖建议。</div>
       <div id="diagnose-results"></div>
-    </div><div class="muted">推荐用于旧综合评分；可介入龙头描述当前板块交易特征；波段管理自选与旧候选。它们均为研究工具，独立策略的前向证据在“验证记录”查看。</div></details>
-    <div id="workflow-market" class="hidden"><h3>市场环境 → 板块方向 → 策略候选 → 组合风险 → 验证记录</h3><div class="muted">先查看上方环境与市场广度，再查看板块扩散和候选理由。研究候选需要数据与执行核查；账户模拟及已验证的使用等级分开呈现。</div></div>
+    </div>
+    <div id="workflow-market" class="hidden">
+      <h3>市场环境</h3>
+      <div id="market-environment-status" class="muted">正在读取后台市场环境…</div>
+      <div id="market-environment-metrics"></div>
+      <div class="muted">环境由后台每日记录计算，缺少历史时显示不足。顶部指数与市场广度是独立的实时参考，不能替代已保存的环境证据。</div>
+    </div>
     <div id="strategy-candidates-panel" class="hidden">
       <div class="muted">读取后台保存的独立策略研究候选，查看入选、失效、执行时间与已有持仓重复情况。</div>
+      <button id="btn-strategy-generate">生成今日候选</button>
+      <div id="daily-job-status" class="muted">正在读取自动任务状态…</div>
+      <div id="daily-job-progress" class="muted"></div>
       <button id="btn-strategy-freeze">读取候选</button>
+      <button id="btn-strategy-history" class="hidden">查看上次留档候选（历史）</button>
+      <label>历史日期 <input id="strategy-history-date" type="date"></label>
+      <label>查看口径 <select id="strategy-candidate-view"><option value="original">当日原始留档</option><option value="revised">复核／历史补算</option></select></label>
+      <button id="btn-strategy-date">查看指定日期</button>
+      <button id="btn-strategy-revised" class="hidden">查看该日复核／补算</button>
+      <div class="muted">原始留档保留当时名单与评分；复核／补算显示实际生成时间及规则版本，收益验证仍绑定原始快照。</div>
       <div id="strategy-freeze-message" class="muted"></div>
       <div id="strategy-candidate-evidence"></div>
+      <div id="strategy-candidate-cards"></div>
     </div>
     <div id="portfolio-panel" class="hidden">
       <h3>现金持仓账户</h3>
@@ -178,6 +193,7 @@
   <button id="btn-wl-add" class="hidden">加入自选</button>
 </footer>
 
+<script src="/static/request_runtime.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

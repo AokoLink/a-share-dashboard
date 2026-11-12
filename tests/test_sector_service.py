@@ -70,6 +70,22 @@ def test_corrupt_snapshot_is_unavailable(tmp_path):
     assert sr.load(tmp_path, DAY) is None
 
 
+@pytest.mark.parametrize("missing", [float("nan"), float("inf"), float("-inf"), pd.NA])
+def test_missing_optional_catalog_metadata_is_null_in_strict_snapshot(tmp_path, missing):
+    import json
+    from pathlib import Path
+    source = row()
+    source.update(taxonomy=missing, parent_mapping=missing, expected_members=missing)
+    report = snapshot([source])
+    ref = sr.save(tmp_path, report)
+    saved = json.loads(Path(ref["path"]).read_text(encoding="utf-8"),
+                       parse_constant=lambda value: pytest.fail(value))
+    assert saved["rows"][0]["taxonomy"] is None
+    assert saved["relations"][0]["parent_mapping"] is None
+    assert saved["rows"][0]["expected_members"] is None
+    assert sr.lookup(sr.load(tmp_path, DAY), CODES[0], DAY)["status"] == "ok"
+
+
 def test_feature_aggregation_requires_all_selected_relations_and_separates_categories():
     payload = snapshot([row("A", gain=20), row("B", gain=-20), row("T", category="theme", gain=90)])
     evidence = sr.feature_for(payload, CODES[0], DAY)

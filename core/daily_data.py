@@ -170,6 +170,13 @@ class LiveSources:
                     self.primary_error = f"{type(exc).__name__}: {exc}"[:500]
         try:
             result = tencent_daily(code, start, end, adjust, get=self.get)
+            # qfqday can lag day after close. Only a dated raw bar and complete
+            # factor evidence may fill it; an unchanged stock price is no proof.
+            if adjust == "qfq" and not result.empty and str(result["date"].iloc[-1]) < end:
+                raw = tencent_daily(code, start, end, "", get=self.get)
+                if not raw.empty and str(raw["date"].iloc[-1]) == end:
+                    result = sina_factor_adjusted(raw, code, end, get=self.get)
+                    result.attrs["adjusted_fallback_reason"] = "qfq_response_behind_confirmed_raw"
         except ValueError as exc:
             if adjust != "qfq" or str(exc) != "requested_price_basis_not_available":
                 raise

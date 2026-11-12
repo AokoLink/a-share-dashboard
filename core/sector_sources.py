@@ -96,8 +96,10 @@ class NativeSectors:
         if not rows:
             raise ValueError("all_native_sector_catalogs_unavailable")
         frame = pd.DataFrame(rows)
-        # Mixed providers must not turn native integer counts into NaN/float metadata.
-        frame["expected_members"] = pd.Series([r.get("expected_members") for r in rows], dtype=object)
+        # Mixed catalogs have different optional fields. Preserve absent metadata
+        # as None, and native integer counts as integers, rather than pandas NaN.
+        for key in ("expected_members", "taxonomy", "parent_mapping", "taxonomy_level"):
+            frame[key] = pd.Series([r.get(key) for r in rows], dtype=object)
         frame.attrs["catalog_evidence"] = self.catalog_evidence
         return frame, False
 

@@ -17,7 +17,7 @@ def generate(db, pool, technical, execution, memberships, regime, now, *, allow_
     groups = {key: [] for key in strategies.HORIZONS}
     frozen_pool, errors = [], list(decision["scope"]["missing_codes"])
     state = decision["market_state"]
-    for row in decision["pool"]:
+    for row in screening_engine.input_pool(decision):
         code = row["code"]
         raw, failure = screening_engine.day_view(execution.get(code), day)
         if failure:
@@ -82,8 +82,11 @@ def generate(db, pool, technical, execution, memberships, regime, now, *, allow_
         for key in strategies.HORIZONS:
             if modes[key] != "normal":
                 continue
+            strategy_pool = [closes[r["code"]] for r in decision.get("strategy_pools", {}).get(key, decision["pool"]) if r["code"] in closes]
             ids[key] = store.freeze_strategy_signal(db, day, key, identity["version"], sealed_at.isoformat(),
                 {**common, "strategy": key, "horizon_sessions": strategies.HORIZONS[key],
+                 "pool": strategy_pool,
+                 "quality": {**common["quality"], "sector_coverage": sum(bool(row["sectors"]) for row in strategy_pool)},
                  "candidates": groups[key]})["id"]
         if ids:
             freeze_status = "frozen"

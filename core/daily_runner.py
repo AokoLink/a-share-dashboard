@@ -15,9 +15,10 @@ import numpy as np
 from core import analysis, data_source, daily_data as data, environment, recommend, sector_insights, sector_relations, sector_service, screening_engine, store
 from core import strategies, strategy_lifecycle as lifecycle, strategy_service, account_ledger, operations, price_collection
 from core.stage1_data import _write_json, load_calendar, save_calendar, sha256
+from core.market_environment_inputs import market_history_readiness
 from pipeline import track_strategy_signals, account_report
 
-STEPS = ("calendar", "gate", "inputs", "universe", "prices", "quality", "features", "freeze", "track", "account")
+STEPS = ("calendar", "gate", "inputs", "environment", "universe", "prices", "quality", "features", "freeze", "track", "account")
 
 
 class AlreadyRunning(RuntimeError):
@@ -32,12 +33,12 @@ class RunLock:
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.stream = open(self.path, "a+b")
-        self.stream.seek(0, os.SEEK_END)
-        if not self.stream.tell():
-            self.stream.write(b"0")
-            self.stream.flush()
-        self.stream.seek(0)
         try:
+            self.stream.seek(0, os.SEEK_END)
+            if not self.stream.tell():
+                self.stream.write(b"0")
+                self.stream.flush()
+            self.stream.seek(0)
             if os.name == "nt":
                 import msvcrt
                 msvcrt.locking(self.stream.fileno(), msvcrt.LK_NBLCK, 1)
@@ -45,7 +46,12 @@ class RunLock:
                 import fcntl
                 fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            self.stream.close()
+            # A second Windows opener can race with the first byte's write:
+            # its flush hits the byte already locked by the first process.
+            try:
+                self.stream.close()
+            except OSError:
+                pass
             raise AlreadyRunning("another_daily_run_is_active") from exc
         return self
 
@@ -205,7 +211,7 @@ class DailyRunner:
                 self.results[name] = result
                 self.save()
             gate = self.results["gate"]
-            required = [self.results[key]["status"] for key in ("inputs", "universe", "prices", "quality", "features", "freeze", "track", "account")]
+            required = [self.results[key]["status"] for key in ("inputs", "environment", "universe", "prices", "quality", "features", "freeze", "track", "account")]
             if gate["status"] != "success":
                 status = gate.get("reason", "failed")
             elif check_only:
@@ -259,7 +265,7 @@ class DailyRunner:
         # 跟踪已冻结信号在采集失败时仍执行，并明确显示缺失，不混成无信号。
         if name in ("track", "account"):
             return None
-        dependencies = {"inputs": (), "universe": ("inputs",), "prices": ("universe",),
+        dependencies = {"inputs": (), "environment": ("inputs",), "universe": ("inputs",), "prices": ("universe",),
                         "quality": ("inputs", "universe", "prices"), "features": ("quality",),
                         "freeze": ("quality", "features")}
         for key in dependencies[name]:
@@ -429,7 +435,7 @@ class DailyRunner:
         technical = {c: _frame(pair["technical"]["artifact"]) for c,pair in prices.items()
                      if pair.get("technical", {}).get("status") == "success"}
         prepared = screening_engine.prepare(self.day, technical, universe["pool"])
-        selected_codes = [r["code"] for r in prepared["pool"]]
+        selected_codes = [r["code"] for r in screening_engine.input_pool(prepared)]
         unknown_codes = [c for c,r in prepared["eligibility"].items()
                          if r["data_status"] == "unavailable" or r["reason"] in ("invalid_history", "missing_daily_fields")]
         coverage = {}
@@ -453,34 +459,70 @@ class DailyRunner:
                   "missing_interpretation": "unknown_suspension_or_source_gap"}
         return {**report, "artifact": self.archive("quality.json", report, "daily_quality_checks")}
 
-    def step_features(self):
+    def build_environment(self):
         spot = _frame(self.results["inputs"]["spot"])
-        ready = self.results["quality"]["freeze_ready"]
+        # Full-market observations do not depend on individual adjusted prices
+        # being ready for signal freezing.
+        active = spot[(spot["price"] > 0) & (spot["volume"] > 0)]
+        ready = self.results["inputs"]["status"] == "success" and not active.empty
         regime = {"as_of": self.day, "label": None, "metrics": {}, "status": "insufficient_daily_history",
                   "basis": "full_market_daily_spot_median_return", "required_sessions": 61}
         if ready:
-            active = spot[(spot["price"] > 0) & (spot["volume"] > 0)]
             daily = {"date": self.day, "r1": float(active["change_pct"].median()) / 100,
                      "up_ratio": float((active["change_pct"] > 0).mean()),
                      "limit_up": sum(float(r["change_pct"]) >= analysis.limit_threshold(r["code"]) for r in active.to_dict("records")),
                      "limit_down": sum(float(r["change_pct"]) <= -analysis.limit_threshold(r["code"]) for r in active.to_dict("records")),
-                     "turnover": float(active["amount"].sum())}
+                     "turnover": float(active["amount"].sum()),
+                     "source_artifact": self.results["inputs"]["spot"],
+                     "observed_at": self.results["inputs"]["spot"].get("collected_at"),
+                     "source_mode": getattr(self, "manifest", {}).get("source_mode", "unknown")}
+            if not np.isfinite([daily[k] for k in ("r1", "up_ratio", "limit_up", "limit_down", "turnover")]).all():
+                raise ValueError("invalid_market_observation_numeric_values")
+            observation_ref = self.archive("market_observation.json", daily, "full_market_daily_spot",
+                                           as_of=self.day, dependencies=[daily["source_artifact"]])
+            daily["observation_artifact"] = observation_ref
             _write_json(self.root / "market_daily" / f"{self.day}.json", daily)
-            history = [data.read_json(path) for path in sorted((self.root / "market_daily").glob("*.json"))
-                       if path.stem <= self.day]
-            recent = history[-61:]
-            series = environment.classify_market_rows(recent)
-            expected = [d for d in self.results["calendar"]["calendar"]["dates"] if d <= self.day][-61:]
-            if len(recent) >= 61 and [row["date"] for row in recent] == expected:
+        readiness, recent = market_history_readiness(self.root, self.day, self.results["calendar"]["calendar"])
+        regime.update(readiness=readiness, observed_sessions=readiness["observed_sessions"])
+        if ready:
+            if readiness["ready"]:
+                series = environment.classify_market_rows(recent)
                 last = series.iloc[-1]
                 regime.update({"label": last["environment"], "status": "current",
                     "metrics": {key: environment._num(last[key]) for key in ("r1", "r5", "r20", "up_ratio", "limit_up", "limit_down", "turnover_ratio")}})
-            regime["observed_sessions"] = len(history)
+            elif readiness["status"] != "warming_up":
+                regime["status"] = readiness["status"]
         else:
             regime["status"] = "source_data_unconfirmed"
-        regime_meta = self.archive("regime.json", regime, "daily_market_snapshots", as_of=self.day)
+        # Archive the exact window, not mutable day-index files, for later review.
+        history_ref = self.archive("regime_history.json", recent, "saved_market_observation_window", as_of=self.day,
+            dependencies=[r["observation_artifact"] for r in recent if r.get("observation_artifact")])
+        regime["history_artifact"] = history_ref
+        regime_meta = self.archive("regime.json", regime, "daily_market_snapshots", as_of=self.day,
+                                  dependencies=[history_ref])
+        if hasattr(self, "manifest"):
+            owner = "environment" if "environment" in self.manifest["steps"] else "features"
+            self.manifest["steps"][owner]["environment_checkpoint"] = {"regime_artifact": regime_meta}
+            self.save()
         # 页面旧入口也读取新版状态；来源不充分时 label=None，不延用历史市场状态。
         _write_json(self.root / "regime_cache.json", regime)
+        return regime, regime_meta
+
+    def step_environment(self):
+        regime, ref = self.build_environment()
+        return {"status": "partial" if regime["status"] == "source_data_unconfirmed" else "success",
+                "regime": regime, "regime_artifact": ref}
+
+    def step_features(self):
+        spot = _frame(self.results["inputs"]["spot"])
+        saved = self.results.get("environment", {})
+        if saved.get("regime_artifact"):
+            regime, regime_meta = saved["regime"], saved["regime_artifact"]
+        else:
+            regime, regime_meta = self.build_environment()
+        # Keep old report consumers compatible when the sector step fails later.
+        self.manifest["steps"]["features"]["environment_checkpoint"] = {"regime_artifact": regime_meta}
+        self.save()
         summaries, errors, members, sector_rows = None, [], {}, []
         try:
             summaries, stale = self.sources.sectors()
@@ -565,8 +607,12 @@ class DailyRunner:
                      if pair.get("technical", {}).get("status") == "success"}
         raw = {c: _frame(pair["raw"]["artifact"]) for c, pair in prices.items()
                if pair.get("raw", {}).get("status") == "success"}
+        # Run-local evidence references remain in the audited environment report;
+        # timestamps/paths must not create a new signal for identical observations.
+        screening_regime = {k: v for k, v in self.results["features"]["regime"].items()
+                            if k != "history_artifact"}
         result = strategy_service.generate(self.db, self.results["universe"]["pool"], technical, raw,
-                    self.results["features"]["memberships"], self.results["features"]["regime"], self.now,
+                    self.results["features"]["memberships"], screening_regime, self.now,
                     allow_freeze=self.results["quality"]["freeze_ready"], shadow=self.shadow,
                     sector_snapshot=sector_relations.load(self.root, self.day, self.results["features"]["sector_snapshot"]),
                     sector_snapshot_ref=self.results["features"]["sector_snapshot"],

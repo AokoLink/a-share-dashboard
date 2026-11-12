@@ -7,16 +7,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LAYERS = {
-    "screening": ["core/strategies.py", "core/screening_engine.py", "core/analysis.py"],
-    "data_features": ["core/environment.py", "core/daily_data.py", "core/price_collection.py", "core/sector_relations.py",
+    "screening": ["core/strategies.py", "core/screening_engine.py", "core/strategy_risk.py", "core/momentum_strategy.py", "core/analysis.py"],
+    "data_features": ["core/environment.py", "core/market_environment_inputs.py", "core/daily_data.py", "core/price_collection.py", "core/sector_relations.py",
                       "core/sector_insights.py", "core/sector_service.py", "core/sector_sources.py",
                       "core/sector_index_sources.py", "core/sw_sector_sources.py", "pipeline/collect_sector_indices.py"],
     "execution_evaluation": ["core/strategy_lifecycle.py", "core/account_ledger.py", "core/research_evaluation.py",
                              "core/execution_evidence.py", "core/forward_validation.py",
                              "pipeline/forward_validation.py", "pipeline/account_report.py",
                              "pipeline/track_strategy_signals.py"],
-    "application": ["core/strategy_service.py", "core/daily_runner.py", "web/routes/strategies.py",
-                    "web/routes/portfolio.py", "static/app.js", "templates/index.html", "static/style.css"],
+    "application": ["core/strategy_service.py", "core/daily_runner.py", "core/stage1_data.py", "web/routes/strategies.py",
+                    "web/routes/portfolio.py", "web/routes/sectors.py", "web/routes/report.py", "web/routes/regime.py",
+                    "web/report_views.py", "web/candidate_review.py", "core/report_cache.py", "core/signal_replay.py", "core/daily_jobs.py", "pipeline/run_daily_job.py",
+                    "core/candidate_recovery.py", "pipeline/recover_daily_candidates.py",
+                    "pipeline/repair_market_environment.py",
+                    "pipeline/review_momentum_candidates.py",
+                    "web/routes/daily_jobs.py", "pipeline/daily_scheduler.py", "web/__init__.py", "app.py", "static/request_runtime.js",
+                    "static/app.js", "templates/index.html", "static/style.css"],
 }
 
 

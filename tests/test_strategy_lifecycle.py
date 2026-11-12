@@ -153,7 +153,7 @@ def test_background_freeze_enforces_status_and_shadow(tmp_path):
     assert first["generated_at"] == sealed.isoformat()
     assert all(row["frozen_at"] == sealed.isoformat() for row in store.list_strategy_signals(db))
     assert produce()["snapshot_ids"] == first["snapshot_ids"]
-    assert len(store.list_strategy_signals(db)) == 3
+    assert len(store.list_strategy_signals(db)) == 4
     version = first["frozen_version"]
     def pause_while_processing():
         store.add_strategy_status_event(db, "breakout", version, "paused", "暂停研究", now.isoformat())

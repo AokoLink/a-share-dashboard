@@ -149,7 +149,7 @@ def replay(ref, work_root, relocation=None):
         for name, content in code.items():
             target = (work / name).resolve()
             if (not target.is_relative_to(work.resolve()) or target.suffix not in (".py", ".html", ".js", ".css")
-                or not name.startswith(("core/", "pipeline/", "web/", "templates/", "static/"))):
+                or not (name == "app.py" or name.startswith(("core/", "pipeline/", "web/", "templates/", "static/")))):
                 raise ValueError("invalid_archived_source_path")
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(base64.b64decode(content, validate=True))

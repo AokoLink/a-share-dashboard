@@ -13,6 +13,11 @@ body { font: 14px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif; background: var
 .up { color: var(--up); } .down { color: var(--down); }
 #indices, #breadth { display: flex; gap: 20px; flex-wrap: wrap; }
 #layout { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+#layout.candidate-wide { grid-template-columns: 1fr; }
+#layout.candidate-wide #right { display: none; }
+#strategy-candidate-evidence { overflow-x: auto; }
+#strategy-candidate-evidence table { min-width: 1100px; }
+#strategy-candidate-evidence td:first-child { min-width: 130px; }
 @media (max-width: 900px) { #layout { grid-template-columns: 1fr; } }
 .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 #sector-rotation, #portfolio-results { margin-top: 10px; overflow-x: auto; }
